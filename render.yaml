@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: setpoint-api
+    env: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: CLIENT_ORIGIN
+        fromService:
+          type: static
+          name: setpoint-client
+  - type: static
+    name: setpoint-client
+    rootDir: client
+    buildCommand: npm install && npm run build
+    publishPath: dist
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: setpoint-api
+      - key: VITE_SOCKET_URL
+        fromService:
+          type: web
+          name: setpoint-api

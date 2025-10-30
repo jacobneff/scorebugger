@@ -3,6 +3,7 @@ version: "1"
 services:
   - type: web
     name: scorebugger-api
+    plan: free
     runtime: node
     rootDir: server
     buildCommand: npm install
@@ -17,9 +18,13 @@ services:
       - key: JWT_SECRET
         sync: false
       - key: CLIENT_ORIGIN
-        sync: false
+        fromService:
+          type: web
+          name: scorebugger-client
+          property: connectionString
   - type: web
     name: scorebugger-client
+    plan: free
     runtime: static
     rootDir: client
     buildCommand: npm install && npm run build
@@ -28,6 +33,12 @@ services:
       - key: NODE_VERSION
         value: 20
       - key: VITE_API_URL
-        sync: false
+        fromService:
+          type: web
+          name: scorebugger-api
+          property: connectionString
       - key: VITE_SOCKET_URL
-        sync: false
+        fromService:
+          type: web
+          name: scorebugger-api
+          property: connectionString

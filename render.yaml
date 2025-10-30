@@ -18,10 +18,7 @@ services:
       - key: JWT_SECRET
         sync: false
       - key: CLIENT_ORIGIN
-        fromService:
-          type: web
-          name: scorebugger-client
-          property: connectionString
+        sync: false
   - type: web
     name: scorebugger-client
     plan: free
@@ -33,12 +30,6 @@ services:
       - key: NODE_VERSION
         value: 20
       - key: VITE_API_URL
-        fromService:
-          type: web
-          name: scorebugger-api
-          property: connectionString
+        sync: false
       - key: VITE_SOCKET_URL
-        fromService:
-          type: web
-          name: scorebugger-api
-          property: connectionString
+        sync: false

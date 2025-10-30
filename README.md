@@ -1,4 +1,4 @@
-# setpoint
+# scorebugger
 
 ## Deploying to Render
 1. Push your changes, then create a new “Blueprint” in Render using this repository.

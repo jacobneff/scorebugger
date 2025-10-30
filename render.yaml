@@ -3,7 +3,7 @@ version: "1"
 services:
   - type: web
     name: setpoint-api
-    env: node
+    runtime: node
     rootDir: server
     buildCommand: npm install
     startCommand: npm start
@@ -18,13 +18,15 @@ services:
         sync: false
       - key: CLIENT_ORIGIN
         fromService:
-          type: static_site
+          type: web
           name: setpoint-client
-  - type: static_site
+          property: url
+  - type: web
     name: setpoint-client
+    runtime: static
     rootDir: client
     buildCommand: npm install && npm run build
-    publishPath: dist
+    staticPublishPath: dist
     envVars:
       - key: NODE_VERSION
         value: 20
@@ -32,7 +34,9 @@ services:
         fromService:
           type: web
           name: setpoint-api
+          property: url
       - key: VITE_SOCKET_URL
         fromService:
           type: web
           name: setpoint-api
+          property: url

@@ -1,3 +1,5 @@
+version: "1"
+
 services:
   - type: web
     name: setpoint-api
@@ -16,9 +18,9 @@ services:
         sync: false
       - key: CLIENT_ORIGIN
         fromService:
-          type: static
+          type: static_site
           name: setpoint-client
-  - type: static
+  - type: static_site
     name: setpoint-client
     rootDir: client
     buildCommand: npm install && npm run build

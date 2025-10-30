@@ -8,7 +8,7 @@ import {
 } from 'react';
 import { API_URL } from '../config/env.js';
 
-const STORAGE_KEY = 'setpoint.auth';
+const STORAGE_KEY = 'scorebugger.auth';
 const NETWORK_ERROR_FALLBACK =
   'Unable to reach the server. Please check your connection and try again.';
 

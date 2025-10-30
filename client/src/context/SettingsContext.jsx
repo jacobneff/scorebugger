@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 const SettingsContext = createContext(null);
 
-const STORAGE_KEY = "setpoint.settings";
+const STORAGE_KEY = "scorebugger.settings";
 
 const defaultSettings = {
   shortcutsEnabled: true,

@@ -3,17 +3,17 @@
 ## Deploying to Render
 1. Push your changes, then create a new “Blueprint” in Render using this repository.
 2. Render detects `render.yaml` at the repo root and provisions two services:
-   - `setpoint-api` (Node web service, root `server/`)
-   - `setpoint-client` (static site, root `client/`)
-3. When prompted, add the required environment variables (see below) and launch the deploy.
+   - `scorebugger-api` (Node web service, root `server/`)
+   - `scorebugger-client` (static site, root `client/`)
+3. When prompted, add the required environment variables (see below) and launch the deploy. After the first deploy completes you can copy each service’s `RENDER_EXTERNAL_URL` into the corresponding variables so the API and frontend know about each other.
 
 ### Required environment variables
-- **setpoint-api**  
+- **scorebugger-api**  
   - `MONGODB_URI` — MongoDB connection string.
   - `JWT_SECRET` — secret used for signing authentication tokens.
-  - `CLIENT_ORIGIN` — (auto) set via blueprint to the static site URL; add additional origins as a comma-separated list if needed.
-- **setpoint-client**  
-  - `VITE_API_URL` / `VITE_SOCKET_URL` — (auto) set to the backend URL; override if using a custom domain.
+  - `CLIENT_ORIGIN` — Set to the deployed client URL (e.g., the `RENDER_EXTERNAL_URL` from `scorebugger-client`). Add additional origins as a comma-separated list if needed.
+- **scorebugger-client**  
+  - `VITE_API_URL` / `VITE_SOCKET_URL` — Set to the deployed API URL (e.g., the `RENDER_EXTERNAL_URL` from `scorebugger-api`). Update if you later attach a custom domain.
 
 ### Post-deploy checklist
 - Confirm the health check at `/health` returns `{ "status": "ok" }`.

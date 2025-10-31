@@ -479,7 +479,7 @@ function Home() {
         </div>
         {activeTab === "setup" ? (
           <>
-            <h1 className="title">SCOREBUGGER</h1>
+            <h1 className="title">scorebugger</h1>
             <p className="subtitle">
               A volleyball scoreboard you can control and embed live in your stream.
             </p>

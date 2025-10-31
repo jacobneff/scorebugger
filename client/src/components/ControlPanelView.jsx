@@ -7,6 +7,8 @@ import {
   MdChevronRight,
   MdEdit,
   MdSave,
+  MdExpandLess,
+  MdExpandMore,
 } from "react-icons/md";
 import { FiCheckCircle, FiInfo, FiXCircle } from "react-icons/fi";
 import { useScoreboard } from "../hooks/useScoreboard.js";
@@ -193,6 +195,8 @@ function ControlPanelView({
   const [mode, setMode] = useState("current"); // 'current' | 'history'
   const [historyIndex, setHistoryIndex] = useState(0);
   const [cachedCurrentScores, setCachedCurrentScores] = useState(null);
+  const [collapsedColorPanels, setCollapsedColorPanels] = useState({ 0: false, 1: false });
+  const [isScoreColorsCollapsed, setIsScoreColorsCollapsed] = useState(false);
 
   const sets = scoreboard?.sets ?? [];
   const totalCompletedSets = sets.length;
@@ -212,6 +216,11 @@ function ControlPanelView({
       typeof window !== "undefined" && window.location?.origin ? window.location.origin : "";
     return id ? `${origin}/board/${id}/control` : "";
   }, [scoreboard?._id, scoreboard?.code, scoreboardId]);
+
+  useEffect(() => {
+    setCollapsedColorPanels({ 0: false, 1: false });
+    setIsScoreColorsCollapsed(false);
+  }, [scoreboardId]);
 
   // Team-name edit
   const [editingTeamIndex, setEditingTeamIndex] = useState(null);
@@ -688,6 +697,17 @@ function ControlPanelView({
         : "No completed sets";
   const deleteTargetSetNumber = activeSetNumber;
 
+  const toggleColorPanel = (teamIndex) => {
+    setCollapsedColorPanels((prev) => ({
+      ...prev,
+      [teamIndex]: !prev?.[teamIndex],
+    }));
+  };
+
+  const toggleScoreColors = () => {
+    setIsScoreColorsCollapsed((prev) => !prev);
+  };
+
   const hasActiveScores = scoreboard?.teams?.some((t) => (t.score ?? 0) > 0);
   const hasCompletedSets = totalCompletedSets > 0;
   const disableDeleteSet = totalCompletedSets === 0;
@@ -778,7 +798,13 @@ function ControlPanelView({
         <div className="control-link-card">
           <div className="control-link-meta">
             <div className="control-link-label">Control Link</div>
-            <a className="control-link-url" href={controlUrl} target="_blank" rel="noopener noreferrer">
+            <a
+              className="control-link-url"
+              href={controlUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={controlUrl || "Control link"}
+            >
               {controlUrl}
             </a>
           </div>
@@ -811,7 +837,13 @@ function ControlPanelView({
         <div className="control-link-card">
           <div className="control-link-meta">
             <div className="control-link-label">Overlay Link</div>
-            <a className="control-link-url" href={overlayUrl} target="_blank" rel="noopener noreferrer">
+            <a
+              className="control-link-url"
+              href={overlayUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={overlayUrl || "Overlay link"}
+            >
               {overlayUrl}
             </a>
           </div>
@@ -864,42 +896,40 @@ function ControlPanelView({
 
         {/* Prev / Next set controls */}
         <div className="set-nav">
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={goToPreviousSet}
-            disabled={mode === "current" && sets.length === 0}
-            title={mode === "current" ? "View previous sets" : "Go to earlier set"}
-          >
-            <MdChevronLeft style={{ marginRight: 6 }} />
-            Previous Set
-          </button>
-
           <div className="set-nav-status">{statusText}</div>
+          <div className="set-nav-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={goToPreviousSet}
+              disabled={mode === "current" && sets.length === 0}
+              title={mode === "current" ? "View previous sets" : "Go to earlier set"}
+            >
+              <MdChevronLeft style={{ marginRight: 6 }} />
+              Previous Set
+            </button>
 
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={goToNextSet}
-            disabled={mode === "current" && !canArchiveMoreSets}
-            title={
-              mode === "current"
-                ? canArchiveMoreSets
-                  ? "Save current as a completed set"
-                  : `Maximum of ${MAX_TOTAL_SETS} sets reached`
-                : "Go forward; past the last set returns to Current"
-            }
-          >
-            Next Set
-            <MdChevronRight style={{ marginLeft: 6 }} />
-          </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={goToNextSet}
+              disabled={mode === "current" && !canArchiveMoreSets}
+              title={
+                mode === "current"
+                  ? canArchiveMoreSets
+                    ? "Save current as a completed set"
+                    : `Maximum of ${MAX_TOTAL_SETS} sets reached`
+                  : "Go forward; past the last set returns to Current"
+              }
+            >
+              Next Set
+              <MdChevronRight style={{ marginLeft: 6 }} />
+            </button>
+          </div>
         </div>
 
         {/* Toolbar */}
         <div className="control-toolbar">
-          <button type="button" className="control-tool-button" onClick={resetScores} disabled={!hasActiveScores}>
-            Reset Scores
-          </button>
           <button
             type="button"
             className="control-tool-button danger"
@@ -910,6 +940,9 @@ function ControlPanelView({
           </button>
           <button type="button" className="control-tool-button danger" onClick={resetSets} disabled={!hasCompletedSets}>
             Delete All Sets
+          </button>
+          <button type="button" className="control-tool-button reset" onClick={resetScores} disabled={!hasActiveScores}>
+            Reset Scores
           </button>
         </div>
 
@@ -988,11 +1021,34 @@ function ControlPanelView({
 
                 <div className="control-card-score-row">{renderScoreControls(i)}</div>
 
-                <div className="team-color-controls">
+                <div
+                  className={`team-color-controls ${
+                    collapsedColorPanels?.[i] ? "is-collapsed" : ""
+                  }`}
+                >
                   <div className="team-color-header">
-                    <h4 className="team-color-heading">{`${teamHeadingLabel} Colors`}</h4>
+                    <h4
+                      className="team-color-heading"
+                      id={`team-colors-heading-${i}`}
+                    >{`${teamHeadingLabel} Colors`}</h4>
+                    <button
+                      type="button"
+                      className="team-color-toggle"
+                      onClick={() => toggleColorPanel(i)}
+                      aria-expanded={!collapsedColorPanels?.[i]}
+                      aria-controls={`team-color-grid-${i}`}
+                      title={`${collapsedColorPanels?.[i] ? "Expand" : "Collapse"} ${teamHeadingLabel} color controls`}
+                    >
+                      {collapsedColorPanels?.[i] ? <MdExpandMore /> : <MdExpandLess />}
+                    </button>
                   </div>
-                  <div className="team-color-grid">
+                  <div
+                    className="team-color-grid"
+                    id={`team-color-grid-${i}`}
+                    role="region"
+                    aria-labelledby={`team-colors-heading-${i}`}
+                    aria-hidden={!!collapsedColorPanels?.[i]}
+                  >
                     <label className="team-color-field">
                       <span className="team-color-label">Panel</span>
                       <div className="team-color-inputs">
@@ -1036,12 +1092,26 @@ function ControlPanelView({
           })}
         </div>
 
-        <div className="score-color-card">
+        <div className={`score-color-card ${isScoreColorsCollapsed ? "is-collapsed" : ""}`}>
           <div className="score-color-header">
             <h3 className="score-color-title">Score Colors</h3>
             <p className="score-color-subtitle">Shared colors for the scoreboard columns.</p>
+            <button
+              type="button"
+              className="score-color-toggle"
+              onClick={toggleScoreColors}
+              aria-expanded={!isScoreColorsCollapsed}
+              aria-controls="score-color-grid"
+              title={`${isScoreColorsCollapsed ? "Expand" : "Collapse"} score color controls`}
+            >
+              {isScoreColorsCollapsed ? <MdExpandMore /> : <MdExpandLess />}
+            </button>
           </div>
-          <div className="score-color-grid">
+          <div
+            className="score-color-grid"
+            id="score-color-grid"
+            aria-hidden={isScoreColorsCollapsed}
+          >
             <label className="score-color-field">
               <span className="score-color-label">Score Background</span>
               <div className="team-color-inputs">

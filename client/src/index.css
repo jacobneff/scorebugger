@@ -1162,6 +1162,12 @@ button:disabled {
   color: #334155;
 }
 
+.set-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .control-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1182,6 +1188,10 @@ button:disabled {
   background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   display: grid;
   gap: 0.85rem;
+}
+
+.team-color-controls.is-collapsed {
+  padding-bottom: 0.75rem;
 }
 
 .team-color-header {
@@ -1213,6 +1223,28 @@ button:disabled {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #475569;
+}
+
+.team-color-toggle {
+  border: none;
+  background: transparent;
+  color: #0f172a;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1rem;
+  line-height: 1;
+  font-size: 1.35rem;
+  cursor: pointer;
+}
+
+.team-color-toggle:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.team-color-controls.is-collapsed .team-color-grid {
+  display: none;
 }
 
 .team-color-inputs {
@@ -1284,6 +1316,33 @@ button:disabled {
   margin: 0;
   color: #64748b;
   font-size: 0.85rem;
+}
+
+.score-color-toggle {
+  border: none;
+  background: transparent;
+  color: #0f172a;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.1rem;
+  line-height: 1;
+  font-size: 1.35rem;
+  cursor: pointer;
+  align-self: flex-end;
+}
+
+.score-color-toggle:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.score-color-card.is-collapsed {
+  padding-bottom: 1rem;
+}
+
+.score-color-card.is-collapsed .score-color-grid {
+  display: none;
 }
 
 .score-color-grid {
@@ -1733,6 +1792,15 @@ button:disabled {
     align-items: stretch;
   }
 
+  .control-link-url {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+    word-break: normal;
+    max-width: 100%;
+  }
+
   .control-link-copy {
     width: 100%;
   }
@@ -1747,18 +1815,55 @@ button:disabled {
     gap: 0.5rem;
   }
 
+  .team-color-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
   .score-color-field .team-color-inputs {
     grid-template-columns: 44px minmax(0, 1fr);
     gap: 0.5rem;
   }
 
+  .score-color-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
   .set-nav {
     flex-direction: column;
     align-items: stretch;
+    gap: 0.75rem;
   }
 
   .set-nav-status {
     text-align: center;
+  }
+
+  .set-nav-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  .set-nav-actions .secondary-button {
+    width: 100%;
+  }
+
+  .control-toolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  .control-toolbar .control-tool-button {
+    width: 100%;
+  }
+
+  .control-toolbar .control-tool-button.reset {
+    grid-column: span 2;
   }
 
   .team-card-header {
@@ -1793,8 +1898,16 @@ button:disabled {
   }
 
   .home-tabs {
-    width: 100%;
+    display: inline-flex;
+    width: auto;
+    max-width: calc(100% - 1.5rem);
     justify-content: center;
+    padding: 0.3rem 0.35rem;
+    margin: 0 auto 1.5rem;
+  }
+
+  .home-tab-button {
+    padding: 0.45rem 1rem;
   }
 
   .control-title-display {

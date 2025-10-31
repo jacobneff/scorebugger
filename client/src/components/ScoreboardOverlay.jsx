@@ -1,5 +1,6 @@
 import React from "react";
 import { GiVolleyballBall } from "react-icons/gi";
+import { MAX_COMPLETED_SETS, MAX_TOTAL_SETS } from "../constants/scoreboard.js";
 
 function normalizeSet(set) {
   if (Array.isArray(set?.scores) && set.scores.length === 2) {
@@ -68,30 +69,37 @@ function ScoreboardOverlay({ scoreboard }) {
     sanitizeTeam(scoreboard?.teams?.[1], 1),
   ];
 
-  const completedSets = Array.isArray(scoreboard?.sets)
-    ? scoreboard.sets.map(normalizeSet).slice(0, 5)
+  const rawCompletedSets = Array.isArray(scoreboard?.sets)
+    ? scoreboard.sets.map(normalizeSet)
     : [];
+  const hasRoomForLiveSet = rawCompletedSets.length < MAX_TOTAL_SETS;
+  const completedSets = rawCompletedSets
+    .slice(0, hasRoomForLiveSet ? MAX_COMPLETED_SETS : MAX_TOTAL_SETS);
 
   const liveScores = teams.map((team) => team.score ?? 0);
+  const setColumns = completedSets.map((scores, index) => ({
+    type: "set",
+    label: `Set ${index + 1}`,
+    scores,
+    index,
+  }));
+
   const allColumns = [
     {
       type: "names",
     },
-    ...completedSets.map((scores, index) => ({
-      type: "set",
-      label: `Set ${index + 1}`,
-      scores,
-      index,
-    })),
-    {
+    ...setColumns,
+  ];
+
+  if (hasRoomForLiveSet) {
+    allColumns.push({
       type: "set",
       label: `Set ${completedSets.length + 1}`,
       scores: liveScores,
       isLive: true,
-    },
-  ];
+    });
+  }
 
-  const nameColumnTemplate = 'minmax(260px, 260px)';
   const setColumnTemplate = 'minmax(96px, 96px)';
   const longestNameLength = Math.max(
     ...teams.map((team) => (team.name ? team.name.length : 0)),

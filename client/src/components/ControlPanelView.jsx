@@ -13,6 +13,7 @@ import { useScoreboard } from "../hooks/useScoreboard.js";
 import SettingsMenu from "./SettingsMenu.jsx";
 import ScoreboardOverlay from "./ScoreboardOverlay.jsx";
 import { useSettings } from "../context/SettingsContext.jsx";
+import { MAX_COMPLETED_SETS, MAX_TOTAL_SETS } from "../constants/scoreboard.js";
 
 /* ---------- helpers ---------- */
 const getSetScores = (set) => {
@@ -66,7 +67,6 @@ function ControlPanelView({
 
   const MAX_TITLE = 30;
   const remaining = (v, limit = MAX_TITLE) => limit - (v?.length ?? 0);
-  const MAX_SETS = 5;
 
   // Fallback teams while loading
   const fallbackTeams = useMemo(() => {
@@ -381,11 +381,11 @@ function ControlPanelView({
   };
 
   const archiveCurrentSet = () => {
-    if (!scoreboard?.teams) return;
+    if (!scoreboard?.teams) return false;
 
-    if (sets.length >= MAX_SETS) {
-      showToast("error", "Maximum of 5 sets reached");
-      return;
+    if (sets.length >= MAX_COMPLETED_SETS) {
+      showToast("error", `Maximum of ${MAX_TOTAL_SETS} sets reached`);
+      return false;
     }
 
     const s0 = scoreboard.teams?.[0]?.score ?? 0;
@@ -404,12 +404,15 @@ function ControlPanelView({
       sets: nextSets,
       teams: scoreboard.teams.map((t) => ({ ...t, score: 0 })),
     });
+    return true;
   };
 
 
   const removeSetAtIndex = (idx, sourceMode = mode) => {
     if (!sets[idx]) return;
-    const nextSets = sets.filter((_, i) => i !== idx).map((s) => normalizeSet(s));
+
+    const normalizedSets = sets.map((set) => normalizeSet(set));
+    const nextSets = normalizedSets.filter((_, i) => i !== idx);
     const lastSet = nextSets[nextSets.length - 1] ?? null;
     const [carryHome, carryAway] = lastSet ? getSetScores(lastSet) : [0, 0];
 
@@ -426,22 +429,19 @@ function ControlPanelView({
       };
     });
 
-    if (nextSets.length === 0) {
-      setMode("current");
-      setHistoryIndex(0);
-    } else if (sourceMode === "current") {
-      setMode("history");
-      setHistoryIndex(Math.max(0, nextSets.length - 1));
-    } else {
-      if (historyIndex >= nextSets.length) {
-        setHistoryIndex(nextSets.length - 1);
-      } else if (idx < historyIndex) {
-        setHistoryIndex((prev) => Math.max(0, prev - 1));
-      }
-    }
+    const hasSetsRemaining = nextSets.length > 0;
+    const nextMode = hasSetsRemaining ? "history" : "current";
+    const maxHistoryIndex = Math.max(0, nextSets.length - 1);
+    const nextHistoryIndex = hasSetsRemaining
+      ? sourceMode === "current"
+        ? maxHistoryIndex
+        : Math.min(idx, maxHistoryIndex)
+      : 0;
 
+    setMode(nextMode);
+    setHistoryIndex(nextHistoryIndex);
     setCachedCurrentScores(null);
-    showToast("info", "Set deleted");
+    showToast("info", `Set ${idx + 1} deleted`);
   };
 
   const resetScores = () => {
@@ -463,41 +463,14 @@ function ControlPanelView({
   const deleteActiveSet = () => {
     if (disableDeleteSet) return;
 
+    if (totalCompletedSets === 0) return;
+
     if (mode === "current") {
-      if (totalCompletedSets === 0) {
-        return;
-      }
-
-      const normalizedSets = sets.map((set) => normalizeSet(set));
-      const remainingSets = normalizedSets.slice(0, -1);
-      const lastCompletedSet = remainingSets[remainingSets.length - 1] ?? null;
-      const [carryHome, carryAway] = lastCompletedSet ? getSetScores(lastCompletedSet) : [0, 0];
-
-      updateScoreboard((current) => {
-        if (!current?.teams) {
-          return current;
-        }
-        return {
-          sets: remainingSets,
-          teams: current.teams.map((team, idx) => ({
-            ...team,
-            score: idx === 0 ? carryHome : carryAway,
-          })),
-        };
-      });
-
-      setCachedCurrentScores(null);
-      if (remainingSets.length > 0) {
-        setMode("history");
-        setHistoryIndex(remainingSets.length - 1);
-      } else {
-        setMode("current");
-        setHistoryIndex(0);
-      }
-      showToast("info", `Set ${activeSetNumber} deleted`);
-    } else {
-      removeSetAtIndex(displayedHistoryIndex, "history");
+      removeSetAtIndex(totalCompletedSets - 1, "current");
+      return;
     }
+
+    removeSetAtIndex(displayedHistoryIndex, "history");
   };
 
   // ---------- Navigation ----------
@@ -517,8 +490,10 @@ function ControlPanelView({
 
   const goToNextSet = () => {
     if (mode === "current") {
-      archiveCurrentSet();
-      showToast("success", "Set saved");
+      const saved = archiveCurrentSet();
+      if (saved) {
+        showToast("success", "Set saved");
+      }
       return;
     }
     if (historyIndex < sets.length - 1) {
@@ -694,25 +669,24 @@ function ControlPanelView({
     );
   };
 
-  const hasInProgressSet = mode === "current" || cachedCurrentScores !== null;
-  const potentialTotalSets = totalCompletedSets + (hasInProgressSet ? 1 : 0);
-  const totalSetsOverall = Math.min(MAX_SETS, Math.max(1, potentialTotalSets));
-
+  const currentSetNumber = Math.min(MAX_TOTAL_SETS, Math.max(1, totalCompletedSets + 1));
+  const historySetCount = Math.max(1, Math.min(totalCompletedSets, MAX_TOTAL_SETS));
   const statusText =
     mode === "current"
-      ? `Editing Set ${totalSetsOverall} (Current)`
+      ? `Editing Set ${currentSetNumber} (Current)`
       : totalCompletedSets > 0
-        ? `Viewing Set ${displayedHistoryIndex + 1} of ${totalSetsOverall}`
+        ? `Viewing Set ${Math.min(displayedHistoryIndex + 1, historySetCount)} of ${historySetCount}`
         : "No completed sets";
 
-  const activeSetNumber =
+  const deleteTargetSetNumber =
     mode === "current"
-      ? totalSetsOverall
-      : Math.min(displayedHistoryIndex + 1, totalSetsOverall);
+      ? Math.max(totalCompletedSets, 1)
+      : Math.min(displayedHistoryIndex + 1, historySetCount);
 
   const hasActiveScores = scoreboard?.teams?.some((t) => (t.score ?? 0) > 0);
-  const hasCompletedSets = sets.length > 0;
-  const disableDeleteSet = totalSetsOverall <= 1;
+  const hasCompletedSets = totalCompletedSets > 0;
+  const disableDeleteSet = totalCompletedSets === 0;
+  const canArchiveMoreSets = totalCompletedSets < MAX_COMPLETED_SETS;
 
   return (
     <>
@@ -902,10 +876,12 @@ function ControlPanelView({
             className="secondary-button"
             type="button"
             onClick={goToNextSet}
-            disabled={mode === "current" && sets.length >= MAX_SETS}
+            disabled={mode === "current" && !canArchiveMoreSets}
             title={
               mode === "current"
-                ? "Save current as a completed set"
+                ? canArchiveMoreSets
+                  ? "Save current as a completed set"
+                  : `Maximum of ${MAX_TOTAL_SETS} sets reached`
                 : "Go forward; past the last set returns to Current"
             }
           >
@@ -925,7 +901,7 @@ function ControlPanelView({
             onClick={deleteActiveSet}
             disabled={disableDeleteSet}
           >
-            Delete Set {activeSetNumber}
+            Delete Set {deleteTargetSetNumber}
           </button>
           <button type="button" className="control-tool-button danger" onClick={resetSets} disabled={!hasCompletedSets}>
             Delete All Sets

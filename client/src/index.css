@@ -1739,6 +1739,7 @@ button:disabled {
 
   .control-grid {
     grid-template-columns: 1fr;
+    gap: 1rem;
   }
 
   .team-color-inputs {
@@ -1773,6 +1774,11 @@ button:disabled {
   .board-code-row {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .control-card {
+    padding: 1.15rem 1.2rem;
+    gap: 1rem;
   }
 
   .card-settings {

@@ -25,7 +25,7 @@ function loadStoredAuth() {
     const parsed = JSON.parse(raw);
     if (!parsed?.token || !parsed?.user) return null;
     return parsed;
-  } catch (error) {
+  } catch {
     return null;
   }
 }
@@ -50,7 +50,7 @@ export function AuthProvider({ children }) {
     }
   }, [authState]);
 
-  const handleAuthResponse = useCallback((data) => {
+  const completeAuth = useCallback((data) => {
     if (!data?.token || !data?.user) {
       throw new Error('Malformed authentication response');
     }
@@ -60,22 +60,31 @@ export function AuthProvider({ children }) {
       user: data.user,
     });
 
-    return { ok: true };
+    return { ok: true, user: data.user };
   }, []);
 
-  const extractErrorMessage = async (response) => {
+  const parseResponse = useCallback(async (response) => {
     try {
-      const payload = await response.json();
-      if (payload?.message) return payload.message;
-    } catch (error) {
-      // Ignore JSON parse errors
+      return await response.json();
+    } catch {
+      return null;
     }
-    return response.status >= 400 && response.status < 500
-      ? 'Unable to authenticate with the provided credentials'
-      : 'Authentication failed';
-  };
+  }, []);
 
-  const normalizeNetworkError = (error) => {
+  const buildError = useCallback(
+    async (response) => {
+      const payload = await parseResponse(response);
+      const message =
+        payload?.message ||
+        (response.status >= 400 && response.status < 500
+          ? 'Unable to authenticate with the provided credentials'
+          : 'Authentication failed');
+      return { ok: false, message, code: payload?.code, payload };
+    },
+    [parseResponse]
+  );
+
+  const normalizeNetworkError = useCallback((error) => {
     if (!error) return NETWORK_ERROR_FALLBACK;
     const message = String(error?.message || '').trim();
     if (!message) return NETWORK_ERROR_FALLBACK;
@@ -88,7 +97,7 @@ export function AuthProvider({ children }) {
       return NETWORK_ERROR_FALLBACK;
     }
     return message;
-  };
+  }, []);
 
   const login = useCallback(
     async ({ email, password }) => {
@@ -101,19 +110,18 @@ export function AuthProvider({ children }) {
         });
 
         if (!response.ok) {
-          const message = await extractErrorMessage(response);
-          return { ok: false, message };
+          return buildError(response);
         }
 
         const data = await response.json();
-        return handleAuthResponse(data);
+        return completeAuth(data);
       } catch (error) {
         return { ok: false, message: normalizeNetworkError(error) };
       } finally {
         setAuthBusy(false);
       }
     },
-    [handleAuthResponse]
+    [buildError, completeAuth, normalizeNetworkError]
   );
 
   const register = useCallback(
@@ -127,24 +135,190 @@ export function AuthProvider({ children }) {
         });
 
         if (!response.ok) {
-          const message = await extractErrorMessage(response);
-          return { ok: false, message };
+          return buildError(response);
         }
 
         const data = await response.json();
-        return handleAuthResponse(data);
+        if (data?.token && data?.user) {
+          return completeAuth(data);
+        }
+        return {
+          ok: true,
+          message: data?.message || 'Account created. Check your email to verify your account.',
+          requiresEmailVerification: Boolean(data?.requiresEmailVerification),
+          emailDeliveryConfigured: Boolean(data?.emailDeliveryConfigured),
+          email: data?.email,
+        };
       } catch (error) {
         return { ok: false, message: normalizeNetworkError(error) };
       } finally {
         setAuthBusy(false);
       }
     },
-    [handleAuthResponse]
+    [buildError, completeAuth, normalizeNetworkError]
   );
 
   const logout = useCallback(() => {
     setAuthState({ user: null, token: null });
   }, []);
+
+  const resendVerification = useCallback(
+    async (email) => {
+      try {
+        const response = await fetch(`${API_URL}/api/auth/resend-verification`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+
+        const payload = await parseResponse(response);
+
+        if (!response.ok) {
+          return {
+            ok: false,
+            message: payload?.message || 'Unable to resend verification email',
+            code: payload?.code,
+          };
+        }
+
+        return {
+          ok: true,
+          message: payload?.message || 'Verification email sent. Check your inbox.',
+        };
+      } catch (error) {
+        return { ok: false, message: normalizeNetworkError(error) };
+      }
+    },
+    [normalizeNetworkError, parseResponse]
+  );
+
+  const requestPasswordReset = useCallback(
+    async (email) => {
+      try {
+        const response = await fetch(`${API_URL}/api/auth/request-password-reset`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+
+        const payload = await parseResponse(response);
+
+        if (!response.ok) {
+          return {
+            ok: false,
+            message: payload?.message || 'Unable to request a password reset right now',
+            code: payload?.code,
+          };
+        }
+
+        return {
+          ok: true,
+          message:
+            payload?.message ||
+            'If that account exists, you will receive password reset instructions shortly.',
+        };
+      } catch (error) {
+        return { ok: false, message: normalizeNetworkError(error) };
+      }
+    },
+    [normalizeNetworkError, parseResponse]
+  );
+
+  const resetPassword = useCallback(
+    async ({ token: resetToken, password }) => {
+      try {
+        const response = await fetch(`${API_URL}/api/auth/reset-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: resetToken, password }),
+        });
+
+        const payload = await parseResponse(response);
+
+        if (!response.ok) {
+          return {
+            ok: false,
+            message: payload?.message || 'Unable to reset password with that link',
+            code: payload?.code,
+          };
+        }
+
+        const result = completeAuth(payload);
+        return {
+          ...result,
+          message: payload?.message || 'Password updated successfully',
+        };
+      } catch (error) {
+        return { ok: false, message: normalizeNetworkError(error) };
+      }
+    },
+    [completeAuth, normalizeNetworkError, parseResponse]
+  );
+
+  const verifyEmail = useCallback(
+    async (tokenParam) => {
+      try {
+        const url = new URL(`${API_URL}/api/auth/verify-email`);
+        url.searchParams.set('token', tokenParam);
+
+        const response = await fetch(url.toString(), {
+          method: 'GET',
+        });
+
+        const payload = await parseResponse(response);
+
+        if (!response.ok) {
+          return {
+            ok: false,
+            message: payload?.message || 'Unable to verify that email link',
+            code: payload?.code,
+          };
+        }
+
+        const result = completeAuth(payload);
+        return {
+          ...result,
+          message: payload?.message || 'Email verified successfully',
+        };
+      } catch (error) {
+        return { ok: false, message: normalizeNetworkError(error) };
+      }
+    },
+    [completeAuth, normalizeNetworkError, parseResponse]
+  );
+
+  const changePassword = useCallback(
+    async ({ currentPassword, newPassword }) => {
+      if (!authState?.token) {
+        return { ok: false, message: 'You must be signed in to change your password.' };
+      }
+
+      try {
+        const response = await fetch(`${API_URL}/api/auth/change-password`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authState.token}`,
+          },
+          body: JSON.stringify({ currentPassword, newPassword }),
+        });
+
+        if (!response.ok) {
+          return buildError(response);
+        }
+
+        const data = await response.json();
+        const result = completeAuth(data);
+        return {
+          ...result,
+          message: data?.message || 'Password updated successfully',
+        };
+      } catch (error) {
+        return { ok: false, message: normalizeNetworkError(error) };
+      }
+    },
+    [authState.token, buildError, completeAuth, normalizeNetworkError]
+  );
 
   const value = useMemo(
     () => ({
@@ -155,13 +329,33 @@ export function AuthProvider({ children }) {
       login,
       register,
       logout,
+      completeAuth,
+      resendVerification,
+      requestPasswordReset,
+      resetPassword,
+      verifyEmail,
+      changePassword,
     }),
-    [authState.token, authState.user, authBusy, initializing, login, register, logout]
+    [
+      authState.token,
+      authState.user,
+      authBusy,
+      initializing,
+      login,
+      register,
+      logout,
+      completeAuth,
+      resendVerification,
+      requestPasswordReset,
+      resetPassword,
+      verifyEmail,
+      changePassword,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
-
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   const context = useContext(AuthContext);
   if (!context) {

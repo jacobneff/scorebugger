@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MdContentCopy, MdDelete, MdEdit, MdSave } from "react-icons/md";
 import { FiCheckCircle, FiInfo, FiXCircle } from "react-icons/fi";
+import { useSearchParams } from "react-router-dom";
 import ControlPanelView from "../components/ControlPanelView.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import SettingsMenu from "../components/SettingsMenu.jsx";
@@ -26,7 +27,17 @@ const defaultTeams = [
 ];
 
 function Home() {
-  const { user, token, logout, login, register, authBusy } = useAuth();
+  const {
+    user,
+    token,
+    logout,
+    login,
+    register,
+    authBusy,
+    resendVerification,
+    requestPasswordReset,
+    changePassword,
+  } = useAuth();
 
   // Create form
   const [teams, setTeams] = useState(defaultTeams);
@@ -55,11 +66,51 @@ function Home() {
   const [toasts, setToasts] = useState([]);
 
   // Auth panel
-  const [authMode, setAuthMode] = useState("signin"); // 'signin' | 'signup'
+  const [authMode, setAuthMode] = useState("signin"); // 'signin' | 'signup' | 'verify' | 'forgot'
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authDisplayName, setAuthDisplayName] = useState("");
   const [authError, setAuthError] = useState("");
+  const [authInfo, setAuthInfo] = useState("");
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState("");
+  const [resendBusy, setResendBusy] = useState(false);
+  const [forgotBusy, setForgotBusy] = useState(false);
+
+  // Change password (authenticated)
+  const [currentPasswordInput, setCurrentPasswordInput] = useState("");
+  const [newPasswordInput, setNewPasswordInput] = useState("");
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState("");
+  const [changePasswordBusy, setChangePasswordBusy] = useState(false);
+  const [changePasswordError, setChangePasswordError] = useState("");
+  const [changePasswordInfo, setChangePasswordInfo] = useState("");
+
+  const authHeading = useMemo(() => {
+    switch (authMode) {
+      case "signup":
+        return "Create account";
+      case "forgot":
+        return "Reset password";
+      case "verify":
+        return "Check your inbox";
+      default:
+        return "Sign in";
+    }
+  }, [authMode]);
+
+  const authSubheading = useMemo(() => {
+    switch (authMode) {
+      case "signup":
+        return "Create an account to save and manage your scoreboards.";
+      case "forgot":
+        return "Enter your email and we'll send you a reset link.";
+      case "verify":
+        return pendingVerificationEmail
+          ? `We sent a verification link to ${pendingVerificationEmail}.`
+          : "We sent a verification link to your email address.";
+      default:
+        return "Access your scoreboards and control them from anywhere.";
+    }
+  }, [authMode, pendingVerificationEmail]);
 
   const MAX_TITLE = 30;
   const TEAM_NAME_LIMIT = 10;
@@ -69,6 +120,91 @@ function Home() {
     if (!id) return;
     setSelectedBoardId(String(id).toUpperCase());
     setActiveTab("control");
+  };
+
+  const handleForgotSubmit = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthInfo("");
+    setForgotBusy(true);
+    try {
+      const res = await requestPasswordReset(authEmail);
+      if (!res?.ok) {
+        setAuthError(res?.message || "Unable to send reset email");
+        showToast("error", res?.message || "Unable to send reset email");
+      } else {
+        setAuthInfo(
+          res?.message ||
+            "If that account exists, you will receive password reset instructions shortly."
+        );
+        showToast(
+          "info",
+          res?.message ||
+            "If that account exists, you will receive password reset instructions shortly."
+        );
+      }
+    } finally {
+      setForgotBusy(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    const targetEmail = pendingVerificationEmail || authEmail;
+    if (!targetEmail) return;
+    setAuthError("");
+    setAuthInfo("");
+    setResendBusy(true);
+    try {
+      const res = await resendVerification(targetEmail);
+      if (!res?.ok) {
+        setAuthError(res?.message || "Unable to resend verification email");
+        showToast("error", res?.message || "Unable to resend verification email");
+      } else {
+        setAuthInfo(res?.message || "Verification email sent. Check your inbox.");
+        setPendingVerificationEmail(targetEmail);
+        showToast("info", res?.message || "Verification email sent. Check your inbox.");
+      }
+    } finally {
+      setResendBusy(false);
+    }
+  };
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    setChangePasswordError("");
+    setChangePasswordInfo("");
+
+    if (!currentPasswordInput.trim() || !newPasswordInput.trim()) {
+      setChangePasswordError("All password fields are required");
+      return;
+    }
+
+    if (newPasswordInput !== confirmPasswordInput) {
+      setChangePasswordError("New passwords do not match");
+      return;
+    }
+
+    setChangePasswordBusy(true);
+    try {
+      const res = await changePassword({
+        currentPassword: currentPasswordInput,
+        newPassword: newPasswordInput,
+      });
+
+      if (!res?.ok) {
+        setChangePasswordError(res?.message || "Unable to update password");
+        showToast("error", res?.message || "Unable to update password");
+        return;
+      }
+
+      setChangePasswordInfo(res?.message || "Password updated successfully");
+      setCurrentPasswordInput("");
+      setNewPasswordInput("");
+      setConfirmPasswordInput("");
+      showToast("success", res?.message || "Password updated successfully");
+    } finally {
+      setChangePasswordBusy(false);
+    }
   };
 
   const handleInputChange = (index, field, value) =>
@@ -97,6 +233,42 @@ function Home() {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 2500);
   };
+
+  const switchAuthMode = useCallback((mode) => {
+    setAuthMode(mode);
+    setAuthError("");
+    setAuthInfo("");
+    if (mode !== "verify") {
+      setPendingVerificationEmail("");
+    }
+  }, []);
+
+  const [searchParams] = useSearchParams();
+  const initializedFromQuery = useRef(false);
+
+  useEffect(() => {
+    if (initializedFromQuery.current) return;
+
+    const modeParam = searchParams.get("mode");
+    const emailParam = searchParams.get("email");
+
+    if (modeParam) {
+      const normalizedMode = modeParam.toLowerCase();
+      if (["signin", "signup", "forgot", "verify"].includes(normalizedMode)) {
+        switchAuthMode(normalizedMode);
+        if (normalizedMode === "verify") {
+          if (emailParam) {
+            setPendingVerificationEmail(emailParam);
+            setAuthInfo(`We sent a verification link to ${emailParam}.`);
+          } else {
+            setAuthInfo("Check your inbox and click the verification link to continue.");
+          }
+        }
+      }
+    }
+
+    initializedFromQuery.current = true;
+  }, [searchParams, switchAuthMode]);
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -227,27 +399,59 @@ function Home() {
   // --- Auth submit handler (uses AuthContext) ---
   const handleAuthSubmit = async (e) => {
     e.preventDefault();
+    if (authMode !== "signin" && authMode !== "signup") {
+      return;
+    }
+
     setAuthError("");
+    setAuthInfo("");
+
     if (authMode === "signin") {
       const res = await login({ email: authEmail, password: authPassword });
       if (!res?.ok) {
-        setAuthError(res?.message || "Unable to sign in");
-        showToast("error", res?.message || "Unable to sign in");
-      } else {
-        showToast("success", "Signed in");
+        if (res?.code === "EMAIL_NOT_VERIFIED") {
+          setPendingVerificationEmail(authEmail);
+          setAuthInfo(res?.message || "Please verify your email before signing in.");
+          setAuthMode("verify");
+          showToast("info", res?.message || "Check your email to verify your account.");
+        } else {
+          setAuthError(res?.message || "Unable to sign in");
+          showToast("error", res?.message || "Unable to sign in");
+        }
+        return;
       }
+
+      setAuthEmail("");
+      setAuthPassword("");
+      showToast("success", "Signed in");
     } else {
       const res = await register({
         email: authEmail,
         password: authPassword,
         displayName: authDisplayName,
       });
+
       if (!res?.ok) {
         setAuthError(res?.message || "Unable to create account");
         showToast("error", res?.message || "Unable to create account");
-      } else {
-        showToast("success", "Account created");
+        return;
       }
+
+      if (res?.requiresEmailVerification) {
+        const message =
+          res?.message || "Account created. Check your email to verify your account.";
+        setPendingVerificationEmail(res?.email || authEmail);
+        setAuthInfo(message);
+        setAuthMode("verify");
+        setAuthPassword("");
+        showToast("info", message);
+        return;
+      }
+
+      setAuthEmail("");
+      setAuthPassword("");
+      setAuthDisplayName("");
+      showToast("success", "Account created");
     }
   };
 
@@ -492,88 +696,271 @@ function Home() {
                         );
                       })}
                     </div>
+                    <div style={{ marginTop: "2rem" }}>
+                      <h3 className="secondary-title" style={{ marginBottom: "0.75rem" }}>
+                        Change password
+                      </h3>
+                      <form className="account-form auth-form" onSubmit={handleChangePassword}>
+                        <label className="input-label" htmlFor="currentPassword">
+                          Current password
+                        </label>
+                        <input
+                          id="currentPassword"
+                          type="password"
+                          autoComplete="current-password"
+                          required
+                          value={currentPasswordInput}
+                          onChange={(e) => setCurrentPasswordInput(e.target.value)}
+                        />
+
+                        <label className="input-label" htmlFor="newPassword">
+                          New password
+                        </label>
+                        <input
+                          id="newPassword"
+                          type="password"
+                          autoComplete="new-password"
+                          required
+                          value={newPasswordInput}
+                          onChange={(e) => setNewPasswordInput(e.target.value)}
+                        />
+
+                        <label className="input-label" htmlFor="confirmPassword">
+                          Confirm new password
+                        </label>
+                        <input
+                          id="confirmPassword"
+                          type="password"
+                          autoComplete="new-password"
+                          required
+                          value={confirmPasswordInput}
+                          onChange={(e) => setConfirmPasswordInput(e.target.value)}
+                        />
+
+                        {changePasswordError && (
+                          <p className="error" style={{ marginTop: 4 }}>
+                            {changePasswordError}
+                          </p>
+                        )}
+                        {changePasswordInfo && (
+                          <p className="subtle" style={{ marginTop: 4, color: "#16a34a" }}>
+                            {changePasswordInfo}
+                          </p>
+                        )}
+
+                        <button
+                          className="primary-button"
+                          type="submit"
+                          disabled={changePasswordBusy}
+                          style={{ width: "100%", marginTop: "0.25rem" }}
+                        >
+                          {changePasswordBusy ? "Updating..." : "Update password"}
+                        </button>
+                      </form>
+                    </div>
                   </>
                 ) : (
                   <div className="auth-card">
                     <div className="auth-header">
                       <h2 className="secondary-title" style={{ marginBottom: 4 }}>
-                        {authMode === "signin" ? "Sign in" : "Create account"}
+                        {authHeading}
                       </h2>
                       <p className="subtle" style={{ margin: 0 }}>
-                        {authMode === "signin"
-                          ? "Access your scoreboards and control them from anywhere."
-                          : "Create an account to save and manage your scoreboards."}
+                        {authSubheading}
                       </p>
                     </div>
 
-                    <div className="auth-switch" role="tablist" aria-label="Authentication mode">
-                      <button
-                        type="button"
-                        role="tab"
-                        className={`auth-switch-button ${authMode === "signin" ? "active" : ""}`}
-                        aria-selected={authMode === "signin"}
-                        onClick={() => setAuthMode("signin")}
-                      >
-                        Sign in
-                      </button>
-                      <button
-                        type="button"
-                        role="tab"
-                        className={`auth-switch-button ${authMode === "signup" ? "active" : ""}`}
-                        aria-selected={authMode === "signup"}
-                        onClick={() => setAuthMode("signup")}
-                      >
-                        Create account
-                      </button>
-                    </div>
+                    {["signin", "signup"].includes(authMode) && (
+                      <>
+                        <div className="auth-switch" role="tablist" aria-label="Authentication mode">
+                          <button
+                            type="button"
+                            role="tab"
+                            className={`auth-switch-button ${authMode === "signin" ? "active" : ""}`}
+                            aria-selected={authMode === "signin"}
+                            onClick={() => switchAuthMode("signin")}
+                          >
+                            Sign in
+                          </button>
+                          <button
+                            type="button"
+                            role="tab"
+                            className={`auth-switch-button ${authMode === "signup" ? "active" : ""}`}
+                            aria-selected={authMode === "signup"}
+                            onClick={() => switchAuthMode("signup")}
+                          >
+                            Create account
+                          </button>
+                        </div>
 
-                    <form className="account-form auth-form" onSubmit={handleAuthSubmit}>
-                      {authMode === "signup" && (
-                        <>
-                          <label className="input-label" htmlFor="displayName">Display Name</label>
+                        <form className="account-form auth-form" onSubmit={handleAuthSubmit}>
+                          {authMode === "signup" && (
+                            <>
+                              <label className="input-label" htmlFor="displayName">
+                                Display Name
+                              </label>
+                              <input
+                                id="displayName"
+                                type="text"
+                                placeholder="Your name"
+                                value={authDisplayName}
+                                onChange={(e) => setAuthDisplayName(e.target.value)}
+                              />
+                            </>
+                          )}
+
+                          <label className="input-label" htmlFor="email">
+                            Email
+                          </label>
                           <input
-                            id="displayName"
-                            type="text"
-                            placeholder="Your name"
-                            value={authDisplayName}
-                            onChange={(e) => setAuthDisplayName(e.target.value)}
+                            id="email"
+                            type="email"
+                            placeholder="you@example.com"
+                            required
+                            value={authEmail}
+                            onChange={(e) => setAuthEmail(e.target.value)}
                           />
-                        </>
-                      )}
 
-                      <label className="input-label" htmlFor="email">Email</label>
-                      <input
-                        id="email"
-                        type="email"
-                        placeholder="you@example.com"
-                        required
-                        value={authEmail}
-                        onChange={(e) => setAuthEmail(e.target.value)}
-                      />
+                          <label className="input-label" htmlFor="password">
+                            Password
+                          </label>
+                          <input
+                            id="password"
+                            type="password"
+                            placeholder="••••••••"
+                            required
+                            value={authPassword}
+                            onChange={(e) => setAuthPassword(e.target.value)}
+                          />
 
-                      <label className="input-label" htmlFor="password">Password</label>
-                      <input
-                        id="password"
-                        type="password"
-                        placeholder="••••••••"
-                        required
-                        value={authPassword}
-                        onChange={(e) => setAuthPassword(e.target.value)}
-                      />
+                          {authError && (
+                            <p className="error" style={{ marginTop: 4 }}>
+                              {authError}
+                            </p>
+                          )}
+                          {authInfo && (
+                            <p className="subtle" style={{ marginTop: 4, color: "#16a34a" }}>
+                              {authInfo}
+                            </p>
+                          )}
 
-                      {authError && <p className="error" style={{ marginTop: 4 }}>{authError}</p>}
+                          <button
+                            className="primary-button"
+                            type="submit"
+                            disabled={authBusy}
+                            style={{ width: "100%", marginTop: "0.25rem" }}
+                          >
+                            {authBusy
+                              ? authMode === "signin"
+                                ? "Signing in..."
+                                : "Creating..."
+                              : authMode === "signin"
+                                ? "Sign in"
+                                : "Create account"}
+                          </button>
+                        </form>
 
-                      <button
-                        className="primary-button"
-                        type="submit"
-                        disabled={authBusy}
-                        style={{ width: "100%", marginTop: "0.25rem" }}
-                      >
-                        {authBusy
-                          ? authMode === "signin" ? "Signing in..." : "Creating..."
-                          : authMode === "signin" ? "Sign in" : "Create account"}
-                      </button>
-                    </form>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          style={{ marginTop: "0.75rem" }}
+                          onClick={() => switchAuthMode("forgot")}
+                        >
+                          Forgot your password?
+                        </button>
+                      </>
+                    )}
+
+                    {authMode === "forgot" && (
+                      <form className="account-form auth-form" onSubmit={handleForgotSubmit}>
+                        <label className="input-label" htmlFor="forgot-email">
+                          Email
+                        </label>
+                        <input
+                          id="forgot-email"
+                          type="email"
+                          placeholder="you@example.com"
+                          required
+                          value={authEmail}
+                          onChange={(e) => setAuthEmail(e.target.value)}
+                        />
+
+                        {authError && (
+                          <p className="error" style={{ marginTop: 4 }}>
+                            {authError}
+                          </p>
+                        )}
+                        {authInfo && (
+                          <p className="subtle" style={{ marginTop: 4, color: "#2563eb" }}>
+                            {authInfo}
+                          </p>
+                        )}
+
+                        <button
+                          className="primary-button"
+                          type="submit"
+                          disabled={forgotBusy}
+                          style={{ width: "100%", marginTop: "0.25rem" }}
+                        >
+                          {forgotBusy ? "Sending..." : "Send reset link"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          style={{ marginTop: "0.75rem" }}
+                          onClick={() => switchAuthMode("signin")}
+                        >
+                          Back to sign in
+                        </button>
+                      </form>
+                    )}
+
+                    {authMode === "verify" && (
+                      <div className="account-form auth-form">
+                        {!pendingVerificationEmail && (
+                          <>
+                            <label className="input-label" htmlFor="verify-email">
+                              Email
+                            </label>
+                            <input
+                              id="verify-email"
+                              type="email"
+                              placeholder="you@example.com"
+                              value={authEmail}
+                              onChange={(e) => setAuthEmail(e.target.value)}
+                              style={{ marginBottom: "0.75rem" }}
+                            />
+                          </>
+                        )}
+                        {authInfo && (
+                          <p className="subtle" style={{ marginBottom: "0.75rem", color: "#2563eb" }}>
+                            {authInfo}
+                          </p>
+                        )}
+                        {authError && (
+                          <p className="error" style={{ marginBottom: "0.75rem" }}>
+                            {authError}
+                          </p>
+                        )}
+                        <button
+                          type="button"
+                          className="primary-button"
+                          onClick={handleResendVerification}
+                          disabled={resendBusy || !(pendingVerificationEmail || authEmail)}
+                          style={{ width: "100%" }}
+                        >
+                          {resendBusy ? "Sending..." : "Resend verification email"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          style={{ marginTop: "0.75rem" }}
+                          onClick={() => switchAuthMode("signin")}
+                        >
+                          Back to sign in
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </aside>

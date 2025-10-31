@@ -24,10 +24,18 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
+    if (!user.emailVerified) {
+      return res.status(403).json({
+        message: 'Email verification required',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
+
     req.user = {
       id: user._id.toString(),
       email: user.email,
       displayName: user.displayName,
+      emailVerified: Boolean(user.emailVerified),
     };
 
     return next();
@@ -39,4 +47,3 @@ async function requireAuth(req, res, next) {
 module.exports = {
   requireAuth,
 };
-

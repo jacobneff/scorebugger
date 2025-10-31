@@ -35,10 +35,17 @@ async function getTransport() {
     SMTP_SECURE = 'false',
   } = process.env;
 
+  const secure = resolveBoolean(SMTP_SECURE);
+
   transportPromise = nodemailer.createTransport({
     host: SMTP_HOST,
     port: Number(SMTP_PORT) || 587,
-    secure: resolveBoolean(SMTP_SECURE),
+    secure,
+    requireTLS: !secure,
+    family: 4,
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 15_000,
     auth:
       SMTP_USER && SMTP_PASSWORD
         ? {
@@ -66,8 +73,22 @@ async function sendMail(options) {
     return { delivered: false };
   }
 
-  await transport.sendMail({ ...options, from });
-  return { delivered: true };
+  try {
+    await transport.sendMail({ ...options, from });
+    return { delivered: true };
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('SMTP send failed', {
+      host: process.env.SMTP_HOST,
+      port: process.env.SMTP_PORT,
+      secure: process.env.SMTP_SECURE,
+      user: process.env.SMTP_USER ? '[redacted]' : null,
+      code: error?.code,
+      command: error?.command,
+      message: error?.message,
+    });
+    throw error;
+  }
 }
 
 module.exports = {

@@ -76,17 +76,34 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid title provided' });
     }
 
+    const ownerCandidates = mongoose.Types.ObjectId.isValid(req.user.id)
+      ? [new mongoose.Types.ObjectId(req.user.id), req.user.id]
+      : [req.user.id];
+
     const board = await Scoreboard.findOneAndUpdate(
-      { _id: id, owner: req.user.id },
+      { _id: id, owner: { $in: ownerCandidates } },
       { title: title.trim() },
-      { new: true, runValidators: true } // "new" returns the updated document
+      { new: true, runValidators: true }
     );
 
     if (!board) {
+      const legacyBoard = await Scoreboard.findOne({ _id: id, owner: null });
+
+      if (legacyBoard) {
+        legacyBoard.title = title.trim();
+        legacyBoard.owner = req.user.id;
+        await legacyBoard.save();
+        return res.json(legacyBoard.toObject());
+      }
+
+      // eslint-disable-next-line no-console
+      console.warn('Scoreboard rename failed', {
+        scoreboardId: id,
+        ownerId: req.user.id,
+      });
       return res.status(404).json({ message: 'Scoreboard not found or unauthorized' });
     }
 
-    // ✅ This is where you add this line
     res.json(board.toObject());
   } catch (error) {
     next(error);

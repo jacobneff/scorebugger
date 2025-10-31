@@ -410,8 +410,21 @@ function ControlPanelView({
   const removeSetAtIndex = (idx, sourceMode = mode) => {
     if (!sets[idx]) return;
     const nextSets = sets.filter((_, i) => i !== idx).map((s) => normalizeSet(s));
+    const lastSet = nextSets[nextSets.length - 1] ?? null;
+    const [carryHome, carryAway] = lastSet ? getSetScores(lastSet) : [0, 0];
 
-    updateScoreboard({ sets: nextSets });
+    updateScoreboard((current) => {
+      if (!current?.teams) {
+        return current;
+      }
+      return {
+        sets: nextSets,
+        teams: current.teams.map((team, teamIdx) => ({
+          ...team,
+          score: teamIdx === 0 ? carryHome : carryAway,
+        })),
+      };
+    });
 
     if (nextSets.length === 0) {
       setMode("current");
@@ -455,25 +468,32 @@ function ControlPanelView({
         return;
       }
 
-      const previousIndex = totalCompletedSets - 1;
-      const previousSet = sets[previousIndex];
-      const [prevHome, prevAway] = previousSet ? getSetScores(previousSet) : [0, 0];
+      const normalizedSets = sets.map((set) => normalizeSet(set));
+      const remainingSets = normalizedSets.slice(0, -1);
+      const lastCompletedSet = remainingSets[remainingSets.length - 1] ?? null;
+      const [carryHome, carryAway] = lastCompletedSet ? getSetScores(lastCompletedSet) : [0, 0];
 
       updateScoreboard((current) => {
         if (!current?.teams) {
           return current;
         }
         return {
+          sets: remainingSets,
           teams: current.teams.map((team, idx) => ({
             ...team,
-            score: idx === 0 ? prevHome : prevAway,
+            score: idx === 0 ? carryHome : carryAway,
           })),
         };
       });
 
       setCachedCurrentScores(null);
-      setMode("history");
-      setHistoryIndex(previousIndex);
+      if (remainingSets.length > 0) {
+        setMode("history");
+        setHistoryIndex(remainingSets.length - 1);
+      } else {
+        setMode("current");
+        setHistoryIndex(0);
+      }
       showToast("info", `Set ${activeSetNumber} deleted`);
     } else {
       removeSetAtIndex(displayedHistoryIndex, "history");

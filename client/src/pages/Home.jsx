@@ -355,8 +355,10 @@ function Home() {
         },
         body: JSON.stringify({ title: trimmed }),
       });
-      if (!res.ok) throw new Error("Rename failed");
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.message || "Rename failed");
+      }
       setBoards((prev) => prev.map((b) => (b._id === data._id ? { ...b, ...data } : b)));
     } catch (err) {
       showToast("error", err.message);

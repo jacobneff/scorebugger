@@ -95,6 +95,7 @@ async function bootstrap() {
     socket.on('scoreboard:update', async ({ scoreboardId, state }) => {
       const key = typeof scoreboardId === 'string' ? scoreboardId.trim() : '';
       const room = socket.data.room;
+      const MAX_SET_COUNT = 5;
 
       if (!key && !room) {
         socket.emit('scoreboard:error', { message: 'No scoreboard joined' });
@@ -141,6 +142,13 @@ async function bootstrap() {
         const sanitizedSets = Array.isArray(state.sets)
           ? state.sets.map(sanitizeSet).filter(Boolean)
           : undefined;
+
+        if (sanitizedSets && sanitizedSets.length > MAX_SET_COUNT) {
+          socket.emit('scoreboard:error', {
+            message: `Only ${MAX_SET_COUNT} sets are supported for a match`,
+          });
+          return;
+        }
 
         const update = {
           teams: state.teams.map((team, index) => ({

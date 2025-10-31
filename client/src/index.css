@@ -1304,6 +1304,11 @@ button:disabled {
   color: #475569;
 }
 
+.score-color-field .team-color-inputs {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.6rem;
+}
+
 
 .score-preview-card {
   margin-top: 1.25rem;
@@ -1737,7 +1742,13 @@ button:disabled {
   }
 
   .team-color-inputs {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+
+  .score-color-field .team-color-inputs {
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 0.5rem;
   }
 
   .set-nav {

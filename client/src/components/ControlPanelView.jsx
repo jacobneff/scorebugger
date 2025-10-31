@@ -711,7 +711,9 @@ function ControlPanelView({
 
   const hasActiveScores = scoreboard?.teams?.some((t) => (t.score ?? 0) > 0);
   const hasCompletedSets = totalCompletedSets > 0;
-  const disableDeleteSet = totalCompletedSets === 0;
+  // Only enable delete when viewing the last set
+  const isViewingLastSet = mode === "current" || (mode === "history" && displayedHistoryIndex === totalCompletedSets - 1);
+  const disableDeleteSet = totalCompletedSets === 0 || !isViewingLastSet;
   const canArchiveMoreSets = totalCompletedSets < MAX_COMPLETED_SETS;
 
   return (

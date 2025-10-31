@@ -441,7 +441,7 @@ function ControlPanelView({
     setMode(nextMode);
     setHistoryIndex(nextHistoryIndex);
     setCachedCurrentScores(null);
-    showToast("info", `Set ${idx + 1} deleted`);
+    showToast("info", "Set deleted");
   };
 
   const resetScores = () => {
@@ -669,19 +669,24 @@ function ControlPanelView({
     );
   };
 
-  const currentSetNumber = Math.min(MAX_TOTAL_SETS, Math.max(1, totalCompletedSets + 1));
-  const historySetCount = Math.max(1, Math.min(totalCompletedSets, MAX_TOTAL_SETS));
+  const hasInProgressSet = mode === "current" || cachedCurrentScores !== null;
+  const potentialTotalSets = totalCompletedSets + (hasInProgressSet ? 1 : 0);
+  const totalSetsOverall = Math.min(MAX_TOTAL_SETS, Math.max(1, potentialTotalSets));
+  const historySetCount = Math.min(totalCompletedSets, MAX_TOTAL_SETS);
+  const hasHistorySets = historySetCount > 0;
+  const activeSetNumber =
+    mode === "current"
+      ? totalSetsOverall
+      : hasHistorySets
+        ? Math.min(displayedHistoryIndex + 1, historySetCount)
+        : 1;
   const statusText =
     mode === "current"
-      ? `Editing Set ${currentSetNumber} (Current)`
-      : totalCompletedSets > 0
-        ? `Viewing Set ${Math.min(displayedHistoryIndex + 1, historySetCount)} of ${historySetCount}`
+      ? `Editing Set ${activeSetNumber} (Current)`
+      : hasHistorySets
+        ? `Viewing Set ${activeSetNumber} of ${historySetCount}`
         : "No completed sets";
-
-  const deleteTargetSetNumber =
-    mode === "current"
-      ? Math.max(totalCompletedSets, 1)
-      : Math.min(displayedHistoryIndex + 1, historySetCount);
+  const deleteTargetSetNumber = activeSetNumber;
 
   const hasActiveScores = scoreboard?.teams?.some((t) => (t.score ?? 0) > 0);
   const hasCompletedSets = totalCompletedSets > 0;

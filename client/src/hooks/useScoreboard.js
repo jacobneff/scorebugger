@@ -133,13 +133,19 @@ export function useScoreboard(scoreboardId) {
           sets: Array.isArray(nextPartial.sets) ? nextPartial.sets : current.sets,
         };
 
+        const payload = {
+          teams: merged.teams,
+          servingTeamIndex: merged.servingTeamIndex,
+          sets: merged.sets,
+        };
+
+        if (typeof merged.title === 'string') {
+          payload.title = merged.title;
+        }
+
         socketRef.current?.emit('scoreboard:update', {
           scoreboardId,
-          state: {
-            teams: merged.teams,
-            servingTeamIndex: merged.servingTeamIndex,
-            sets: merged.sets,
-          },
+          state: payload,
         });
 
         return merged;

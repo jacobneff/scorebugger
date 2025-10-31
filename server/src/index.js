@@ -150,6 +150,12 @@ async function bootstrap() {
           return;
         }
 
+        const MAX_TITLE_LENGTH = 30;
+        const sanitizedTitle =
+          typeof state.title === 'string'
+            ? state.title.trim().slice(0, MAX_TITLE_LENGTH)
+            : null;
+
         const update = {
           teams: state.teams.map((team, index) => ({
             name: team.name?.toString().trim() || `Team ${index + 1}`,
@@ -164,6 +170,10 @@ async function bootstrap() {
           })),
           servingTeamIndex: state.servingTeamIndex,
         };
+
+        if (sanitizedTitle) {
+          update.title = sanitizedTitle;
+        }
 
         if (sanitizedSets) {
           update.sets = sanitizedSets;

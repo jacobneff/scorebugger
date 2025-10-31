@@ -58,7 +58,7 @@ function VerifyEmail() {
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
           <Link className="primary-button" to="/">
-            Return to Scorebugger
+            Return to scorebugger
           </Link>
           {status === "error" && (
             <Link className="ghost-button" to={verifyLinkTarget}>

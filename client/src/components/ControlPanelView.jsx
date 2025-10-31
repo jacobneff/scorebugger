@@ -418,19 +418,22 @@ function ControlPanelView({
 
 
   const removeSetAtIndex = (idx, sourceMode = mode) => {
-    if (!sets[idx]) return;
+    if (!sets?.[idx]) return;
 
-    const normalizedSets = sets.map((set) => normalizeSet(set));
-    const nextSets = normalizedSets.filter((_, i) => i !== idx);
-    const lastSet = nextSets[nextSets.length - 1] ?? null;
-    const [carryHome, carryAway] = lastSet ? getSetScores(lastSet) : [0, 0];
+    const projectedSets = sets.filter((_, i) => i !== idx).map((set) => normalizeSet(set));
 
     updateScoreboard((current) => {
-      if (!current?.teams) {
+      if (!current?.teams || !current?.sets?.[idx]) {
         return current;
       }
+
+      const normalizedCurrentSets = current.sets.map((set) => normalizeSet(set));
+      const nextSetsInner = normalizedCurrentSets.filter((_, i) => i !== idx);
+      const lastSetInner = nextSetsInner[nextSetsInner.length - 1] ?? null;
+      const [carryHome, carryAway] = lastSetInner ? getSetScores(lastSetInner) : [0, 0];
+
       return {
-        sets: nextSets,
+        sets: nextSetsInner,
         teams: current.teams.map((team, teamIdx) => ({
           ...team,
           score: teamIdx === 0 ? carryHome : carryAway,
@@ -438,9 +441,9 @@ function ControlPanelView({
       };
     });
 
-    const hasSetsRemaining = nextSets.length > 0;
+    const hasSetsRemaining = projectedSets.length > 0;
     const nextMode = hasSetsRemaining ? "history" : "current";
-    const maxHistoryIndex = Math.max(0, nextSets.length - 1);
+    const maxHistoryIndex = Math.max(0, projectedSets.length - 1);
     const nextHistoryIndex = hasSetsRemaining
       ? sourceMode === "current"
         ? maxHistoryIndex
@@ -518,6 +521,7 @@ function ControlPanelView({
             teams: scoreboard.teams.map((t, idx) => (idx === 0 ? { ...t, score: h } : { ...t, score: a })),
           });
         }
+        setCachedCurrentScores(null);
       }
     }
   };
@@ -689,13 +693,10 @@ function ControlPanelView({
       : hasHistorySets
         ? Math.min(displayedHistoryIndex + 1, historySetCount)
         : 1;
-  const statusText =
-    mode === "current"
-      ? `Editing Set ${activeSetNumber} (Current)`
-      : hasHistorySets
-        ? `Viewing Set ${activeSetNumber} of ${historySetCount}`
-        : "No completed sets";
-  const deleteTargetSetNumber = activeSetNumber;
+  const statusText = `Editing Set ${activeSetNumber} of ${totalSetsOverall}${
+    mode === "current" ? " (Current)" : ""
+  }`;
+  const deleteTargetSetNumber = Math.min(activeSetNumber, Math.max(totalCompletedSets, 1));
 
   const toggleColorPanel = (teamIndex) => {
     setCollapsedColorPanels((prev) => ({
@@ -796,8 +797,10 @@ function ControlPanelView({
 
         {/* Control link row */}
         <div className="control-link-card">
-          <div className="control-link-meta">
-            <div className="control-link-label">Control Link</div>
+          <div className="control-link-header">
+            <span className="control-link-label">Control Link</span>
+          </div>
+          <div className="control-link-row">
             <a
               className="control-link-url"
               href={controlUrl}
@@ -807,36 +810,38 @@ function ControlPanelView({
             >
               {controlUrl}
             </a>
+            <button
+              className={`control-link-copy ${controlCopied ? "is-copied" : ""}`}
+              type="button"
+              title={controlCopied ? "Copied!" : "Copy control link"}
+              onClick={async () => {
+                if (!controlUrl) return;
+                try {
+                  await navigator.clipboard.writeText(controlUrl);
+                  setControlCopied(true);
+                  setTimeout(() => setControlCopied(false), 1500);
+                } catch {
+                  /* ignore */
+                }
+              }}
+              aria-live="polite"
+            >
+              <span className="copy-icon copy-icon--copy">
+                <MdContentCopy />
+              </span>
+              <span className="copy-icon copy-icon--check" aria-hidden={!controlCopied}>
+                ✓
+              </span>
+            </button>
           </div>
-          <button
-            className={`control-link-copy ${controlCopied ? "is-copied" : ""}`}
-            type="button"
-            title={controlCopied ? "Copied!" : "Copy control link"}
-            onClick={async () => {
-              if (!controlUrl) return;
-              try {
-                await navigator.clipboard.writeText(controlUrl);
-                setControlCopied(true);
-                setTimeout(() => setControlCopied(false), 1500);
-              } catch {
-                /* ignore */
-              }
-            }}
-            aria-live="polite"
-          >
-            <span className="copy-icon copy-icon--copy">
-              <MdContentCopy />
-            </span>
-            <span className="copy-icon copy-icon--check" aria-hidden={!controlCopied}>
-              ✓
-            </span>
-          </button>
         </div>
 
         {/* Overlay link row (clickable + copy) */}
         <div className="control-link-card">
-          <div className="control-link-meta">
-            <div className="control-link-label">Overlay Link</div>
+          <div className="control-link-header">
+            <span className="control-link-label">Overlay Link</span>
+          </div>
+          <div className="control-link-row">
             <a
               className="control-link-url"
               href={overlayUrl}
@@ -846,30 +851,30 @@ function ControlPanelView({
             >
               {overlayUrl}
             </a>
+            <button
+              className={`control-link-copy ${overlayCopied ? "is-copied" : ""}`}
+              type="button"
+              title={overlayCopied ? "Copied!" : "Copy overlay link"}
+              onClick={async () => {
+                if (!overlayUrl) return;
+                try {
+                  await navigator.clipboard.writeText(overlayUrl);
+                  setOverlayCopied(true);
+                  setTimeout(() => setOverlayCopied(false), 1500);
+                } catch {
+                  /* ignore */
+                }
+              }}
+              aria-live="polite"
+            >
+              <span className="copy-icon copy-icon--copy">
+                <MdContentCopy />
+              </span>
+              <span className="copy-icon copy-icon--check" aria-hidden={!overlayCopied}>
+                ✓
+              </span>
+            </button>
           </div>
-          <button
-            className={`control-link-copy ${overlayCopied ? "is-copied" : ""}`}
-            type="button"
-            title={overlayCopied ? "Copied!" : "Copy overlay link"}
-            onClick={async () => {
-              if (!overlayUrl) return;
-              try {
-                await navigator.clipboard.writeText(overlayUrl);
-                setOverlayCopied(true);
-                setTimeout(() => setOverlayCopied(false), 1500);
-              } catch {
-                /* ignore */
-              }
-            }}
-            aria-live="polite"
-          >
-            <span className="copy-icon copy-icon--copy">
-              <MdContentCopy />
-            </span>
-            <span className="copy-icon copy-icon--check" aria-hidden={!overlayCopied}>
-              ✓
-            </span>
-          </button>
         </div>
 
         <div className="score-preview-card">
@@ -896,36 +901,35 @@ function ControlPanelView({
 
         {/* Prev / Next set controls */}
         <div className="set-nav">
-          <div className="set-nav-status">{statusText}</div>
-          <div className="set-nav-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={goToPreviousSet}
-              disabled={mode === "current" && sets.length === 0}
-              title={mode === "current" ? "View previous sets" : "Go to earlier set"}
-            >
-              <MdChevronLeft style={{ marginRight: 6 }} />
-              Previous Set
-            </button>
+          <button
+            className="secondary-button set-nav-button prev"
+            type="button"
+            onClick={goToPreviousSet}
+            disabled={mode === "current" && sets.length === 0}
+            title={mode === "current" ? "View previous sets" : "Go to earlier set"}
+          >
+            <MdChevronLeft style={{ marginRight: 6 }} />
+            Previous Set
+          </button>
 
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={goToNextSet}
-              disabled={mode === "current" && !canArchiveMoreSets}
-              title={
-                mode === "current"
-                  ? canArchiveMoreSets
-                    ? "Save current as a completed set"
-                    : `Maximum of ${MAX_TOTAL_SETS} sets reached`
-                  : "Go forward; past the last set returns to Current"
-              }
-            >
-              Next Set
-              <MdChevronRight style={{ marginLeft: 6 }} />
-            </button>
-          </div>
+          <div className="set-nav-status">{statusText}</div>
+
+          <button
+            className="secondary-button set-nav-button next"
+            type="button"
+            onClick={goToNextSet}
+            disabled={mode === "current" && !canArchiveMoreSets}
+            title={
+              mode === "current"
+                ? canArchiveMoreSets
+                  ? "Save current as a completed set"
+                  : `Maximum of ${MAX_TOTAL_SETS} sets reached`
+                : "Go forward; past the last set returns to Current"
+            }
+          >
+            Next Set
+            <MdChevronRight style={{ marginLeft: 6 }} />
+          </button>
         </div>
 
         {/* Toolbar */}

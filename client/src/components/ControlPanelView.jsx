@@ -223,6 +223,9 @@ function ControlPanelView({
   // Manual load
   const [manualId, setManualId] = useState(scoreboardId ?? "");
   useEffect(() => setManualId((scoreboardId ?? "").toUpperCase()), [scoreboardId]);
+  useEffect(() => {
+    setHasDraftOverride(false);
+  }, [scoreboardId]);
   const handleManualSubmit = (e) => {
     e?.preventDefault?.();
     const trimmed = manualId.trim();
@@ -234,6 +237,7 @@ function ControlPanelView({
   const [mode, setMode] = useState("current"); // 'current' | 'history'
   const [historyIndex, setHistoryIndex] = useState(0);
   const [cachedCurrentScores, setCachedCurrentScores] = useState(null);
+  const [hasDraftOverride, setHasDraftOverride] = useState(false);
   const [collapsedColorPanels, setCollapsedColorPanels] = useState({ 0: false, 1: false });
   const [isScoreColorsCollapsed, setIsScoreColorsCollapsed] = useState(false);
 
@@ -482,11 +486,12 @@ function ControlPanelView({
       sets: nextSets,
       teams: scoreboard.teams.map((t) => ({ ...t, score: 0 })),
     });
+    setHasDraftOverride(true);
     return true;
   };
 
 
-  const removeSetAtIndex = (idx, sourceMode = mode) => {
+  const removeSetAtIndex = (idx) => {
     if (!sets?.[idx]) return;
 
     const lastCompletedIndex = sets.length - 1;
@@ -515,16 +520,12 @@ function ControlPanelView({
       };
     });
 
-    const hasSetsRemaining = projectedSets.length > 0;
-    const nextMode = hasSetsRemaining ? "history" : "current";
-    const maxHistoryIndex = Math.max(0, projectedSets.length - 1);
-    const nextHistoryIndex = hasSetsRemaining
-      ? sourceMode === "current"
-        ? maxHistoryIndex
-        : Math.min(idx, maxHistoryIndex)
-      : 0;
+    setHasDraftOverride(false);
 
-    setMode(nextMode);
+    const hasSetsRemaining = projectedSets.length > 0;
+    const nextHistoryIndex = hasSetsRemaining ? Math.max(0, projectedSets.length - 1) : 0;
+
+    setMode("current");
     setHistoryIndex(nextHistoryIndex);
     setCachedCurrentScores(null);
     showToast("info", "Set deleted");
@@ -543,12 +544,49 @@ function ControlPanelView({
     setMode("current");
     setHistoryIndex(0);
     setCachedCurrentScores([0, 0]);
+    setHasDraftOverride(false);
     showToast("info", "All sets deleted");
   };
 
   const deleteActiveSet = () => {
-    if (totalCompletedSets === 0 || !isViewingLastSet) return;
-    removeSetAtIndex(totalCompletedSets - 1, mode);
+    if (!deleteStateEligible) return;
+    if (mode === "current" && hasDraftSet) {
+      if (totalCompletedSets === 0) return;
+      const pendingDraftSource = sets[totalCompletedSets - 1] ?? null;
+      if (pendingDraftSource) {
+        const [carryHome, carryAway] = getSetScores(pendingDraftSource);
+        updateScoreboard((current) => {
+          if (!current?.teams) return current;
+          return {
+            teams: current.teams.map((team, teamIdx) => ({
+              ...team,
+              score: teamIdx === 0 ? carryHome : carryAway,
+            })),
+          };
+        });
+      } else {
+        updateScoreboard((current) => {
+          if (!current?.teams) return current;
+          return {
+            teams: current.teams.map((team) => ({
+              ...team,
+              score: 0,
+            })),
+          };
+        });
+      }
+      setCachedCurrentScores(null);
+      setHasDraftOverride(false);
+      setHistoryIndex(Math.max(0, totalCompletedSets - 1));
+      showToast("info", `Set ${deleteTargetSetNumber} deleted`);
+      return;
+    }
+    const targetIndex =
+      mode === "history"
+        ? Math.min(displayedHistoryIndex, Math.max(0, totalCompletedSets - 1))
+        : totalCompletedSets - 1;
+    if (targetIndex < 0) return;
+    removeSetAtIndex(targetIndex);
   };
 
   // ---------- Navigation ----------
@@ -571,6 +609,7 @@ function ControlPanelView({
       const saved = archiveCurrentSet();
       if (saved) {
         showToast("success", "Set saved");
+        setHasDraftOverride(true);
       }
       return;
     }
@@ -588,6 +627,7 @@ function ControlPanelView({
           });
         }
         setCachedCurrentScores(null);
+        setHasDraftOverride(true);
       }
     }
   };
@@ -665,6 +705,25 @@ function ControlPanelView({
         </div>
       </div>
     );
+
+  const currentScores = [
+    fallbackTeams[0]?.score ?? 0,
+    fallbackTeams[1]?.score ?? 0,
+  ];
+  const lastCompletedScores =
+    totalCompletedSets > 0 ? getSetScores(sets[Math.min(totalCompletedSets - 1, sets.length - 1)] ?? {}) : null;
+  const draftActiveFromCurrent =
+    mode === "current" &&
+    totalCompletedSets > 0 &&
+    lastCompletedScores &&
+    (currentScores[0] !== lastCompletedScores[0] || currentScores[1] !== lastCompletedScores[1]);
+  const hasDraftSet = cachedCurrentScores !== null || hasDraftOverride || Boolean(draftActiveFromCurrent);
+
+  useEffect(() => {
+    if (!draftActiveFromCurrent && cachedCurrentScores === null && hasDraftOverride) {
+      setHasDraftOverride(false);
+    }
+  }, [draftActiveFromCurrent, cachedCurrentScores, hasDraftOverride]);
 
   // Loading state
   if (loading) {
@@ -780,21 +839,27 @@ function ControlPanelView({
     );
   };
 
-  const hasInProgressSet = mode === "current" || cachedCurrentScores !== null;
-  const potentialTotalSets = totalCompletedSets + (hasInProgressSet ? 1 : 0);
-  const totalSetsOverall = Math.min(MAX_TOTAL_SETS, Math.max(1, potentialTotalSets));
+  const totalSetCount = Math.min(
+    MAX_TOTAL_SETS,
+    Math.max(1, totalCompletedSets + (hasDraftSet ? 1 : 0)),
+  );
   const historySetCount = Math.min(totalCompletedSets, MAX_TOTAL_SETS);
-  const hasHistorySets = historySetCount > 0;
-  const activeSetNumber =
+  const currentSetNumber =
     mode === "current"
-      ? totalSetsOverall
-      : hasHistorySets
+      ? totalSetCount
+      : historySetCount > 0
         ? Math.min(displayedHistoryIndex + 1, historySetCount)
         : 1;
-  const statusText = `Editing Set ${activeSetNumber} of ${totalSetsOverall}${
+  const deleteStateEligible = shouldEnableDeleteSet({
+    mode,
+    totalCompletedSets,
+    displayedHistoryIndex,
+    hasDraftSet,
+  });
+  const statusText = `Editing Set ${currentSetNumber} of ${totalSetCount}${
     mode === "current" ? " (Current)" : ""
   }`;
-  const deleteTargetSetNumber = Math.min(activeSetNumber, Math.max(totalCompletedSets, 1));
+  const deleteTargetSetNumber = currentSetNumber;
 
   const toggleColorPanel = (teamIndex) => {
     setCollapsedColorPanels((prev) => ({
@@ -809,9 +874,7 @@ function ControlPanelView({
 
   const hasActiveScores = scoreboard?.teams?.some((t) => (t.score ?? 0) > 0);
   const hasCompletedSets = totalCompletedSets > 0;
-  // Only enable delete when viewing the last completed set
-  const isViewingLastSet = shouldEnableDeleteSet(mode, totalCompletedSets, displayedHistoryIndex);
-  const disableDeleteSet = totalCompletedSets === 0 || !isViewingLastSet;
+  const disableDeleteSet = !deleteStateEligible;
   const canArchiveMoreSets = totalCompletedSets < MAX_COMPLETED_SETS;
 
   return (
@@ -1018,9 +1081,13 @@ function ControlPanelView({
             onClick={goToPreviousSet}
             disabled={mode === "current" && sets.length === 0}
             title={mode === "current" ? "View previous sets" : "Go to earlier set"}
+            aria-label={mode === "current" ? "Previous set" : "Go to earlier set"}
           >
-            <MdChevronLeft style={{ marginRight: 6 }} />
-            Previous Set
+            <MdChevronLeft className="set-nav-icon" />
+            <span className="set-nav-text set-nav-text--long">Previous Set</span>
+            <span className="set-nav-text set-nav-text--short" aria-hidden="true">
+              Prev
+            </span>
           </button>
 
           <div className="set-nav-status">{statusText}</div>
@@ -1037,9 +1104,19 @@ function ControlPanelView({
                   : `Maximum of ${MAX_TOTAL_SETS} sets reached`
                 : "Go forward; past the last set returns to Current"
             }
+            aria-label={
+              mode === "current"
+                ? canArchiveMoreSets
+                  ? "Save current as a completed set"
+                  : `Maximum of ${MAX_TOTAL_SETS} sets reached`
+                : "Next set"
+            }
           >
-            Next Set
-            <MdChevronRight style={{ marginLeft: 6 }} />
+            <span className="set-nav-text set-nav-text--long">Next Set</span>
+            <span className="set-nav-text set-nav-text--short" aria-hidden="true">
+              Next
+            </span>
+            <MdChevronRight className="set-nav-icon" />
           </button>
         </div>
 

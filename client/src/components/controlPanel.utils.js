@@ -1,7 +1,14 @@
-const shouldEnableDeleteSet = (mode, totalCompletedSets, displayedHistoryIndex) =>
-  mode === "history" &&
-  totalCompletedSets > 0 &&
-  displayedHistoryIndex === totalCompletedSets - 1;
+const shouldEnableDeleteSet = ({ mode, totalCompletedSets, displayedHistoryIndex, hasDraftSet }) => {
+  if (totalCompletedSets <= 0) return false;
+  const totalSets = totalCompletedSets + (hasDraftSet ? 1 : 0);
+  if (totalSets <= 0) return false;
+  const lastIndex = totalSets - 1;
+  const currentIndex =
+    mode === "current"
+      ? lastIndex
+      : Math.min(Math.max(displayedHistoryIndex, 0), Math.min(totalCompletedSets - 1, lastIndex));
+  return currentIndex === lastIndex;
+};
 
 const KEY_DISPLAY_OVERRIDES = {
   arrowup: "↑",

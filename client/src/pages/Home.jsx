@@ -54,6 +54,11 @@ function Home() {
   const [boardsError, setBoardsError] = useState(null);
   const [copiedBoardId, setCopiedBoardId] = useState(null);
 
+  const claimInFlightRef = useRef(false);
+  const claimAttemptsRef = useRef(0);
+  const claimRetryTimerRef = useRef(null);
+  const [claimRetryTick, setClaimRetryTick] = useState(0);
+
   // Tabs
   const [activeTab, setActiveTab] = useState("setup");
   const [selectedBoardId, setSelectedBoardId] = useState("");
@@ -226,13 +231,13 @@ function Home() {
       })
     );
 
-  const showToast = (type, message) => {
+  const showToast = useCallback((type, message) => {
     const id = Date.now();
     setToasts((prev) => [...prev, { id, type, message }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 2500);
-  };
+  }, []);
 
   const switchAuthMode = useCallback((mode) => {
     setAuthMode(mode);
@@ -272,39 +277,58 @@ function Home() {
 
   const handleCreate = async (e) => {
     e.preventDefault();
-    if (!token) return setError("Please sign in to create a scoreboard.");
     setLoading(true);
     setError(null);
+
+    const isAuthenticated = Boolean(token);
+    const endpoint = isAuthenticated
+      ? `${API_URL}/api/scoreboards`
+      : `${API_URL}/api/scoreboards/guest`;
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (isAuthenticated) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
     try {
-      const res = await fetch(`${API_URL}/api/scoreboards`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers,
         body: JSON.stringify({
           teams,
           title: newTitle?.trim() || undefined,
         }),
       });
-      if (!res.ok) throw new Error("Error creating scoreboard");
-      const data = await res.json();
-      setBoards((b) => [data, ...b]);
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data) {
+        throw new Error(data?.message || 'Error creating scoreboard');
+      }
+
+      if (isAuthenticated) {
+        setBoards((b) => [data, ...b]);
+        showToast('success', 'Scoreboard created');
+      } else {
+        showToast('info', 'Temporary scoreboard ready');
+      }
+
       setResult(data);
-      setNewTitle("");
-      showToast("success", "Scoreboard created");
+      setNewTitle('');
       setTimeout(() => openBoard(data.code || data._id), 200);
     } catch (err) {
-      setError(err.message);
-      showToast("error", "Failed to create scoreboard");
+      const message = err?.message || 'Failed to create scoreboard';
+      setError(message);
+      showToast('error', message);
     } finally {
       setLoading(false);
     }
   };
 
-  const identifier = useMemo(() => result?.code || result?._id || null, [result]);
+  const temporaryScoreboardId = result?._id;
+  const isTemporaryScoreboard = Boolean(result?.temporary);
 
-  const fetchBoards = async () => {
+  const fetchBoards = useCallback(async () => {
     if (!token) return;
     setBoardsLoading(true);
     setBoardsError(null);
@@ -312,7 +336,7 @@ function Home() {
       const res = await fetch(`${API_URL}/api/scoreboards/mine`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) throw new Error("Unable to load your scoreboards.");
+      if (!res.ok) throw new Error('Unable to load your scoreboards.');
       const data = await res.json();
       setBoards(data);
     } catch (err) {
@@ -320,11 +344,98 @@ function Home() {
     } finally {
       setBoardsLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
     fetchBoards();
-  }, [token]);
+  }, [fetchBoards]);
+
+  useEffect(() => () => {
+    if (claimRetryTimerRef.current) {
+      clearTimeout(claimRetryTimerRef.current);
+      claimRetryTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user || !token || !isTemporaryScoreboard || !temporaryScoreboardId) {
+      return;
+    }
+
+    if (claimAttemptsRef.current >= 3 || claimInFlightRef.current) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const attemptClaim = async () => {
+      if (claimAttemptsRef.current >= 3 || claimInFlightRef.current) {
+        return;
+      }
+
+      claimInFlightRef.current = true;
+
+      try {
+        const res = await fetch(`${API_URL}/api/scoreboards/${temporaryScoreboardId}/claim`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        const data = await res.json().catch(() => null);
+
+        if (!res.ok || !data) {
+          throw new Error(data?.message || "Unable to save scoreboard");
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        claimAttemptsRef.current = 0;
+        if (claimRetryTimerRef.current) {
+          clearTimeout(claimRetryTimerRef.current);
+          claimRetryTimerRef.current = null;
+        }
+        setResult(data);
+        showToast("success", "Scoreboard saved to your account");
+        await fetchBoards();
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
+        const message = err?.message || "Unable to save scoreboard";
+        showToast("error", message);
+        claimAttemptsRef.current += 1;
+        if (claimAttemptsRef.current < 3) {
+          if (claimRetryTimerRef.current) {
+            clearTimeout(claimRetryTimerRef.current);
+          }
+          claimRetryTimerRef.current = setTimeout(() => {
+            setClaimRetryTick((tick) => tick + 1);
+          }, 2000);
+        } else if (claimRetryTimerRef.current) {
+          clearTimeout(claimRetryTimerRef.current);
+          claimRetryTimerRef.current = null;
+        }
+      } finally {
+        claimInFlightRef.current = false;
+      }
+    };
+
+    attemptClaim();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    user,
+    token,
+    isTemporaryScoreboard,
+    temporaryScoreboardId,
+    fetchBoards,
+    showToast,
+    claimRetryTick,
+  ]);
 
   const formatCompactTime = (value) => {
     if (!value) return "";
@@ -393,10 +504,19 @@ function Home() {
       setTimeout(() => {
         setCopiedBoardId((prev) => (prev === id ? null : prev));
       }, 1500);
-    } catch (err) {
+    } catch {
       showToast("error", "Unable to copy ID");
     }
   };
+
+  const promptSignIn = useCallback(() => {
+    setActiveTab("setup");
+    switchAuthMode("signin");
+    if (typeof document !== "undefined") {
+      const target = document.getElementById("account-panel");
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [setActiveTab, switchAuthMode]);
 
   // --- Auth submit handler (uses AuthContext) ---
   const handleAuthSubmit = async (e) => {
@@ -510,6 +630,17 @@ function Home() {
 
         {activeTab === "setup" ? (
           <div className="home-tabpanel fadein">
+            {!user && (
+              <div className="temporary-banner" role="status">
+                <div className="temporary-banner__text">
+                  <strong>Temporary scoreboard</strong>
+                  <span>Scoreboards created while signed out may be deleted after 24 hours.</span>
+                </div>
+                <button type="button" className="temporary-banner__action" onClick={promptSignIn}>
+                  Sign in to save this scoreboard
+                </button>
+              </div>
+            )}
             <div className="home-grid">
               <form className="form" onSubmit={handleCreate}>
                 <fieldset className="fieldset modern-fieldset">
@@ -521,7 +652,6 @@ function Home() {
                       placeholder="New Scoreboard"
                       maxLength={MAX_TITLE}
                       value={newTitle}
-                      disabled={!user}
                       onChange={(e) => setNewTitle(e.target.value)}
                     />
                     {remaining(newTitle) <= 5 && (
@@ -548,7 +678,6 @@ function Home() {
                               className={inputClass}
                               type="text"
                               required
-                              disabled={!user}
                               maxLength={TEAM_NAME_LIMIT}
                               value={t.name}
                               onChange={(e) => handleInputChange(i, "name", e.target.value)}
@@ -558,7 +687,6 @@ function Home() {
                           <label className="input-label">Accent Color</label>
                           <input
                             type="color"
-                            disabled={!user}
                             value={t.color}
                             onChange={(e) => handleInputChange(i, "color", e.target.value)}
                           />
@@ -568,15 +696,18 @@ function Home() {
                   })}
                 </fieldset>
 
-                {/* Hide left CTA when logged out */}
-                {user && (
-                  <button className="primary-button" type="submit" disabled={loading}>
-                    {loading ? "Creating..." : "Create Scoreboard"}
-                  </button>
-                )}
+                <button className="primary-button" type="submit" disabled={loading}>
+                  {loading
+                    ? user
+                      ? "Creating..."
+                      : "Starting..."
+                    : user
+                      ? "Create Scoreboard"
+                      : "Start Temporary Scoreboard"}
+                </button>
               </form>
 
-              <aside className="account-panel">
+              <aside className="account-panel" id="account-panel">
                 {user ? (
                   <>
                     <div className="account-header">

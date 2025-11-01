@@ -35,6 +35,8 @@ async function bootstrap() {
     },
   });
 
+  app.set('io', io);
+
   app.use(
     cors({
       origin: CLIENT_ORIGINS,

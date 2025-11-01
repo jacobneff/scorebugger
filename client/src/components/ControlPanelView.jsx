@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   MdClose,
@@ -16,6 +16,7 @@ import SettingsMenu from "./SettingsMenu.jsx";
 import ScoreboardOverlay from "./ScoreboardOverlay.jsx";
 import { useSettings } from "../context/SettingsContext.jsx";
 import { MAX_COMPLETED_SETS, MAX_TOTAL_SETS } from "../constants/scoreboard.js";
+import { buildShortcutMap, shouldEnableDeleteSet } from "./controlPanel.utils.js";
 
 /* ---------- helpers ---------- */
 const getSetScores = (set) => {
@@ -56,16 +57,54 @@ const formatTeamNameForControl = (value = "") => {
   return trimmed.length > TEAM_NAME_LIMIT ? trimmed.slice(0, TEAM_NAME_LIMIT) : trimmed;
 };
 
+const SHORTCUTS = buildShortcutMap({
+  increaseHomeScore: { key: "a" },
+  decreaseHomeScore: { key: "z" },
+  increaseAwayScore: { key: "k" },
+  decreaseAwayScore: { key: "m" },
+  toggleServing: { key: "s" },
+});
+
 /* ---------- component ---------- */
 function ControlPanelView({
   scoreboardId,
   showHeader = true,
+  // eslint-disable-next-line no-unused-vars
   standalone = true, // unused but kept for API compatibility
+  // eslint-disable-next-line no-unused-vars
   showTitleEditor = true, // superseded by inline title editor below
   onScoreboardChange,
 }) {
   const { scoreboard, loading, error, updateScoreboard, clearError } = useScoreboard(scoreboardId);
   const { shortcutsEnabled } = useSettings();
+  const {
+    increaseHomeScore,
+    decreaseHomeScore,
+    increaseAwayScore,
+    decreaseAwayScore,
+    toggleServing,
+  } = SHORTCUTS;
+
+  const buildShortcutAttributes = (baseTitle, shortcut, options = {}) => {
+    const { includeAriaLabel = true, ariaLabel } = options;
+    const baseAria = ariaLabel ?? baseTitle;
+    if (!shortcut || !shortcutsEnabled) {
+      const attrs = { title: baseTitle };
+      if (includeAriaLabel) {
+        attrs["aria-label"] = baseAria;
+      }
+      return attrs;
+    }
+    const titleWithShortcut = `${baseTitle} (Shortcut: ${shortcut.display})`;
+    const attrs = {
+      title: titleWithShortcut,
+      "data-shortcut": shortcut.display,
+    };
+    if (includeAriaLabel) {
+      attrs["aria-label"] = `${baseAria} (Shortcut: ${shortcut.display})`;
+    }
+    return attrs;
+  };
 
   const MAX_TITLE = 30;
   const remaining = (v, limit = MAX_TITLE) => limit - (v?.length ?? 0);
@@ -363,31 +402,61 @@ function ControlPanelView({
   };
 
   // --------- Score operations ---------
-  const setServing = (i) => {
-    if (scoreboard?.servingTeamIndex === i) return;
-    updateScoreboard({ servingTeamIndex: i });
-  };
+  const setServing = useCallback(
+    (teamIndex) => {
+      updateScoreboard((current) => {
+        if (!current?.teams || current.servingTeamIndex === teamIndex) {
+          return null;
+        }
+        return { servingTeamIndex: teamIndex };
+      });
+    },
+    [updateScoreboard]
+  );
 
-  const bumpScoreCurrent = (teamIndex, delta) => {
-    if (!scoreboard?.teams) return;
-    const nextTeams = scoreboard.teams.map((t, i) =>
-      i === teamIndex ? { ...t, score: Math.max(0, (t.score ?? 0) + delta) } : t
-    );
-    const next = { teams: nextTeams };
-    if (delta > 0) next.servingTeamIndex = teamIndex;
-    updateScoreboard(next);
-  };
+  const bumpScoreCurrent = useCallback(
+    (teamIndex, delta) => {
+      updateScoreboard((current) => {
+        if (!current?.teams || !Number.isFinite(delta)) return null;
+        const clamp = (value) => Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 0);
+        const nextTeams = current.teams.map((team, index) => {
+          if (index !== teamIndex) return team;
+          const baseScore = clamp(team.score ?? 0);
+          return { ...team, score: clamp(baseScore + delta) };
+        });
+        const partial = { teams: nextTeams };
+        if (delta > 0) {
+          partial.servingTeamIndex = teamIndex;
+        }
+        return partial;
+      });
+    },
+    [updateScoreboard]
+  );
 
-  const bumpScoreHistory = (teamIndex, delta) => {
-    if (!sets[historyIndex]) return;
-    const current = normalizeSet(sets[historyIndex]);
-    const [homeScore, awayScore] = current.scores;
-    const clamp = (v) => Math.max(0, v);
-    const nextScores =
-      teamIndex === 0 ? [clamp(homeScore + delta), clamp(awayScore)] : [clamp(homeScore), clamp(awayScore + delta)];
-    const nextSets = sets.map((s, idx) => (idx === historyIndex ? { ...normalizeSet(s), scores: nextScores } : normalizeSet(s)));
-    updateScoreboard({ sets: nextSets });
-  };
+  const bumpScoreHistory = useCallback(
+    (teamIndex, delta) => {
+      updateScoreboard((current) => {
+        const currentSets = current?.sets ?? [];
+        if (!currentSets[historyIndex]) return null;
+        const normalizedCurrent = normalizeSet(currentSets[historyIndex]);
+        const [homeScore, awayScore] = normalizedCurrent.scores;
+        const clamp = (value) => Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 0);
+        const nextScores =
+          teamIndex === 0
+            ? [clamp(homeScore + delta), clamp(awayScore)]
+            : [clamp(homeScore), clamp(awayScore + delta)];
+
+        const nextSets = currentSets.map((set, idx) => {
+          if (idx !== historyIndex) return normalizeSet(set);
+          return { ...normalizeSet(set), scores: nextScores };
+        });
+
+        return { sets: nextSets };
+      });
+    },
+    [historyIndex, updateScoreboard]
+  );
 
   const archiveCurrentSet = () => {
     if (!scoreboard?.teams) return false;
@@ -419,6 +488,11 @@ function ControlPanelView({
 
   const removeSetAtIndex = (idx, sourceMode = mode) => {
     if (!sets?.[idx]) return;
+
+    const lastCompletedIndex = sets.length - 1;
+    if (idx !== lastCompletedIndex) {
+      return;
+    }
 
     const projectedSets = sets.filter((_, i) => i !== idx).map((set) => normalizeSet(set));
 
@@ -473,16 +547,8 @@ function ControlPanelView({
   };
 
   const deleteActiveSet = () => {
-    if (disableDeleteSet) return;
-
-    if (totalCompletedSets === 0) return;
-
-    if (mode === "current") {
-      removeSetAtIndex(totalCompletedSets - 1, "current");
-      return;
-    }
-
-    removeSetAtIndex(displayedHistoryIndex, "history");
+    if (totalCompletedSets === 0 || !isViewingLastSet) return;
+    removeSetAtIndex(totalCompletedSets - 1, mode);
   };
 
   // ---------- Navigation ----------
@@ -541,18 +607,42 @@ function ControlPanelView({
       return false;
     };
 
+    const handlerEntries = [
+      increaseHomeScore ? [increaseHomeScore.normalizedKey, () => bumpScoreCurrent(0, +1)] : null,
+      decreaseHomeScore ? [decreaseHomeScore.normalizedKey, () => bumpScoreCurrent(0, -1)] : null,
+      increaseAwayScore ? [increaseAwayScore.normalizedKey, () => bumpScoreCurrent(1, +1)] : null,
+      decreaseAwayScore ? [decreaseAwayScore.normalizedKey, () => bumpScoreCurrent(1, -1)] : null,
+      toggleServing
+        ? [toggleServing.normalizedKey, () => setServing(scoreboard.servingTeamIndex === 0 ? 1 : 0)]
+        : null,
+    ].filter(Boolean);
+    const handlerMap = new Map(handlerEntries);
+
     const onKey = (e) => {
       if (isFormElementFocused()) return;
-      const key = e.key.toLowerCase();
-      if (key === "a") bumpScoreCurrent(0, +1);
-      if (key === "z") bumpScoreCurrent(0, -1);
-      if (key === "k") bumpScoreCurrent(1, +1);
-      if (key === "m") bumpScoreCurrent(1, -1);
-      if (key === "s") setServing(scoreboard.servingTeamIndex === 0 ? 1 : 0);
+      const key = typeof e.key === "string" ? e.key.toLowerCase() : "";
+      const handler = handlerMap.get(key);
+      if (handler) {
+        e.preventDefault();
+        handler();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [shortcutsEnabled, scoreboard, mode, editingTitle, editingTeamIndex]);
+  }, [
+    shortcutsEnabled,
+    scoreboard,
+    mode,
+    editingTitle,
+    editingTeamIndex,
+    increaseHomeScore,
+    decreaseHomeScore,
+    increaseAwayScore,
+    decreaseAwayScore,
+    toggleServing,
+    setServing,
+    bumpScoreCurrent,
+  ]);
 
   // Auto-clear backend errors
   useEffect(() => {
@@ -644,22 +734,30 @@ function ControlPanelView({
   const renderScoreControls = (teamIndex) => {
     if (mode === "current") {
       const t = fallbackTeams[teamIndex];
+      const baseDecreaseLabel = `Decrease ${t.name} score`;
+      const baseIncreaseLabel = `Increase ${t.name} score`;
+      const decreaseShortcut =
+        teamIndex === 0 ? decreaseHomeScore : decreaseAwayScore;
+      const increaseShortcut =
+        teamIndex === 0 ? increaseHomeScore : increaseAwayScore;
+      const decreaseAttrs = buildShortcutAttributes(baseDecreaseLabel, decreaseShortcut);
+      const increaseAttrs = buildShortcutAttributes(baseIncreaseLabel, increaseShortcut);
       return (
         <>
           <button
             type="button"
-            aria-label={`Decrease ${t.name} score`}
             className="score-chip"
             onClick={() => bumpScoreCurrent(teamIndex, -1)}
+            {...decreaseAttrs}
           >
             −
           </button>
           <div className="control-card-score">{t.score ?? 0}</div>
           <button
             type="button"
-            aria-label={`Increase ${t.name} score`}
             className="score-chip"
             onClick={() => bumpScoreCurrent(teamIndex, +1)}
+            {...increaseAttrs}
           >
             +
           </button>
@@ -711,8 +809,8 @@ function ControlPanelView({
 
   const hasActiveScores = scoreboard?.teams?.some((t) => (t.score ?? 0) > 0);
   const hasCompletedSets = totalCompletedSets > 0;
-  // Only enable delete when viewing the last set
-  const isViewingLastSet = mode === "current" || (mode === "history" && displayedHistoryIndex === totalCompletedSets - 1);
+  // Only enable delete when viewing the last completed set
+  const isViewingLastSet = shouldEnableDeleteSet(mode, totalCompletedSets, displayedHistoryIndex);
   const disableDeleteSet = totalCompletedSets === 0 || !isViewingLastSet;
   const canArchiveMoreSets = totalCompletedSets < MAX_COMPLETED_SETS;
 
@@ -721,6 +819,17 @@ function ControlPanelView({
       {toastLayer}
       <div className="control-panel-root">
         {renderTopBar()}
+        {scoreboard?.temporary && (
+          <div className="temporary-banner" role="status">
+            <div className="temporary-banner__text">
+              <strong>Temporary scoreboard</strong>
+              <span>This scoreboard may be deleted after 24 hours. Sign in to keep it.</span>
+            </div>
+            <a className="temporary-banner__action" href="/?mode=signin">
+              Sign in to save
+            </a>
+          </div>
+        )}
 
         {showHeader && (
           <header className="cp-header">
@@ -966,6 +1075,12 @@ function ControlPanelView({
             const teamHeadingLabel = teamNameForHeading || `Team ${i + 1}`;
             const panelKey = `team-${i}-panel`;
             const textKey = `team-${i}-text`;
+            const serveLabel = isServing
+              ? `Unset ${teamHeadingLabel} as serving`
+              : `Set ${teamHeadingLabel} to serve`;
+            const serveShortcutAttrs = buildShortcutAttributes(serveLabel, toggleServing, {
+              ariaLabel: serveLabel,
+            });
 
             return (
               <div key={i} className={`control-card ${isServing ? "serving" : ""}`} style={{ "--team-accent": t.color }}>
@@ -975,7 +1090,7 @@ function ControlPanelView({
                       type="button"
                       className={`serve-toggle ${isServing ? "active" : ""}`}
                       onClick={() => setServing(i)}
-                      title="Toggle serving"
+                      {...serveShortcutAttrs}
                     >
                       {isServing ? "Serving" : "Set to serve"}
                     </button>

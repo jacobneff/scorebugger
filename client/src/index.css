@@ -617,6 +617,55 @@ button:disabled {
   transform: scale(1);
 }
 
+/* ===== Temporary Banner ===== */
+.temporary-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  background: rgba(254, 243, 199, 0.88);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  color: #92400e;
+  font-size: 0.95rem;
+  margin-bottom: 1.25rem;
+}
+
+.temporary-banner__text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.temporary-banner__text strong {
+  font-size: 0.98rem;
+  color: #b45309;
+}
+
+.temporary-banner__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.45rem 1.05rem;
+  border-radius: 999px;
+  border: none;
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.temporary-banner__action:hover,
+.temporary-banner__action:focus-visible {
+  background: #1d4ed8;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px rgba(37, 99, 235, 0.25);
+}
+
 /* ===== Home: Setup & Teams ===== */
 .home-tabs {
   display: inline-flex;
@@ -824,6 +873,8 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
+  flex-wrap: nowrap;
+  width: 100%;
 }
 
 .board-code-badge {
@@ -839,6 +890,7 @@ button:disabled {
   font-size: 0.95rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 /* ===== Auth Card ===== */
@@ -1317,8 +1369,10 @@ button:disabled {
 
 .score-color-header {
   display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: nowrap;
 }
 
 .score-color-title {
@@ -1328,10 +1382,17 @@ button:disabled {
   color: #0f172a;
 }
 
+.score-color-title + .score-color-subtitle {
+  margin-top: 0.25rem;
+  margin-bottom: 0;
+}
+
 .score-color-subtitle {
   margin: 0;
   color: #64748b;
   font-size: 0.85rem;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .score-color-toggle {
@@ -1345,7 +1406,7 @@ button:disabled {
   line-height: 1;
   font-size: 1.35rem;
   cursor: pointer;
-  align-self: flex-end;
+  flex-shrink: 0;
 }
 
 .score-color-toggle:focus-visible {
@@ -1485,6 +1546,39 @@ button:disabled {
   box-shadow: 0 12px 24px rgba(37, 99, 235, 0.25);
 }
 
+[data-shortcut] {
+  position: relative;
+}
+
+@media (pointer: fine) {
+  [data-shortcut]::after {
+    content: attr(data-shortcut);
+    position: absolute;
+    top: -0.6rem;
+    left: 50%;
+    transform: translate(-50%, -40%) scale(0.9);
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.9);
+    color: #f1f5f9;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease, transform 120ms ease;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.25);
+    white-space: nowrap;
+    z-index: 2;
+  }
+
+  [data-shortcut]:hover::after,
+  [data-shortcut]:focus-visible::after {
+    opacity: 1;
+    transform: translate(-50%, -110%) scale(1);
+  }
+}
+
 .control-card-score {
   font-size: 2.75rem;
   font-weight: 700;
@@ -1514,8 +1608,10 @@ button:disabled {
   font-size: 1.1rem;
 }
 
-.overlay-status.error {
-  background: rgba(220, 38, 38, 0.85);
+.overlay-status--error {
+  background: rgba(220, 38, 38, 0.9);
+  color: #ffffff;
+  border: 1px solid rgba(248, 113, 113, 0.65);
 }
 
 .overlay-frame {
@@ -1777,6 +1873,36 @@ button:disabled {
 @media (max-width: 960px) {
   .container {
     padding: 2.5rem 1.25rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .board-code-row {
+    gap: 0.5rem;
+  }
+
+  .board-code-badge {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: flex-start;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .board-code-copy {
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .temporary-banner {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: left;
+  }
+
+  .temporary-banner__action {
+    width: 100%;
   }
 }
 

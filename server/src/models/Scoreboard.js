@@ -114,9 +114,29 @@ const ScoreboardSchema = new mongoose.Schema(
       type: [SetSchema],
       default: [],
     },
+    temporary: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
+  }
+);
+
+ScoreboardSchema.index(
+  { expiresAt: 1 },
+  {
+    expireAfterSeconds: 0,
+    partialFilterExpression: {
+      temporary: true,
+      expiresAt: { $type: 'date' },
+    },
   }
 );
 

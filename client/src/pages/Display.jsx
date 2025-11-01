@@ -23,7 +23,7 @@ function Display() {
   }
 
   if (error) {
-    return <div className="overlay-status error">{error}</div>;
+    return <div className="overlay-status overlay-status--error">{error}</div>;
   }
 
   if (!scoreboard) {

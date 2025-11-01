@@ -140,4 +140,55 @@ describe('scoreboard routes', () => {
     expect(response.body.title).toBe('Public board');
     expect(response.body.code).toHaveLength(6);
   });
+
+  test('creates a temporary scoreboard for anonymous users', async () => {
+    const response = await request(app).post('/api/scoreboards/guest').send({
+      title: '  Guest Final  ',
+      teams: [
+        { name: 'Home Team', color: '#123456' },
+        { name: 'Away Team' },
+      ],
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.body.owner).toBeNull();
+    expect(response.body.temporary).toBe(true);
+    expect(response.body.title).toBe('Guest Final');
+    expect(response.body.teams).toHaveLength(2);
+    expect(new Date(response.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  test('allows claiming a temporary scoreboard after signing in', async () => {
+    const guest = await request(app).post('/api/scoreboards/guest').send({});
+
+    const claim = await request(app)
+      .patch(`/api/scoreboards/${guest.body._id}/claim`)
+      .set(authHeader())
+      .send();
+
+    expect(claim.statusCode).toBe(200);
+    expect(claim.body.owner).toBe(user._id.toString());
+    expect(claim.body.temporary).toBe(false);
+    expect(claim.body.expiresAt).toBeNull();
+  });
+
+  test('prevents claiming a scoreboard already owned by another user', async () => {
+    const otherUser = await User.create({
+      email: 'claimed@example.com',
+      passwordHash: 'hashed',
+      emailVerified: true,
+    });
+
+    const owned = await Scoreboard.create({
+      title: 'Owned',
+      owner: otherUser._id,
+    });
+
+    const response = await request(app)
+      .patch(`/api/scoreboards/${owned._id}/claim`)
+      .set(authHeader())
+      .send();
+
+    expect(response.statusCode).toBe(403);
+  });
 });

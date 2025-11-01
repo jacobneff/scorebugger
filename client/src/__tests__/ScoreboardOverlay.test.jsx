@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
-import ScoreboardOverlay, { normalizeSet, sanitizeTeam } from '../components/ScoreboardOverlay.jsx';
+import ScoreboardOverlay from '../components/ScoreboardOverlay.jsx';
+import { normalizeSet, sanitizeTeam } from '../components/scoreboardOverlay.utils.js';
 
 describe('normalizeSet', () => {
   it('returns sanitized scores from an array', () => {

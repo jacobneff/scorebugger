@@ -25,21 +25,45 @@ cd ../client && npm run dev        # React/Vite app on http://localhost:5173
 cd ../server && npm run dev        # Express API + Socket.IO on http://localhost:5000
 ```
 
-### Required Environment Variables
-Create a `.env` in `server/` with:
+### Environment Configuration
+1. Copy the example files to create real secrets:
+   ```bash
+   cp server/.env.development.example server/.env.development
+   cp server/.env.production.example server/.env.production   # filled only in deployment
+   ```
+2. Update `server/.env.development` with your development MongoDB Atlas URI (for example, a database named `scorebugger-dev`), a local JWT secret, and any optional email settings. The server automatically loads `.env.development` whenever `NODE_ENV` is unset or `development`.
+3. When deploying, provide the variables from `server/.env.production.example` via your hosting provider's secret manager and ensure `NODE_ENV=production` so the server connects to the production database.
+4. For the frontend, add matching Vite files (`client/.env.development`, `client/.env.production`) with `VITE_API_BASE_URL` pointing at the corresponding API host.
+
+Sample development values:
 ```
-MONGODB_URI=mongodb://localhost:27017/scorebugger
-JWT_SECRET=change-me
+PORT=5000
+MONGODB_URI=mongodb+srv://<dev-username>:<dev-password>@<dev-cluster-host>/scorebugger-dev
+JWT_SECRET=dev-secret-change-me
 CLIENT_ORIGIN=http://localhost:5173
-EMAIL_FROM=you@example.com           # Optional; used for transactional emails
-SMTP_HOST=localhost                  # Optional; omit to log emails to the console
+APP_BASE_URL=http://localhost:5173
+EMAIL_FROM=dev@example.com
+SMTP_HOST=smtp-relay.brevo.com
+SMTP_PORT=1025
+SMTP_USER=
+SMTP_PASS=
+SMTP_SECURE=false
+NODE_VERSION=22
 ```
+
+In MongoDB Atlas you can reuse a single cluster and create two databases (`scorebugger-dev`, `scorebugger`) or provision separate clusters if you prefer isolation. Grant credentials that are scoped to each database so production data stays protected during development.
 
 ## Testing
 - `cd client && npm run test` — Vitest suite covering UI helpers and scoreboard rendering
 - `cd server && npm run test` — Jest + Supertest integration tests for scoreboard routes
 
 Run `npm run lint` in `client/` and `server/` (when configured) before committing.
+
+## Branching Workflow
+- Keep `main` production-ready and deploy from it only.
+- Create a long-lived `develop` branch for day-to-day work: `git checkout -b develop` and push it to the remote.
+- Open feature branches from `develop` (for example, `git checkout -b feature/live-timer`), merge them back into `develop` via pull requests, and only promote `develop` into `main` when you're ready to release.
+- Seed and test new functionality against the development database before merging to `main`.
 
 ## Project Structure
 ```

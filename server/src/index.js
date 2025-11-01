@@ -1,4 +1,17 @@
-require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const dotenv = require('dotenv');
+
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const envFile = path.resolve(__dirname, '..', `.env.${NODE_ENV}`);
+const defaultEnvFile = path.resolve(__dirname, '..', '.env');
+const dotenvPath = [envFile, defaultEnvFile].find((filePath) => fs.existsSync(filePath));
+
+if (dotenvPath) {
+  dotenv.config({ path: dotenvPath });
+} else {
+  dotenv.config();
+}
 
 const cors = require('cors');
 const express = require('express');

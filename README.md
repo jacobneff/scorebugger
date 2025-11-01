@@ -31,14 +31,15 @@ cd ../server && npm run dev        # Express API + Socket.IO on http://localhost
    cp server/.env.development.example server/.env.development
    cp server/.env.production.example server/.env.production   # filled only in deployment
    ```
-2. Update `server/.env.development` with your development MongoDB Atlas URI (for example, a database named `scorebugger-dev`), a local JWT secret, and any optional email settings. The server automatically loads `.env.development` whenever `NODE_ENV` is unset or `development`.
-3. When deploying, provide the variables from `server/.env.production.example` via your hosting provider's secret manager and ensure `NODE_ENV=production` so the server connects to the production database.
+2. Update `server/.env.development` with `MONGODB_URI_DEV` (for example, `scorebugger_dev` in your shared cluster), optionally set `MONGODB_URI_PROD` for end-to-end tests, and add a local JWT secret plus any optional email settings. The server automatically loads `.env.development` whenever `NODE_ENV` is unset or `development`.
+3. When deploying, provide the variables from `server/.env.production.example` via your hosting provider's secret manager and ensure `NODE_ENV=production` so the server reads `MONGODB_URI_PROD` and connects to the production database.
 4. For the frontend, add matching Vite files (`client/.env.development`, `client/.env.production`) with `VITE_API_BASE_URL` pointing at the corresponding API host.
 
 Sample development values:
 ```
 PORT=5000
-MONGODB_URI=mongodb+srv://<dev-username>:<dev-password>@<dev-cluster-host>/scorebugger-dev
+MONGODB_URI_DEV=mongodb+srv://<dev-username>:<dev-password>@<cluster-host>/scorebugger_dev
+MONGODB_URI_PROD=mongodb+srv://<prod-username>:<prod-password>@<cluster-host>/scorebugger
 JWT_SECRET=dev-secret-change-me
 CLIENT_ORIGIN=http://localhost:5173
 APP_BASE_URL=http://localhost:5173

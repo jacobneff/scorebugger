@@ -26,4 +26,4 @@ Automated tests are not in place yet; scope new work with unit or integration te
 Recent history uses short, imperative commit titles (e.g., “Add scoreboard socket listeners”). Keep commits focused, avoid mixing sweeping client and server edits, and call out data-model adjustments in the body. Pull requests should summarize the change, link issues, note lint/test results, and include screenshots or screen captures for UI tweaks. Flag breaking API or socket payload changes prominently.
 
 ## Security & Configuration Tips
-Create a `.env` in `server/` with `MONGODB_URI`, `JWT_SECRET`, and optional comma-separated `CLIENT_ORIGIN`. Never commit secrets. Tighten allowed origins for previews, rotate credentials after any leak, and validate incoming Socket.IO payloads just as `scoreboard:update` does.
+Create a `.env` in `server/` with `MONGODB_URI_DEV`, `MONGODB_URI_PROD`, `JWT_SECRET`, and optional comma-separated `CLIENT_ORIGIN`. Never commit secrets. Tighten allowed origins for previews, rotate credentials after any leak, and validate incoming Socket.IO payloads just as `scoreboard:update` does.

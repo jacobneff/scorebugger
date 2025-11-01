@@ -188,3 +188,4 @@ function ScoreboardOverlay({ scoreboard }) {
 }
 
 export default ScoreboardOverlay;
+export { normalizeSet, sanitizeTeam };

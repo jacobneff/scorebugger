@@ -1,14 +1,15 @@
 const mongoose = require('mongoose');
 
-/**
- * Establish a connection to MongoDB using the connection string provided in the
- * MONGODB_URI environment variable.
- */
 async function connectDB() {
-  const uri = process.env.MONGODB_URI;
+  const nodeEnv = process.env.NODE_ENV || 'development';
+  const isProd = nodeEnv === 'production';
+  const primaryKey = isProd ? 'MONGODB_URI_PROD' : 'MONGODB_URI_DEV';
+  const uri = process.env[primaryKey] || process.env.MONGODB_URI;
 
   if (!uri) {
-    throw new Error('MONGODB_URI is not set');
+    throw new Error(
+      `${primaryKey} is not set and MONGODB_URI is not available as a fallback`
+    );
   }
 
   try {
@@ -25,4 +26,3 @@ async function connectDB() {
 }
 
 module.exports = connectDB;
-

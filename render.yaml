@@ -12,8 +12,10 @@ services:
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
-        value: 20
-      - key: MONGODB_URI
+        value: 22
+      - key: MONGODB_URI_PROD
+        sync: false
+      - key: MONGODB_URI_DEV
         sync: false
       - key: JWT_SECRET
         sync: false
@@ -31,7 +33,7 @@ services:
         destination: /index.html
     envVars:
       - key: NODE_VERSION
-        value: 20
+        value: 22
       - key: VITE_API_URL
         sync: false
       - key: VITE_SOCKET_URL

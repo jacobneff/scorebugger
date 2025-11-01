@@ -16,7 +16,7 @@ import SettingsMenu from "./SettingsMenu.jsx";
 import ScoreboardOverlay from "./ScoreboardOverlay.jsx";
 import { useSettings } from "../context/SettingsContext.jsx";
 import { MAX_COMPLETED_SETS, MAX_TOTAL_SETS } from "../constants/scoreboard.js";
-import { buildShortcutMap, shouldEnableDeleteSet } from "./controlPanel.utils.js";
+import { buildShortcutMap, deriveSetNavigationState, shouldEnableDeleteSet } from "./controlPanel.utils.js";
 
 /* ---------- helpers ---------- */
 const getSetScores = (set) => {
@@ -490,45 +490,36 @@ function ControlPanelView({
     return true;
   };
 
+  const deleteLastCreatedSet = () => {
+    if (!sets || sets.length === 0) return;
 
-  const removeSetAtIndex = (idx) => {
-    if (!sets?.[idx]) return;
-
-    const lastCompletedIndex = sets.length - 1;
-    if (idx !== lastCompletedIndex) {
-      return;
-    }
-
-    const projectedSets = sets.filter((_, i) => i !== idx).map((set) => normalizeSet(set));
+    const deletedSetNumber = sets.length;
 
     updateScoreboard((current) => {
-      if (!current?.teams || !current?.sets?.[idx]) {
-        return current;
+      const currentSets = current?.sets ?? [];
+      if (currentSets.length === 0) {
+        return null;
       }
 
-      const normalizedCurrentSets = current.sets.map((set) => normalizeSet(set));
-      const nextSetsInner = normalizedCurrentSets.filter((_, i) => i !== idx);
-      const lastSetInner = nextSetsInner[nextSetsInner.length - 1] ?? null;
-      const [carryHome, carryAway] = lastSetInner ? getSetScores(lastSetInner) : [0, 0];
+      const normalizedSets = currentSets.map((set) => normalizeSet(set));
+      const nextSets = normalizedSets.slice(0, normalizedSets.length - 1);
 
       return {
-        sets: nextSetsInner,
-        teams: current.teams.map((team, teamIdx) => ({
-          ...team,
-          score: teamIdx === 0 ? carryHome : carryAway,
-        })),
+        sets: nextSets,
       };
     });
 
-    setHasDraftOverride(false);
-
-    const hasSetsRemaining = projectedSets.length > 0;
-    const nextHistoryIndex = hasSetsRemaining ? Math.max(0, projectedSets.length - 1) : 0;
-
-    setMode("current");
-    setHistoryIndex(nextHistoryIndex);
+    const remainingSets = sets.length - 1;
+    if (remainingSets > 0) {
+      setMode("history");
+      setHistoryIndex(remainingSets - 1);
+    } else {
+      setMode("current");
+      setHistoryIndex(0);
+    }
     setCachedCurrentScores(null);
-    showToast("info", "Set deleted");
+    setHasDraftOverride(false);
+    showToast("info", `Set ${deletedSetNumber} deleted`);
   };
 
   const resetScores = () => {
@@ -550,43 +541,7 @@ function ControlPanelView({
 
   const deleteActiveSet = () => {
     if (!deleteStateEligible) return;
-    if (mode === "current" && hasDraftSet) {
-      if (totalCompletedSets === 0) return;
-      const pendingDraftSource = sets[totalCompletedSets - 1] ?? null;
-      if (pendingDraftSource) {
-        const [carryHome, carryAway] = getSetScores(pendingDraftSource);
-        updateScoreboard((current) => {
-          if (!current?.teams) return current;
-          return {
-            teams: current.teams.map((team, teamIdx) => ({
-              ...team,
-              score: teamIdx === 0 ? carryHome : carryAway,
-            })),
-          };
-        });
-      } else {
-        updateScoreboard((current) => {
-          if (!current?.teams) return current;
-          return {
-            teams: current.teams.map((team) => ({
-              ...team,
-              score: 0,
-            })),
-          };
-        });
-      }
-      setCachedCurrentScores(null);
-      setHasDraftOverride(false);
-      setHistoryIndex(Math.max(0, totalCompletedSets - 1));
-      showToast("info", `Set ${deleteTargetSetNumber} deleted`);
-      return;
-    }
-    const targetIndex =
-      mode === "history"
-        ? Math.min(displayedHistoryIndex, Math.max(0, totalCompletedSets - 1))
-        : totalCompletedSets - 1;
-    if (targetIndex < 0) return;
-    removeSetAtIndex(targetIndex);
+    deleteLastCreatedSet();
   };
 
   // ---------- Navigation ----------
@@ -717,8 +672,6 @@ function ControlPanelView({
     totalCompletedSets > 0 &&
     lastCompletedScores &&
     (currentScores[0] !== lastCompletedScores[0] || currentScores[1] !== lastCompletedScores[1]);
-  const hasDraftSet = cachedCurrentScores !== null || hasDraftOverride || Boolean(draftActiveFromCurrent);
-
   useEffect(() => {
     if (!draftActiveFromCurrent && cachedCurrentScores === null && hasDraftOverride) {
       setHasDraftOverride(false);
@@ -839,27 +792,18 @@ function ControlPanelView({
     );
   };
 
-  const totalSetCount = Math.min(
-    MAX_TOTAL_SETS,
-    Math.max(1, totalCompletedSets + (hasDraftSet ? 1 : 0)),
-  );
-  const historySetCount = Math.min(totalCompletedSets, MAX_TOTAL_SETS);
-  const currentSetNumber =
-    mode === "current"
-      ? totalSetCount
-      : historySetCount > 0
-        ? Math.min(displayedHistoryIndex + 1, historySetCount)
-        : 1;
+  const { totalSetCount, activeSetNumber, deleteLabelNumber, hasCompletedSets } = deriveSetNavigationState({
+    mode,
+    totalCompletedSets,
+    historyIndex: displayedHistoryIndex,
+  });
   const deleteStateEligible = shouldEnableDeleteSet({
     mode,
     totalCompletedSets,
-    displayedHistoryIndex,
-    hasDraftSet,
+    historyIndex,
   });
-  const statusText = `Editing Set ${currentSetNumber} of ${totalSetCount}${
-    mode === "current" ? " (Current)" : ""
-  }`;
-  const deleteTargetSetNumber = currentSetNumber;
+  const statusText = `Editing Set ${activeSetNumber} of ${totalSetCount}`;
+  const deleteButtonLabel = deleteLabelNumber > 0 ? `Delete Set ${deleteLabelNumber}` : "Delete Set";
 
   const toggleColorPanel = (teamIndex) => {
     setCollapsedColorPanels((prev) => ({
@@ -873,7 +817,6 @@ function ControlPanelView({
   };
 
   const hasActiveScores = scoreboard?.teams?.some((t) => (t.score ?? 0) > 0);
-  const hasCompletedSets = totalCompletedSets > 0;
   const disableDeleteSet = !deleteStateEligible;
   const canArchiveMoreSets = totalCompletedSets < MAX_COMPLETED_SETS;
 
@@ -1079,7 +1022,7 @@ function ControlPanelView({
             className="secondary-button set-nav-button prev"
             type="button"
             onClick={goToPreviousSet}
-            disabled={mode === "current" && sets.length === 0}
+            disabled={mode === "current" ? sets.length === 0 : historyIndex === 0}
             title={mode === "current" ? "View previous sets" : "Go to earlier set"}
             aria-label={mode === "current" ? "Previous set" : "Go to earlier set"}
           >
@@ -1096,7 +1039,11 @@ function ControlPanelView({
             className="secondary-button set-nav-button next"
             type="button"
             onClick={goToNextSet}
-            disabled={mode === "current" && !canArchiveMoreSets}
+            disabled={
+              mode === "current"
+                ? !canArchiveMoreSets
+                : sets.length === 0 || (historyIndex >= sets.length - 1 && sets.length >= MAX_TOTAL_SETS)
+            }
             title={
               mode === "current"
                 ? canArchiveMoreSets
@@ -1128,7 +1075,7 @@ function ControlPanelView({
             onClick={deleteActiveSet}
             disabled={disableDeleteSet}
           >
-            Delete Set {deleteTargetSetNumber}
+            {deleteButtonLabel}
           </button>
           <button type="button" className="control-tool-button danger" onClick={resetSets} disabled={!hasCompletedSets}>
             Delete All Sets

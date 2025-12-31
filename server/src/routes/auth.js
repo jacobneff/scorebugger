@@ -9,12 +9,24 @@ const {
   buildPasswordResetEmail,
 } = require('../utils/emailTemplates');
 const { requireAuth } = require('../middleware/auth');
+const rateLimit = require('express-rate-limit');
 
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RESET_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const RESEND_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
 const router = express.Router();
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again after 15 minutes',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Apply rate limiting to all auth routes
+router.use(authLimiter);
 
 async function issueVerificationToken(user) {
   const { token, tokenHash, expiresAt } = createTokenPair(VERIFICATION_TTL_MS);
@@ -44,7 +56,7 @@ async function sendVerificationMessage(user) {
     });
   }
 
-  if (!canSend || process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV !== 'production') {
     const fallbackUrl = payload.html.match(/href="([^"]+)"/)?.[1] || '';
     // eslint-disable-next-line no-console
     console.info(

@@ -23,6 +23,11 @@ const connectDB = require('./config/db');
 const Scoreboard = require('./models/Scoreboard');
 const scoreboardRoutes = require('./routes/scoreboards');
 const authRoutes = require('./routes/auth');
+const {
+  MAX_SET_COUNT,
+  MAX_TITLE_LENGTH,
+  sanitizeSet,
+} = require('./utils/validation');
 
 const PORT = process.env.PORT || 5000;
 const DEFAULT_CLIENT_ORIGINS = [
@@ -32,7 +37,9 @@ const DEFAULT_CLIENT_ORIGINS = [
 ];
 
 const CLIENT_ORIGINS = process.env.CLIENT_ORIGIN
-  ? process.env.CLIENT_ORIGIN.split(',').map((origin) => origin.trim())
+  ? process.env.CLIENT_ORIGIN.split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)
   : DEFAULT_CLIENT_ORIGINS;
 
 async function bootstrap() {
@@ -70,8 +77,11 @@ async function bootstrap() {
   app.use((err, _req, res, _next) => {
     const status = err.status || 500;
     const message = err.message || 'Internal server error';
-    // eslint-disable-next-line no-console
-    console.error(err);
+
+    if (process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.error(err);
+    }
     res.status(status).json({ message });
   });
 
@@ -85,9 +95,10 @@ async function bootstrap() {
         return;
       }
 
-      const query = mongoose.Types.ObjectId.isValid(key)
-        ? { _id: key }
-        : { code: key.toUpperCase() };
+      const query =
+        mongoose.Types.ObjectId.isValid(key) && key.length === 24
+          ? { _id: key }
+          : { code: key.toUpperCase() };
 
       try {
         const scoreboard = await Scoreboard.findOne(query).lean();
@@ -110,7 +121,6 @@ async function bootstrap() {
     socket.on('scoreboard:update', async ({ scoreboardId, state }) => {
       const key = typeof scoreboardId === 'string' ? scoreboardId.trim() : '';
       const room = socket.data.room;
-      const MAX_SET_COUNT = 5;
 
       if (!key && !room) {
         socket.emit('scoreboard:error', { message: 'No scoreboard joined' });
@@ -128,32 +138,12 @@ async function bootstrap() {
       }
 
       const query = key
-        ? mongoose.Types.ObjectId.isValid(key)
+        ? mongoose.Types.ObjectId.isValid(key) && key.length === 24
           ? { _id: key }
           : { code: key.toUpperCase() }
         : { _id: room };
 
       try {
-        const sanitizeSet = (set) => {
-          if (!set || !Array.isArray(set.scores) || set.scores.length !== 2) {
-            return null;
-          }
-
-          const [homeScore, awayScore] = set.scores;
-          const createdAt =
-            set.createdAt && !Number.isNaN(Date.parse(set.createdAt))
-              ? new Date(set.createdAt)
-              : new Date();
-
-          return {
-            scores: [
-              Math.max(0, Number(homeScore) || 0),
-              Math.max(0, Number(awayScore) || 0),
-            ],
-            createdAt,
-          };
-        };
-
         const sanitizedSets = Array.isArray(state.sets)
           ? state.sets.map(sanitizeSet).filter(Boolean)
           : undefined;
@@ -165,7 +155,6 @@ async function bootstrap() {
           return;
         }
 
-        const MAX_TITLE_LENGTH = 30;
         const sanitizedTitle =
           typeof state.title === 'string'
             ? state.title.trim().slice(0, MAX_TITLE_LENGTH)

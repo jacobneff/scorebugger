@@ -2,51 +2,13 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Scoreboard = require('../models/Scoreboard');
 const { requireAuth } = require('../middleware/auth');
+const { MAX_TITLE_LENGTH, sanitizeTeams } = require('../utils/validation');
 
 const router = express.Router();
-const MAX_TITLE_LENGTH = 30;
 const TEMPORARY_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
-const sanitizeTeams = (teams) => {
-  if (!Array.isArray(teams) || teams.length !== 2) {
-    return undefined;
-  }
-
-  const fallbackNames = ['Home', 'Away'];
-
-  return teams.map((team, index) => {
-    const name =
-      typeof team?.name === 'string'
-        ? team.name.trim().slice(0, 10) || fallbackNames[index]
-        : fallbackNames[index];
-
-    const payload = {
-      name,
-      score: 0,
-    };
-
-    if (typeof team?.color === 'string' && team.color.trim()) {
-      payload.color = team.color;
-    }
-    if (typeof team?.teamTextColor === 'string' && team.teamTextColor.trim()) {
-      payload.teamTextColor = team.teamTextColor;
-    }
-    if (typeof team?.setColor === 'string' && team.setColor.trim()) {
-      payload.setColor = team.setColor;
-    }
-    if (typeof team?.scoreTextColor === 'string' && team.scoreTextColor.trim()) {
-      payload.scoreTextColor = team.scoreTextColor;
-    }
-    if (typeof team?.textColor === 'string' && team.textColor.trim()) {
-      payload.textColor = team.textColor;
-    }
-
-    return payload;
-  });
-};
-
 const resolveScoreboardQuery = (idOrCode) =>
-  mongoose.Types.ObjectId.isValid(idOrCode)
+  mongoose.Types.ObjectId.isValid(idOrCode) && idOrCode.length === 24
     ? { _id: idOrCode }
     : { code: idOrCode.toUpperCase() };
 

@@ -23,7 +23,6 @@ import { CSS } from '@dnd-kit/utilities';
 import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
-import CourtAssignmentsBoard from '../components/CourtAssignmentsBoard.jsx';
 import {
   formatRoundBlockStartTime,
   formatSetRecord,
@@ -180,8 +179,7 @@ function PoolHeaderDropTarget({
     id: buildPoolSwapTargetId(poolId),
   });
 
-  const isDropTarget =
-    Boolean(activeSwapPoolId) && activeSwapPoolId !== poolId && isOver;
+  const isDropTarget = Boolean(activeSwapPoolId) && isOver;
 
   return (
     <header
@@ -242,7 +240,7 @@ function TournamentPhase1Admin() {
   const [loading, setLoading] = useState(true);
   const [initLoading, setInitLoading] = useState(false);
   const [savingPools, setSavingPools] = useState(false);
-  const [savingCourtAssignments, setSavingCourtAssignments] = useState(false);
+  const savingCourtAssignments = false;
   const [generateLoading, setGenerateLoading] = useState(false);
   const [standingsLoading, setStandingsLoading] = useState(false);
   const [matchActionId, setMatchActionId] = useState('');
@@ -600,51 +598,6 @@ function TournamentPhase1Admin() {
     [fetchJson, token]
   );
 
-  const handleCourtAssignmentsChange = useCallback(
-    async (nextPools) => {
-      if (!token || !id || savingCourtAssignments || matches.length > 0 || !Array.isArray(nextPools)) {
-        return;
-      }
-
-      const previousPools = pools;
-      setPools(nextPools);
-      setSavingCourtAssignments(true);
-      suppressRealtimePoolUpdatesRef.current = true;
-      setError('');
-      setMessage('');
-
-      try {
-        const updatedPools = await fetchJson(`${API_URL}/api/tournaments/${id}/pools/courts`, {
-          method: 'PUT',
-          headers: jsonHeaders(token),
-          body: JSON.stringify({
-            phase: 'phase1',
-            assignments: nextPools.map((pool) => ({
-              poolId: pool._id,
-              homeCourt: pool.homeCourt,
-            })),
-          }),
-        });
-
-        setPools(normalizePools(updatedPools));
-        setMessage('Court assignments saved.');
-      } catch (saveError) {
-        setPools(previousPools);
-        setError(saveError.message || 'Unable to save court assignments');
-
-        loadPools()
-          .then((latestPools) => {
-            setPools(latestPools);
-          })
-          .catch(() => {});
-      } finally {
-        suppressRealtimePoolUpdatesRef.current = false;
-        setSavingCourtAssignments(false);
-      }
-    },
-    [fetchJson, id, loadPools, matches.length, pools, savingCourtAssignments, token]
-  );
-
   const handleDragStart = useCallback(
     (event) => {
       if (
@@ -741,6 +694,11 @@ function TournamentPhase1Admin() {
 
       const targetPoolId = resolveSwapTargetPoolId(rawOverId);
       if (!targetPoolId) {
+        setDragPreviewPoolsIfChanged(originPools);
+        return;
+      }
+
+      if (targetPoolId === activeDrag.poolId) {
         setDragPreviewPoolsIfChanged(originPools);
         return;
       }
@@ -1183,29 +1141,8 @@ function TournamentPhase1Admin() {
             Court assignments need attention. {courtIssues.join('; ')}.
           </p>
         )}
-        {matches.length > 0 && (
-          <p className="subtle">
-            Court assignments locked after match generation. Use force-regenerate to change.
-          </p>
-        )}
         {error && <p className="error">{error}</p>}
         {message && <p className="subtle phase1-success">{message}</p>}
-
-        <section className="phase1-court-assignments">
-          <h2 className="secondary-title">Court Assignments</h2>
-          <CourtAssignmentsBoard
-            pools={pools}
-            disabled={
-              matches.length > 0 ||
-              savingCourtAssignments ||
-              savingPools ||
-              initLoading ||
-              autofillLoading ||
-              generateLoading
-            }
-            onAssignmentsChange={handleCourtAssignmentsChange}
-          />
-        </section>
 
         <DndContext
           sensors={dragSensors}

@@ -746,7 +746,7 @@ function TournamentPhase2Admin() {
         {error && <p className="error">{error}</p>}
         {message && <p className="subtle phase1-success">{message}</p>}
 
-        <section className="phase1-court-assignments">
+        <section className="court-assignments-section">
           <h2 className="secondary-title">Court Assignments</h2>
           <CourtAssignmentsBoard
             pools={pools}

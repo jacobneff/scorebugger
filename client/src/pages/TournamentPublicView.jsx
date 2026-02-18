@@ -395,7 +395,6 @@ function TournamentPublicView() {
                       {pool.teamIds.map((team) => (
                         <li key={team._id}>
                           <span>{team.name}</span>
-                          <span>Seed #{team.seed ?? 'N/A'}</span>
                         </li>
                       ))}
                       {pool.teamIds.length === 0 && <li className="subtle">No teams assigned</li>}

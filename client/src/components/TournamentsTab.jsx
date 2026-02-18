@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { DndContext, PointerSensor, TouchSensor, KeyboardSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 import { API_URL } from "../config/env.js";
-import { planTournamentTeamSync } from "./tournamentTeamDiff.utils.js";
 
 const DEFAULT_TIMEZONE = "America/New_York";
 
@@ -17,17 +25,17 @@ const resolveTimezone = () => {
 
 const normalizeText = (value) => (typeof value === "string" ? value.trim() : "");
 
-const normalizeSeedInput = (value) => {
-  if (value === null || value === undefined || value === "") {
-    return "";
+const normalizeLogoUrl = (value) => {
+  if (value === null || value === undefined) {
+    return null;
   }
 
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return "";
+  if (typeof value !== "string") {
+    return null;
   }
 
-  return String(parsed);
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
 };
 
 const formatDateLabel = (value) => {
@@ -53,6 +61,99 @@ const formatStatusLabel = (value) => {
     .replace(/(^|\s)\S/g, (char) => char.toUpperCase());
 };
 
+const reorderRows = (rows, activeId, overId) => {
+  const sourceIndex = rows.findIndex((row) => row.rowId === activeId);
+  const targetIndex = rows.findIndex((row) => row.rowId === overId);
+
+  if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) {
+    return null;
+  }
+
+  return arrayMove(rows, sourceIndex, targetIndex);
+};
+
+function SortableTeamCard({ team, index, disabled, onUpdate, onRemove }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: team.rowId,
+    disabled,
+  });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <article
+      ref={setNodeRef}
+      style={style}
+      className={`tournament-team-card ${isDragging ? "is-dragging" : ""}`}
+    >
+      <div className="tournament-team-card-header">
+        <div className="tournament-team-card-rank">#{index + 1}</div>
+        <button
+          type="button"
+          className="tournament-team-drag-handle"
+          aria-label={`Drag team ${index + 1}`}
+          disabled={disabled}
+          {...attributes}
+          {...listeners}
+        >
+          Drag
+        </button>
+      </div>
+
+      <div className="tournament-team-card-fields">
+        <label className="input-label" htmlFor={`team-short-${team.rowId}`}>
+          Short name
+        </label>
+        <input
+          id={`team-short-${team.rowId}`}
+          type="text"
+          value={team.shortName}
+          disabled={disabled}
+          onChange={(event) => onUpdate(team.rowId, "shortName", event.target.value)}
+        />
+      </div>
+
+      <div className="tournament-team-card-fields">
+        <label className="input-label" htmlFor={`team-logo-${team.rowId}`}>
+          Logo URL (optional)
+        </label>
+        <input
+          id={`team-logo-${team.rowId}`}
+          type="text"
+          value={team.logoUrl}
+          disabled={disabled}
+          onChange={(event) => onUpdate(team.rowId, "logoUrl", event.target.value)}
+        />
+      </div>
+
+      {normalizeLogoUrl(team.logoUrl) && (
+        <div className="tournament-team-logo-preview">
+          <img src={team.logoUrl} alt={`${team.shortName || "Team"} logo`} />
+        </div>
+      )}
+
+      <button
+        type="button"
+        className="ghost-button tournament-team-remove"
+        disabled={disabled}
+        onClick={() => onRemove(team.rowId)}
+      >
+        Remove
+      </button>
+    </article>
+  );
+}
+
 function TournamentsTab({
   user,
   token,
@@ -76,8 +177,12 @@ function TournamentsTab({
   const [selectedTournament, setSelectedTournament] = useState(null);
   const [teamsInitial, setTeamsInitial] = useState([]);
   const [teamRows, setTeamRows] = useState([]);
+  const [newTeamShortName, setNewTeamShortName] = useState("");
+  const [newTeamLogoUrl, setNewTeamLogoUrl] = useState("");
   const [teamsLoading, setTeamsLoading] = useState(false);
   const [teamsSaving, setTeamsSaving] = useState(false);
+  const [teamCreateBusy, setTeamCreateBusy] = useState(false);
+  const [teamOrderSaving, setTeamOrderSaving] = useState(false);
   const [teamsError, setTeamsError] = useState("");
   const [teamsMessage, setTeamsMessage] = useState("");
 
@@ -90,12 +195,23 @@ function TournamentsTab({
     (team = {}) => ({
       rowId: makeRowId(),
       _id: team?._id ? String(team._id) : "",
-      name: team?.name || "",
       shortName: team?.shortName || "",
-      seed: normalizeSeedInput(team?.seed),
       logoUrl: typeof team?.logoUrl === "string" ? team.logoUrl : "",
+      orderIndex: Number.isFinite(Number(team?.orderIndex)) ? Number(team.orderIndex) : null,
     }),
     [makeRowId]
+  );
+
+  const dragSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 160, tolerance: 8 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
   );
 
   const fetchJson = useCallback(async (url, options = {}) => {
@@ -198,10 +314,11 @@ function TournamentsTab({
         const normalizedTeams = Array.isArray(teamsPayload)
           ? teamsPayload.map((team) => ({
               _id: team?._id ? String(team._id) : "",
-              name: team?.name || "",
               shortName: team?.shortName || "",
-              seed: team?.seed ?? null,
-              logoUrl: typeof team?.logoUrl === "string" ? team.logoUrl : null,
+              logoUrl: typeof team?.logoUrl === "string" ? team.logoUrl : "",
+              orderIndex: Number.isFinite(Number(team?.orderIndex))
+                ? Number(team.orderIndex)
+                : null,
             }))
           : [];
 
@@ -254,6 +371,8 @@ function TournamentsTab({
   useEffect(() => {
     setTeamsMessage("");
     setTeamsError("");
+    setNewTeamShortName("");
+    setNewTeamLogoUrl("");
     loadSelectedTournament(selectedTournamentId);
   }, [loadSelectedTournament, selectedTournamentId]);
 
@@ -270,7 +389,7 @@ function TournamentsTab({
       warnings.push("Pool Play 1 full schedule requires 15 teams.");
     }
     if (currentTeamCount > 15) {
-      warnings.push("Pool Play 1 seed initialization currently uses the first 15 teams.");
+      warnings.push("Pool auto-fill uses the first 15 teams by card order.");
     }
     return warnings;
   }, [currentTeamCount, selectedTournament]);
@@ -280,34 +399,8 @@ function TournamentsTab({
     setSelectedTournamentId(cleaned);
   };
 
-  const addTeamRow = () => {
-    if (!canEditTeams || teamsSaving) {
-      return;
-    }
-
-    setTeamRows((previous) => [
-      ...previous,
-      {
-        rowId: makeRowId(),
-        _id: "",
-        name: "",
-        shortName: "",
-        seed: "",
-        logoUrl: "",
-      },
-    ]);
-  };
-
-  const removeTeamRow = (rowId) => {
-    if (!canEditTeams || teamsSaving) {
-      return;
-    }
-
-    setTeamRows((previous) => previous.filter((row) => row.rowId !== rowId));
-  };
-
   const updateTeamRow = (rowId, field, value) => {
-    if (!canEditTeams || teamsSaving) {
+    if (!canEditTeams || teamsSaving || teamOrderSaving) {
       return;
     }
 
@@ -323,6 +416,141 @@ function TournamentsTab({
       })
     );
   };
+
+  const handleAddTeam = async () => {
+    if (!token || !selectedTournamentId || !canEditTeams || teamsSaving || teamCreateBusy) {
+      return;
+    }
+
+    const shortName = normalizeText(newTeamShortName);
+    const logoUrl = normalizeLogoUrl(newTeamLogoUrl);
+    if (!shortName) {
+      setTeamsError("Short name is required to add a team.");
+      return;
+    }
+
+    setTeamCreateBusy(true);
+    setTeamsError("");
+    setTeamsMessage("");
+
+    try {
+      const payload = {
+        shortName,
+      };
+      if (logoUrl !== null) {
+        payload.logoUrl = logoUrl;
+      }
+
+      await fetchJson(`${API_URL}/api/tournaments/${selectedTournamentId}/teams`, {
+        method: "POST",
+        headers: authHeaders(true),
+        body: JSON.stringify(payload),
+      });
+      await loadSelectedTournament(selectedTournamentId);
+      setNewTeamShortName("");
+      setNewTeamLogoUrl("");
+      setTeamsMessage("Team added.");
+      onShowToast?.("success", "Team added");
+    } catch (error) {
+      const message = error?.message || "Unable to add team";
+      setTeamsError(message);
+      onShowToast?.("error", message);
+    } finally {
+      setTeamCreateBusy(false);
+    }
+  };
+
+  const removeTeamRow = async (rowId) => {
+    if (!token || !canEditTeams || teamsSaving || teamOrderSaving) {
+      return;
+    }
+
+    const row = teamRows.find((team) => team.rowId === rowId);
+    if (!row?._id) {
+      return;
+    }
+
+    setTeamsError("");
+    setTeamsMessage("");
+
+    try {
+      await fetchJson(`${API_URL}/api/tournament-teams/${row._id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      await loadSelectedTournament(selectedTournamentId);
+      setTeamsMessage("Team removed.");
+      onShowToast?.("success", "Team removed");
+    } catch (error) {
+      const message = error?.message || "Unable to remove team";
+      setTeamsError(message);
+      onShowToast?.("error", message);
+    }
+  };
+
+  const persistTeamOrder = useCallback(
+    async (rows) => {
+      const orderedTeamIds = rows.map((row) => row._id).filter(Boolean);
+      await fetchJson(`${API_URL}/api/tournaments/${selectedTournamentId}/teams/order`, {
+        method: "PUT",
+        headers: authHeaders(true),
+        body: JSON.stringify({ orderedTeamIds }),
+      });
+      setTeamsInitial((previous) => {
+        const byId = new Map(previous.map((row) => [String(row._id), row]));
+        return orderedTeamIds
+          .map((teamId, index) => {
+            const existing = byId.get(teamId);
+            if (!existing) {
+              return null;
+            }
+
+            return {
+              ...existing,
+              orderIndex: index + 1,
+            };
+          })
+          .filter(Boolean);
+      });
+    },
+    [authHeaders, fetchJson, selectedTournamentId]
+  );
+
+  const handleTeamDragEnd = useCallback(
+    async (event) => {
+      if (!canEditTeams || teamsSaving || teamOrderSaving) {
+        return;
+      }
+
+      const { active, over } = event;
+      if (!over || active.id === over.id) {
+        return;
+      }
+
+      const previousRows = teamRows;
+      const nextRows = reorderRows(previousRows, active.id, over.id);
+
+      if (!nextRows) {
+        return;
+      }
+
+      setTeamRows(nextRows);
+      setTeamsError("");
+      setTeamsMessage("");
+      setTeamOrderSaving(true);
+
+      try {
+        await persistTeamOrder(nextRows);
+        setTeamsMessage("Team order saved.");
+      } catch (error) {
+        setTeamRows(previousRows);
+        setTeamsError(error?.message || "Unable to save team order");
+      } finally {
+        setTeamOrderSaving(false);
+      }
+    },
+    [canEditTeams, persistTeamOrder, teamOrderSaving, teamRows, teamsSaving]
+  );
 
   const handleCreateTournament = async (event) => {
     event.preventDefault();
@@ -370,46 +598,65 @@ function TournamentsTab({
   };
 
   const handleSaveTeams = async () => {
-    if (!token || !selectedTournamentId || !canEditTeams || teamsSaving) {
+    if (!token || !selectedTournamentId || !canEditTeams || teamsSaving || teamOrderSaving) {
       return;
     }
 
     for (let index = 0; index < teamRows.length; index += 1) {
       const row = teamRows[index];
-      const name = normalizeText(row?.name);
       const shortName = normalizeText(row?.shortName);
-      const seedValue = row?.seed;
 
-      if (!name || !shortName) {
-        setTeamsError(`Team ${index + 1} must include both name and short name.`);
+      if (!shortName) {
+        setTeamsError(`Team ${index + 1} must include a short name.`);
         return;
       }
+    }
 
-      if (seedValue !== "" && seedValue !== null && seedValue !== undefined) {
-        const parsedSeed = Number(seedValue);
-        if (!Number.isFinite(parsedSeed)) {
-          setTeamsError(`Team ${index + 1} seed must be numeric.`);
-          return;
+    const initialById = new Map(
+      teamsInitial
+        .filter((team) => team?._id)
+        .map((team) => [String(team._id), team])
+    );
+
+    const patches = teamRows
+      .filter((row) => row?._id && initialById.has(String(row._id)))
+      .map((row) => {
+        const id = String(row._id);
+        const previous = initialById.get(id);
+        const payload = {};
+        const nextShortName = normalizeText(row.shortName);
+        const previousShortName = normalizeText(previous?.shortName);
+        const nextLogoUrl = normalizeLogoUrl(row.logoUrl);
+        const previousLogoUrl = normalizeLogoUrl(previous?.logoUrl);
+
+        if (nextShortName !== previousShortName) {
+          payload.shortName = nextShortName;
+          payload.name = nextShortName;
         }
-      }
+
+        if (nextLogoUrl !== previousLogoUrl) {
+          payload.logoUrl = nextLogoUrl;
+        }
+
+        return {
+          id,
+          payload,
+        };
+      })
+      .filter((patch) => Object.keys(patch.payload).length > 0);
+
+    if (patches.length === 0) {
+      setTeamsMessage("No team field changes to save.");
+      setTeamsError("");
+      return;
     }
 
     setTeamsSaving(true);
     setTeamsError("");
     setTeamsMessage("");
 
-    const draftTeams = teamRows.map((row) => ({
-      _id: row._id ? String(row._id) : "",
-      name: row.name,
-      shortName: row.shortName,
-      seed: row.seed,
-      logoUrl: row.logoUrl,
-    }));
-
-    const syncPlan = planTournamentTeamSync(teamsInitial, draftTeams);
-
     try {
-      for (const patch of syncPlan.patches) {
+      for (const patch of patches) {
         await fetchJson(`${API_URL}/api/tournament-teams/${patch.id}`, {
           method: "PATCH",
           headers: authHeaders(true),
@@ -417,23 +664,8 @@ function TournamentsTab({
         });
       }
 
-      if (syncPlan.creates.length > 0) {
-        await fetchJson(`${API_URL}/api/tournaments/${selectedTournamentId}/teams`, {
-          method: "POST",
-          headers: authHeaders(true),
-          body: JSON.stringify(syncPlan.creates),
-        });
-      }
-
-      for (const teamId of syncPlan.deletes) {
-        await fetchJson(`${API_URL}/api/tournament-teams/${teamId}`, {
-          method: "DELETE",
-          headers: authHeaders(),
-        });
-      }
-
       await loadSelectedTournament(selectedTournamentId);
-      setTeamsMessage("Team changes saved.");
+      setTeamsMessage("Team field changes saved.");
       onShowToast?.("success", "Tournament teams updated");
     } catch (error) {
       const message = error?.message || "Unable to save team changes";
@@ -444,6 +676,8 @@ function TournamentsTab({
       setTeamsSaving(false);
     }
   };
+
+  const teamEditDisabled = !canEditTeams || teamsSaving || teamOrderSaving;
 
   if (!user || !token) {
     return (
@@ -585,18 +819,10 @@ function TournamentsTab({
             <button
               type="button"
               className="ghost-button"
-              onClick={addTeamRow}
-              disabled={!selectedTournament || !canEditTeams || teamsSaving}
-            >
-              Add team
-            </button>
-            <button
-              type="button"
-              className="primary-button"
               onClick={handleSaveTeams}
-              disabled={!selectedTournament || !canEditTeams || teamsSaving}
+              disabled={!selectedTournament || !canEditTeams || teamsSaving || teamOrderSaving}
             >
-              {teamsSaving ? "Saving..." : "Save team changes"}
+              {teamsSaving ? "Saving..." : "Save team fields"}
             </button>
           </div>
         </div>
@@ -619,69 +845,77 @@ function TournamentsTab({
         )}
 
         {teamsLoading && <p className="subtle">Loading teams...</p>}
+        {teamOrderSaving && <p className="subtle">Saving team order...</p>}
         {teamsError && <p className="error">{teamsError}</p>}
         {teamsMessage && <p className="subtle tournaments-team-success">{teamsMessage}</p>}
 
+        {selectedTournament && (
+          <div className="tournament-team-add-row">
+            <div className="tournament-team-card-fields">
+              <label className="input-label" htmlFor="team-add-shortname">
+                New short name
+              </label>
+              <input
+                id="team-add-shortname"
+                type="text"
+                value={newTeamShortName}
+                disabled={teamEditDisabled || teamCreateBusy}
+                onChange={(event) => setNewTeamShortName(event.target.value)}
+                placeholder="ALP"
+              />
+            </div>
+            <div className="tournament-team-card-fields">
+              <label className="input-label" htmlFor="team-add-logo">
+                Logo URL (optional)
+              </label>
+              <input
+                id="team-add-logo"
+                type="text"
+                value={newTeamLogoUrl}
+                disabled={teamEditDisabled || teamCreateBusy}
+                onChange={(event) => setNewTeamLogoUrl(event.target.value)}
+                placeholder="https://..."
+              />
+            </div>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={handleAddTeam}
+              disabled={!selectedTournament || teamEditDisabled || teamCreateBusy}
+            >
+              {teamCreateBusy ? "Adding..." : "Add Team"}
+            </button>
+          </div>
+        )}
+
         {!teamsLoading && selectedTournament && teamRows.length === 0 && (
-          <p className="subtle">No teams yet. Add teams and save to begin.</p>
+          <p className="subtle">No teams yet. Add a team to begin.</p>
         )}
 
         {selectedTournament && teamRows.length > 0 && (
-          <div className="tournament-team-grid">
-            {teamRows.map((team, index) => (
-              <div key={team.rowId} className="tournament-team-row">
-                <div className="tournament-team-row-fields">
-                  <label className="input-label" htmlFor={`team-name-${team.rowId}`}>
-                    Team name {index + 1}
-                  </label>
-                  <input
-                    id={`team-name-${team.rowId}`}
-                    type="text"
-                    value={team.name}
-                    disabled={!canEditTeams || teamsSaving}
-                    onChange={(event) => updateTeamRow(team.rowId, "name", event.target.value)}
+          <DndContext
+            sensors={dragSensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleTeamDragEnd}
+          >
+            <SortableContext
+              items={teamRows.map((team) => team.rowId)}
+              strategy={verticalListSortingStrategy}
+            >
+              <div className="tournament-team-grid">
+                {teamRows.map((team, index) => (
+                  <SortableTeamCard
+                    key={team.rowId}
+                    team={team}
+                    index={index}
+                    disabled={teamEditDisabled}
+                    onUpdate={updateTeamRow}
+                    onRemove={removeTeamRow}
                   />
-                </div>
-
-                <div className="tournament-team-row-fields">
-                  <label className="input-label" htmlFor={`team-short-${team.rowId}`}>
-                    Short name {index + 1}
-                  </label>
-                  <input
-                    id={`team-short-${team.rowId}`}
-                    type="text"
-                    value={team.shortName}
-                    disabled={!canEditTeams || teamsSaving}
-                    onChange={(event) => updateTeamRow(team.rowId, "shortName", event.target.value)}
-                  />
-                </div>
-
-                <div className="tournament-team-row-fields tournament-team-row-fields--seed">
-                  <label className="input-label" htmlFor={`team-seed-${team.rowId}`}>
-                    Seed
-                  </label>
-                  <input
-                    id={`team-seed-${team.rowId}`}
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={team.seed}
-                    disabled={!canEditTeams || teamsSaving}
-                    onChange={(event) => updateTeamRow(team.rowId, "seed", event.target.value)}
-                  />
-                </div>
-
-                <button
-                  type="button"
-                  className="ghost-button tournament-team-remove"
-                  disabled={!canEditTeams || teamsSaving}
-                  onClick={() => removeTeamRow(team.rowId)}
-                >
-                  Remove
-                </button>
+                ))}
               </div>
-            ))}
-          </div>
+            </SortableContext>
+          </DndContext>
         )}
       </section>
     </div>

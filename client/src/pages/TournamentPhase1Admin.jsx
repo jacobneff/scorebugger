@@ -1,5 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import {
+  DndContext,
+  PointerSensor,
+  TouchSensor,
+  KeyboardSensor,
+  closestCenter,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -10,7 +27,6 @@ import {
   PHASE1_COURT_ORDER,
   PHASE1_ROUND_BLOCKS,
   buildPhase1ScheduleLookup,
-  formatTeamLabel,
   mapCourtLabel,
   sortPhase1Pools,
 } from '../utils/phase1.js';
@@ -28,6 +44,64 @@ const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
 });
 
+const TEAM_BANK_CONTAINER_ID = 'team-bank';
+
+const formatShortTeamLabel = (team) => team?.shortName || team?.name || 'TBD';
+
+function DraggableTeamCard({ team, disabled }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: team._id,
+    disabled,
+  });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <article
+      ref={setNodeRef}
+      style={style}
+      className={`phase1-team-card ${isDragging ? 'is-dragging' : ''}`}
+    >
+      <div className="phase1-team-card-main">
+        {team.logoUrl ? (
+          <img className="phase1-team-card-logo" src={team.logoUrl} alt={`${formatShortTeamLabel(team)} logo`} />
+        ) : null}
+        <strong>{formatShortTeamLabel(team)}</strong>
+      </div>
+      <button
+        type="button"
+        className="phase1-team-drag-handle"
+        aria-label={`Drag ${formatShortTeamLabel(team)}`}
+        disabled={disabled}
+        {...attributes}
+        {...listeners}
+      >
+        Drag
+      </button>
+    </article>
+  );
+}
+
+function TeamDropContainer({ containerId, className = '', children }) {
+  const { setNodeRef, isOver } = useDroppable({ id: containerId });
+
+  return (
+    <div ref={setNodeRef} className={`${className} ${isOver ? 'is-active' : ''}`.trim()}>
+      {children}
+    </div>
+  );
+}
+
 const normalizePools = (pools) =>
   sortPhase1Pools(pools).map((pool) => ({
     ...pool,
@@ -36,6 +110,7 @@ const normalizePools = (pools) =>
           _id: String(team._id),
           name: team.name || '',
           shortName: team.shortName || '',
+          orderIndex: Number.isFinite(Number(team.orderIndex)) ? Number(team.orderIndex) : null,
           seed: team.seed ?? null,
           logoUrl: team.logoUrl ?? null,
         }))
@@ -55,10 +130,10 @@ function TournamentPhase1Admin() {
 
   const [tournament, setTournament] = useState(null);
   const [pools, setPools] = useState([]);
+  const [teams, setTeams] = useState([]);
   const [matches, setMatches] = useState([]);
   const [standings, setStandings] = useState({ pools: [], overall: [] });
-  const [dragState, setDragState] = useState(null);
-  const [dropTarget, setDropTarget] = useState(null);
+  const [autofillLoading, setAutofillLoading] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [initLoading, setInitLoading] = useState(false);
@@ -69,6 +144,18 @@ function TournamentPhase1Admin() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
+
+  const dragSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 160, tolerance: 8 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
 
   const fetchJson = useCallback(async (url, options = {}) => {
     const response = await fetch(url, options);
@@ -95,6 +182,22 @@ function TournamentPhase1Admin() {
     return Array.isArray(matchData) ? matchData : [];
   }, [fetchJson, id, token]);
 
+  const loadTeams = useCallback(async () => {
+    const teamData = await fetchJson(`${API_URL}/api/tournaments/${id}/teams`, {
+      headers: authHeaders(token),
+    });
+
+    return Array.isArray(teamData)
+      ? teamData.map((team) => ({
+          _id: String(team._id),
+          name: team.name || '',
+          shortName: team.shortName || '',
+          logoUrl: team.logoUrl ?? null,
+          orderIndex: Number.isFinite(Number(team.orderIndex)) ? Number(team.orderIndex) : null,
+        }))
+      : [];
+  }, [fetchJson, id, token]);
+
   const loadStandings = useCallback(async () => {
     const standingsPayload = await fetchJson(
       `${API_URL}/api/tournaments/${id}/standings?phase=phase1`,
@@ -118,17 +221,19 @@ function TournamentPhase1Admin() {
     setError('');
 
     try {
-      const [tournamentData, poolData, matchData, standingsData] = await Promise.all([
+      const [tournamentData, poolData, teamData, matchData, standingsData] = await Promise.all([
         fetchJson(`${API_URL}/api/tournaments/${id}`, {
           headers: authHeaders(token),
         }),
         loadPools(),
+        loadTeams(),
         loadMatches(),
         loadStandings(),
       ]);
 
       setTournament(tournamentData);
       setPools(poolData);
+      setTeams(teamData);
       setMatches(matchData);
       setStandings(standingsData);
     } catch (loadError) {
@@ -136,7 +241,7 @@ function TournamentPhase1Admin() {
     } finally {
       setLoading(false);
     }
-  }, [fetchJson, id, loadMatches, loadPools, loadStandings, token]);
+  }, [fetchJson, id, loadMatches, loadPools, loadStandings, loadTeams, token]);
 
   const refreshMatchesAndStandings = useCallback(async () => {
     setStandingsLoading(true);
@@ -188,9 +293,10 @@ function TournamentPhase1Admin() {
       }
 
       if (event.type === 'POOLS_UPDATED' && event.data?.phase === 'phase1') {
-        loadPools()
-          .then((nextPools) => {
+        Promise.all([loadPools(), loadTeams()])
+          .then(([nextPools, nextTeams]) => {
             setPools(nextPools);
+            setTeams(nextTeams);
           })
           .catch(() => {});
         return;
@@ -203,7 +309,7 @@ function TournamentPhase1Admin() {
         refreshMatchesAndStandings().catch(() => {});
       }
     },
-    [loadPools, refreshMatchesAndStandings]
+    [loadPools, loadTeams, refreshMatchesAndStandings]
   );
 
   useTournamentRealtime({
@@ -212,32 +318,72 @@ function TournamentPhase1Admin() {
     onEvent: handleTournamentRealtimeEvent,
   });
 
-  const invalidPools = useMemo(
-    () => pools.filter((pool) => pool.teamIds.length !== 3),
+  const assignedTeamIdSet = useMemo(() => {
+    const ids = new Set();
+    pools.forEach((pool) => {
+      pool.teamIds.forEach((team) => ids.add(team._id));
+    });
+    return ids;
+  }, [pools]);
+
+  const teamBank = useMemo(
+    () => teams.filter((team) => !assignedTeamIdSet.has(team._id)),
+    [assignedTeamIdSet, teams]
+  );
+
+  const poolIssues = useMemo(
+    () =>
+      pools
+        .filter((pool) => pool.teamIds.length !== 3)
+        .map((pool) => {
+          if (pool.teamIds.length < 3) {
+            const missing = 3 - pool.teamIds.length;
+            return `Pool ${pool.name} needs ${missing} more team${missing === 1 ? '' : 's'}`;
+          }
+
+          const extra = pool.teamIds.length - 3;
+          return `Pool ${pool.name} has ${extra} extra team${extra === 1 ? '' : 's'}`;
+        }),
     [pools]
   );
 
   const scheduleLookup = useMemo(() => buildPhase1ScheduleLookup(matches), [matches]);
 
+  const resolveContainerId = useCallback(
+    (idValue) => {
+      if (!idValue) {
+        return null;
+      }
+
+      const normalized = String(idValue);
+      if (normalized === TEAM_BANK_CONTAINER_ID) {
+        return TEAM_BANK_CONTAINER_ID;
+      }
+
+      if (pools.some((pool) => pool._id === normalized)) {
+        return normalized;
+      }
+
+      if (teamBank.some((team) => team._id === normalized)) {
+        return TEAM_BANK_CONTAINER_ID;
+      }
+
+      const owningPool = pools.find((pool) => pool.teamIds.some((team) => team._id === normalized));
+      return owningPool ? owningPool._id : null;
+    },
+    [pools, teamBank]
+  );
+
   const moveTeam = useCallback(
-    (sourcePoolId, teamId, targetPoolId, targetIndex) => {
-      const sourcePoolIndex = pools.findIndex((pool) => pool._id === sourcePoolId);
-      const targetPoolIndex = pools.findIndex((pool) => pool._id === targetPoolId);
+    (activeId, overId) => {
+      const sourceContainerId = resolveContainerId(activeId);
+      const targetContainerId = resolveContainerId(overId);
 
-      if (sourcePoolIndex === -1 || targetPoolIndex === -1) {
+      if (!sourceContainerId || !targetContainerId) {
         return null;
       }
 
-      const sourcePool = pools[sourcePoolIndex];
-      const targetPool = pools[targetPoolIndex];
-      const sourceTeamIndex = sourcePool.teamIds.findIndex((team) => team._id === teamId);
-
-      if (sourceTeamIndex === -1) {
-        return null;
-      }
-
-      if (sourcePoolId !== targetPoolId && targetPool.teamIds.length >= 3) {
-        setError('A pool can include at most 3 teams. Move one out first.');
+      if (sourceContainerId === TEAM_BANK_CONTAINER_ID && targetContainerId === TEAM_BANK_CONTAINER_ID) {
         return null;
       }
 
@@ -246,36 +392,86 @@ function TournamentPhase1Admin() {
         teamIds: [...pool.teamIds],
       }));
 
-      const [draggedTeam] = nextPools[sourcePoolIndex].teamIds.splice(sourceTeamIndex, 1);
-      let boundedTargetIndex = Math.max(
-        0,
-        Math.min(targetIndex, nextPools[targetPoolIndex].teamIds.length)
-      );
+      const sourcePoolIndex = nextPools.findIndex((pool) => pool._id === sourceContainerId);
+      const targetPoolIndex = nextPools.findIndex((pool) => pool._id === targetContainerId);
+      const sourcePool = sourcePoolIndex >= 0 ? nextPools[sourcePoolIndex] : null;
+      const targetPool = targetPoolIndex >= 0 ? nextPools[targetPoolIndex] : null;
+      const sourcePoolBefore = pools.find((pool) => pool._id === sourceContainerId) || null;
+      const sourceTeamIndex = sourcePool
+        ? sourcePool.teamIds.findIndex((team) => team._id === String(activeId))
+        : -1;
 
-      if (sourcePoolIndex === targetPoolIndex && sourceTeamIndex < boundedTargetIndex) {
-        boundedTargetIndex -= 1;
-      }
+      const draggedTeam =
+        sourceContainerId === TEAM_BANK_CONTAINER_ID
+          ? teamBank.find((team) => team._id === String(activeId)) || null
+          : sourcePool && sourceTeamIndex >= 0
+            ? sourcePool.teamIds[sourceTeamIndex]
+            : null;
 
-      nextPools[targetPoolIndex].teamIds.splice(boundedTargetIndex, 0, draggedTeam);
-
-      if (
-        sourcePoolIndex === targetPoolIndex &&
-        sourceTeamIndex === boundedTargetIndex
-      ) {
+      if (!draggedTeam) {
         return null;
       }
 
-      return nextPools;
+      if (sourcePool && sourceTeamIndex >= 0) {
+        sourcePool.teamIds.splice(sourceTeamIndex, 1);
+      }
+
+      if (targetPool) {
+        if (sourceContainerId !== targetContainerId && targetPool.teamIds.length >= 3) {
+          return { error: 'A pool can include at most 3 teams. Move one out first.' };
+        }
+
+        const overIdAsString = String(overId);
+        const targetTeamIds = targetPool.teamIds.map((team) => team._id);
+        let targetIndex =
+          overIdAsString === targetContainerId
+            ? targetPool.teamIds.length
+            : targetTeamIds.indexOf(overIdAsString);
+
+        if (targetIndex < 0) {
+          targetIndex = targetPool.teamIds.length;
+        }
+
+        if (
+          sourceContainerId === targetContainerId &&
+          sourceTeamIndex >= 0 &&
+          sourceTeamIndex < targetIndex
+        ) {
+          targetIndex -= 1;
+        }
+
+        targetPool.teamIds.splice(targetIndex, 0, draggedTeam);
+      }
+
+      if (sourceContainerId === targetContainerId && sourcePoolBefore) {
+        const beforeIds = sourcePoolBefore.teamIds.map((team) => team._id);
+        const afterIds = (nextPools.find((pool) => pool._id === sourceContainerId) || sourcePoolBefore).teamIds.map(
+          (team) => team._id
+        );
+        if (beforeIds.join('|') === afterIds.join('|')) {
+          return null;
+        }
+      }
+
+      const poolIdsToPersist = [sourceContainerId, targetContainerId].filter(
+        (poolId, index, all) =>
+          poolId !== TEAM_BANK_CONTAINER_ID && all.indexOf(poolId) === index
+      );
+
+      return {
+        nextPools,
+        poolIdsToPersist,
+      };
     },
-    [pools]
+    [pools, resolveContainerId, teamBank]
   );
 
   const persistPoolChanges = useCallback(
-    async (nextPools, sourcePoolId, targetPoolId) => {
-      const patchPool = async (poolId) => {
+    async (nextPools, poolIdsToPersist) => {
+      for (const poolId of poolIdsToPersist) {
         const pool = nextPools.find((entry) => entry._id === poolId);
         if (!pool) {
-          return;
+          continue;
         }
 
         await fetchJson(`${API_URL}/api/pools/${poolId}`, {
@@ -285,44 +481,37 @@ function TournamentPhase1Admin() {
             teamIds: pool.teamIds.map((team) => team._id),
           }),
         });
-      };
-
-      await patchPool(sourcePoolId);
-      if (targetPoolId !== sourcePoolId) {
-        await patchPool(targetPoolId);
       }
     },
     [fetchJson, token]
   );
 
-  const handleDrop = useCallback(
-    async (targetPoolId, targetIndex) => {
-      if (!dragState || savingPools) {
+  const handleTeamDragEnd = useCallback(
+    async (event) => {
+      const { active, over } = event;
+
+      if (!active?.id || !over?.id || savingPools) {
         return;
       }
 
-      const nextPools = moveTeam(
-        dragState.poolId,
-        dragState.teamId,
-        targetPoolId,
-        targetIndex
-      );
+      const moveResult = moveTeam(active.id, over.id);
+      if (!moveResult) {
+        return;
+      }
 
-      setDropTarget(null);
-      setDragState(null);
-
-      if (!nextPools) {
+      if (moveResult.error) {
+        setError(moveResult.error);
         return;
       }
 
       const previousPools = pools;
-      setPools(nextPools);
+      setPools(moveResult.nextPools);
       setSavingPools(true);
       setError('');
       setMessage('');
 
       try {
-        await persistPoolChanges(nextPools, dragState.poolId, targetPoolId);
+        await persistPoolChanges(moveResult.nextPools, moveResult.poolIdsToPersist);
         const refreshedPools = await loadPools();
         setPools(refreshedPools);
         setMessage('Pool assignments saved.');
@@ -333,7 +522,7 @@ function TournamentPhase1Admin() {
         setSavingPools(false);
       }
     },
-    [dragState, loadPools, moveTeam, persistPoolChanges, pools, savingPools]
+    [loadPools, moveTeam, persistPoolChanges, pools, savingPools]
   );
 
   const handleInitializePools = useCallback(async () => {
@@ -351,13 +540,78 @@ function TournamentPhase1Admin() {
         headers: authHeaders(token),
       });
       setPools(normalizePools(poolData));
-      setMessage('Pool Play 1 pools initialized.');
+      setMessage('Pool Play 1 pools created.');
     } catch (initError) {
       setError(initError.message || 'Unable to initialize pools');
     } finally {
       setInitLoading(false);
     }
   }, [fetchJson, id, token]);
+
+  const handleAutofillPools = useCallback(
+    async (force = false) => {
+      const suffix = force ? '?force=true' : '';
+      const response = await fetch(`${API_URL}/api/tournaments/${id}/phase1/pools/autofill${suffix}`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (response.status === 409 && !force) {
+        return {
+          requiresForce: true,
+          message: payload?.message || 'Phase 1 pools already contain team assignments.',
+        };
+      }
+
+      if (!response.ok || !Array.isArray(payload)) {
+        throw new Error(payload?.message || 'Unable to auto-fill pools from team order');
+      }
+
+      return {
+        requiresForce: false,
+        pools: normalizePools(payload),
+      };
+    },
+    [id, token]
+  );
+
+  const handleAutoFillPoolsClick = useCallback(async () => {
+    if (!token || !id || autofillLoading || savingPools || initLoading) {
+      return;
+    }
+
+    setAutofillLoading(true);
+    setError('');
+    setMessage('');
+
+    try {
+      const firstAttempt = await handleAutofillPools(false);
+
+      if (firstAttempt.requiresForce) {
+        const shouldForce = window.confirm(
+          `${firstAttempt.message}\n\nThis will overwrite current Pool Play 1 assignments. Continue?`
+        );
+
+        if (!shouldForce) {
+          setMessage(firstAttempt.message);
+          return;
+        }
+
+        const forced = await handleAutofillPools(true);
+        setPools(forced.pools);
+        setMessage('Pools auto-filled from team order.');
+        return;
+      }
+
+      setPools(firstAttempt.pools);
+      setMessage('Pools auto-filled from team order.');
+    } catch (autofillError) {
+      setError(autofillError.message || 'Unable to auto-fill pools');
+    } finally {
+      setAutofillLoading(false);
+    }
+  }, [autofillLoading, handleAutofillPools, id, initLoading, savingPools, token]);
 
   const generatePhase1 = useCallback(
     async (force = false) => {
@@ -476,7 +730,7 @@ function TournamentPhase1Admin() {
     [fetchJson, matchActionId, refreshMatchesAndStandings, token]
   );
 
-  const canGenerate = pools.length === 5 && invalidPools.length === 0 && !savingPools;
+  const canGenerate = pools.length === 5 && poolIssues.length === 0 && !savingPools;
 
   if (initializing || loading) {
     return (
@@ -509,8 +763,8 @@ function TournamentPhase1Admin() {
           <div>
             <h1 className="title">Pool Play 1 Setup</h1>
             <p className="subtitle">
-              {tournament?.name || 'Tournament'} • Drag teams to adjust pools, then generate the
-              fixed Pool Play 1 schedule.
+              {tournament?.name || 'Tournament'} • Create pools, drag teams from Team Bank, then
+              generate the fixed Pool Play 1 schedule.
             </p>
           </div>
           <div className="phase1-admin-actions">
@@ -524,9 +778,17 @@ function TournamentPhase1Admin() {
               className="secondary-button"
               type="button"
               onClick={handleInitializePools}
-              disabled={initLoading || savingPools || generateLoading}
+              disabled={initLoading || savingPools || generateLoading || autofillLoading}
             >
-              {initLoading ? 'Initializing...' : 'Initialize Pool Play 1 Pools'}
+              {initLoading ? 'Creating...' : 'Create Pool Play 1 Pools'}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={handleAutoFillPoolsClick}
+              disabled={autofillLoading || initLoading || savingPools || generateLoading}
+            >
+              {autofillLoading ? 'Auto-filling...' : 'Auto-fill pools from team order'}
             </button>
             <button
               className="primary-button"
@@ -540,76 +802,79 @@ function TournamentPhase1Admin() {
         </div>
 
         {savingPools && <p className="subtle">Saving pool changes...</p>}
-        {invalidPools.length > 0 && (
+        {poolIssues.length > 0 && (
           <p className="error">
-            Each pool must have exactly 3 teams before generating matches. Invalid pools:{' '}
-            {invalidPools.map((pool) => pool.name).join(', ')}.
+            Each pool must have exactly 3 teams before generating matches. {poolIssues.join('; ')}.
           </p>
         )}
         {error && <p className="error">{error}</p>}
         {message && <p className="subtle phase1-success">{message}</p>}
 
-        <div className="phase1-pool-grid">
-          {pools.map((pool) => (
-            <section
-              key={pool._id}
-              className={`phase1-pool-column ${
-                pool.teamIds.length === 3 ? '' : 'phase1-pool-column--invalid'
-              }`}
-            >
+        <DndContext
+          sensors={dragSensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleTeamDragEnd}
+        >
+          <div className="phase1-pool-board">
+            <section className="phase1-pool-column phase1-team-bank-column">
               <header className="phase1-pool-header">
-                <h2>Pool {pool.name}</h2>
-                <p>{pool.homeCourt ? mapCourtLabel(pool.homeCourt) : 'No home court'}</p>
+                <h2>Team Bank</h2>
+                <p>{teamBank.length} available</p>
               </header>
-
-              <div className="phase1-drop-list">
-                {Array.from({ length: pool.teamIds.length + 1 }).map((_, slotIndex) => (
-                  <div key={`${pool._id}-slot-${slotIndex}`} className="phase1-drop-block">
-                    <div
-                      className={`phase1-drop-slot ${
-                        dropTarget === `${pool._id}:${slotIndex}` ? 'is-active' : ''
-                      }`}
-                      onDragOver={(event) => {
-                        event.preventDefault();
-                        setDropTarget(`${pool._id}:${slotIndex}`);
-                      }}
-                      onDragLeave={() => {
-                        if (dropTarget === `${pool._id}:${slotIndex}`) {
-                          setDropTarget(null);
-                        }
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        handleDrop(pool._id, slotIndex);
-                      }}
+              <SortableContext
+                items={teamBank.map((team) => team._id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <TeamDropContainer
+                  containerId={TEAM_BANK_CONTAINER_ID}
+                  className="phase1-drop-list phase1-drop-list--bank"
+                >
+                  {teamBank.map((team) => (
+                    <DraggableTeamCard
+                      key={team._id}
+                      team={team}
+                      disabled={savingPools || initLoading || autofillLoading || generateLoading}
                     />
-                    {slotIndex < pool.teamIds.length && (
-                      <article
-                        className={`phase1-team-card ${
-                          dragState?.teamId === pool.teamIds[slotIndex]._id ? 'is-dragging' : ''
-                        }`}
-                        draggable
-                        onDragStart={() =>
-                          setDragState({
-                            poolId: pool._id,
-                            teamId: pool.teamIds[slotIndex]._id,
-                          })
-                        }
-                        onDragEnd={() => {
-                          setDragState(null);
-                          setDropTarget(null);
-                        }}
-                      >
-                        <strong>{pool.teamIds[slotIndex].name}</strong>
-                        <span>Seed #{pool.teamIds[slotIndex].seed ?? 'N/A'}</span>
-                      </article>
-                    )}
-                  </div>
-                ))}
-              </div>
+                  ))}
+                  {teamBank.length === 0 && <p className="subtle">No teams in bank.</p>}
+                </TeamDropContainer>
+              </SortableContext>
             </section>
-          ))}
-        </div>
+
+            <div className="phase1-pool-grid">
+              {pools.map((pool) => (
+                <section
+                  key={pool._id}
+                  className={`phase1-pool-column ${
+                    pool.teamIds.length === 3 ? '' : 'phase1-pool-column--invalid'
+                  }`}
+                >
+                  <header className="phase1-pool-header">
+                    <h2>Pool {pool.name}</h2>
+                    <p>{pool.homeCourt ? mapCourtLabel(pool.homeCourt) : 'No home court'}</p>
+                    <p className="phase1-pool-count">{pool.teamIds.length}/3</p>
+                  </header>
+
+                  <SortableContext
+                    items={pool.teamIds.map((team) => team._id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <TeamDropContainer containerId={pool._id} className="phase1-drop-list">
+                      {pool.teamIds.map((team) => (
+                        <DraggableTeamCard
+                          key={team._id}
+                          team={team}
+                          disabled={savingPools || initLoading || autofillLoading || generateLoading}
+                        />
+                      ))}
+                      {pool.teamIds.length === 0 && <p className="subtle">Drop teams here.</p>}
+                    </TeamDropContainer>
+                  </SortableContext>
+                </section>
+              ))}
+            </div>
+          </div>
+        </DndContext>
 
         {matches.length > 0 && (
           <section className="phase1-schedule">
@@ -631,7 +896,7 @@ function TournamentPhase1Admin() {
                       {PHASE1_COURT_ORDER.map((court) => {
                         const match = scheduleLookup[`${roundBlock}-${court}`];
                         const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
-                        const refLabel = formatTeamLabel(match?.refTeams?.[0]);
+                        const refLabel = formatShortTeamLabel(match?.refTeams?.[0]);
                         const matchStatusMeta = getMatchStatusMeta(match?.status);
                         const controlPanelHref = buildTournamentMatchControlHref({
                           matchId: match?._id,
@@ -645,7 +910,7 @@ function TournamentPhase1Admin() {
                               <div className="phase1-match-cell">
                                 <p>
                                   <strong>Pool {match.poolName}</strong>
-                                  {`: ${formatTeamLabel(match.teamA)} vs ${formatTeamLabel(match.teamB)}`}
+                                  {`: ${formatShortTeamLabel(match.teamA)} vs ${formatShortTeamLabel(match.teamB)}`}
                                 </p>
                                 <p>Ref: {refLabel}</p>
                                 {liveSummariesByMatchId[match._id] && (
@@ -755,12 +1020,12 @@ function TournamentPhase1Admin() {
           </div>
 
           <article className="phase1-standings-card phase1-standings-card--overall">
-            <h3>Overall Seeds</h3>
+            <h3>Overall Ranking</h3>
             <div className="phase1-table-wrap">
               <table className="phase1-standings-table">
                 <thead>
                   <tr>
-                    <th>Seed</th>
+                    <th>Rank</th>
                     <th>Team</th>
                     <th>W-L</th>
                     <th>Sets</th>

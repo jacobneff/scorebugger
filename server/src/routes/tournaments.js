@@ -182,6 +182,51 @@ const parseBooleanFlag = (value, fallback = false) => {
   return fallback;
 };
 
+const normalizeTeamOrderIndex = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  const rounded = Math.round(parsed);
+  return rounded > 0 ? rounded : null;
+};
+
+const normalizeCreatedAtMs = (value) => {
+  if (!value) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
+};
+
+function compareTeamsByTournamentOrder(teamA, teamB) {
+  const orderA = normalizeTeamOrderIndex(teamA?.orderIndex) ?? Number.MAX_SAFE_INTEGER;
+  const orderB = normalizeTeamOrderIndex(teamB?.orderIndex) ?? Number.MAX_SAFE_INTEGER;
+
+  if (orderA !== orderB) {
+    return orderA - orderB;
+  }
+
+  const createdAtA = normalizeCreatedAtMs(teamA?.createdAt);
+  const createdAtB = normalizeCreatedAtMs(teamB?.createdAt);
+
+  if (createdAtA !== createdAtB) {
+    return createdAtA - createdAtB;
+  }
+
+  const nameA = String(teamA?.name || teamA?.shortName || '');
+  const nameB = String(teamB?.name || teamB?.shortName || '');
+  const byName = nameA.localeCompare(nameB);
+
+  if (byName !== 0) {
+    return byName;
+  }
+
+  return String(toIdString(teamA?._id) || '').localeCompare(String(toIdString(teamB?._id) || ''));
+}
+
 function validateStandingsPhaseFilter(phase) {
   if (!phase) {
     return null;
@@ -210,12 +255,12 @@ function validateTeamPayload(rawTeam, index) {
     return `Invalid team payload at index ${index}`;
   }
 
-  if (!isNonEmptyString(rawTeam.name)) {
-    return `Team name is required at index ${index}`;
-  }
-
   if (!isNonEmptyString(rawTeam.shortName)) {
     return `Team shortName is required at index ${index}`;
+  }
+
+  if (rawTeam.name !== undefined && rawTeam.name !== null && !isNonEmptyString(rawTeam.name)) {
+    return `Team name must be a non-empty string at index ${index}`;
   }
 
   if (
@@ -237,12 +282,18 @@ function validateTeamPayload(rawTeam, index) {
   return null;
 }
 
-function buildTeamInsertPayload(rawTeam, tournamentId) {
+function buildTeamInsertPayload(rawTeam, tournamentId, orderIndex = null) {
+  const shortName = rawTeam.shortName.trim();
+  const normalizedName = isNonEmptyString(rawTeam.name) ? rawTeam.name.trim() : shortName;
   const team = {
     tournamentId,
-    name: rawTeam.name.trim(),
-    shortName: rawTeam.shortName.trim(),
+    name: normalizedName,
+    shortName,
   };
+
+  if (orderIndex !== null) {
+    team.orderIndex = orderIndex;
+  }
 
   if (rawTeam.logoUrl !== undefined) {
     team.logoUrl = rawTeam.logoUrl === null ? null : rawTeam.logoUrl.trim() || null;
@@ -265,6 +316,7 @@ function serializeTeam(team) {
     name: team.name ?? '',
     shortName: team.shortName ?? '',
     logoUrl: team.logoUrl ?? null,
+    orderIndex: normalizeTeamOrderIndex(team.orderIndex),
     seed: team.seed ?? null,
   };
 }
@@ -278,6 +330,7 @@ function serializePool(pool) {
               name: team.name ?? '',
               shortName: team.shortName ?? '',
               logoUrl: team.logoUrl ?? null,
+              orderIndex: normalizeTeamOrderIndex(team.orderIndex),
               seed: team.seed ?? null,
             }
           : { _id: toIdString(team) }
@@ -385,7 +438,7 @@ async function loadPhase1Pools(tournamentId, { populateTeams = true } = {}) {
   });
 
   if (populateTeams) {
-    query = query.populate('teamIds', 'name shortName logoUrl seed');
+    query = query.populate('teamIds', 'name shortName logoUrl orderIndex seed');
   }
 
   const pools = await query.lean();
@@ -411,7 +464,7 @@ async function loadPhase2Pools(tournamentId, { populateTeams = true } = {}) {
   });
 
   if (populateTeams) {
-    query = query.populate('teamIds', 'name shortName logoUrl seed');
+    query = query.populate('teamIds', 'name shortName logoUrl orderIndex seed');
   }
 
   const pools = await query.lean();
@@ -421,9 +474,9 @@ async function loadPhase2Pools(tournamentId, { populateTeams = true } = {}) {
 async function loadMatchesForResponse(query) {
   const matches = await Match.find(query)
     .populate('poolId', 'name')
-    .populate('teamAId', 'name shortName logoUrl seed')
-    .populate('teamBId', 'name shortName logoUrl seed')
-    .populate('refTeamIds', 'name shortName logoUrl seed')
+    .populate('teamAId', 'name shortName logoUrl orderIndex seed')
+    .populate('teamBId', 'name shortName logoUrl orderIndex seed')
+    .populate('refTeamIds', 'name shortName logoUrl orderIndex seed')
     .populate('scoreboardId', 'code')
     .sort({ phase: 1, roundBlock: 1, court: 1, createdAt: 1 })
     .lean();
@@ -775,9 +828,9 @@ router.get('/code/:publicCode', async (req, res, next) => {
     }
 
     const teams = await TournamentTeam.find({ tournamentId: tournament._id })
-      .select('name shortName logoUrl seed')
-      .sort({ seed: 1, name: 1 })
+      .select('name shortName logoUrl orderIndex seed createdAt')
       .lean();
+    teams.sort(compareTeamsByTournamentOrder);
 
     return res.json({
       tournament: {
@@ -797,6 +850,7 @@ router.get('/code/:publicCode', async (req, res, next) => {
         name: team.name,
         shortName: team.shortName,
         logoUrl: team.logoUrl || null,
+        orderIndex: normalizeTeamOrderIndex(team.orderIndex),
         seed: team.seed ?? null,
       })),
     });
@@ -1113,43 +1167,11 @@ router.post('/:id/phase1/pools/init', requireAuth, async (req, res, next) => {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
 
-    const assignSeeds = parseBooleanFlag(
-      req.query?.assignSeeds ?? req.body?.assignSeeds,
-      true
-    );
-
     const existingPools = await Pool.find({
       tournamentId: id,
       phase: 'phase1',
       name: { $in: PHASE1_POOL_NAMES },
     }).lean();
-
-    let assignments = null;
-
-    if (existingPools.length === 0 && assignSeeds) {
-      const teams = await TournamentTeam.find({ tournamentId: id })
-        .select('_id name seed')
-        .lean();
-
-      teams.sort((teamA, teamB) => {
-        const teamASeed = Number.isFinite(Number(teamA.seed))
-          ? Number(teamA.seed)
-          : Number.MAX_SAFE_INTEGER;
-        const teamBSeed = Number.isFinite(Number(teamB.seed))
-          ? Number(teamB.seed)
-          : Number.MAX_SAFE_INTEGER;
-
-        if (teamASeed !== teamBSeed) {
-          return teamASeed - teamBSeed;
-        }
-
-        const teamAName = typeof teamA.name === 'string' ? teamA.name : '';
-        const teamBName = typeof teamB.name === 'string' ? teamB.name : '';
-        return teamAName.localeCompare(teamBName);
-      });
-
-      assignments = buildSerpentineAssignments(teams);
-    }
 
     const existingByName = new Map(existingPools.map((pool) => [pool.name, pool]));
     const writeOperations = [];
@@ -1165,7 +1187,7 @@ router.post('/:id/phase1/pools/init', requireAuth, async (req, res, next) => {
               tournamentId: id,
               phase: 'phase1',
               name: poolName,
-              teamIds: assignments?.[poolName] || [],
+              teamIds: [],
               homeCourt: expectedHomeCourt,
             },
           },
@@ -1185,6 +1207,138 @@ router.post('/:id/phase1/pools/init', requireAuth, async (req, res, next) => {
 
     if (writeOperations.length > 0) {
       await Pool.bulkWrite(writeOperations, { ordered: true });
+    }
+
+    const pools = await loadPhase1Pools(id, { populateTeams: true });
+    emitTournamentEventFromRequest(
+      req,
+      tournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.POOLS_UPDATED,
+      {
+        phase: 'phase1',
+        poolIds: pools.map((pool) => toIdString(pool._id)).filter(Boolean),
+      }
+    );
+    return res.json(pools.map(serializePool));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /api/tournaments/:id/phase1/pools/autofill -> serpentine fill pools from team order
+router.post('/:id/phase1/pools/autofill', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const tournament = await Tournament.findOne({
+      _id: id,
+      createdByUserId: req.user.id,
+    })
+      .select('publicCode')
+      .lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const forceAutofill = parseBooleanFlag(req.query?.force ?? req.body?.force, false);
+
+    const existingPools = await Pool.find({
+      tournamentId: id,
+      phase: 'phase1',
+      name: { $in: PHASE1_POOL_NAMES },
+    })
+      .select('_id name teamIds homeCourt')
+      .lean();
+    const existingByName = new Map(existingPools.map((pool) => [pool.name, pool]));
+    const ensurePoolOperations = [];
+
+    PHASE1_POOL_NAMES.forEach((poolName) => {
+      const expectedHomeCourt = PHASE1_POOL_HOME_COURTS[poolName];
+      const existingPool = existingByName.get(poolName);
+
+      if (!existingPool) {
+        ensurePoolOperations.push({
+          insertOne: {
+            document: {
+              tournamentId: id,
+              phase: 'phase1',
+              name: poolName,
+              teamIds: [],
+              homeCourt: expectedHomeCourt,
+            },
+          },
+        });
+        return;
+      }
+
+      if (existingPool.homeCourt !== expectedHomeCourt) {
+        ensurePoolOperations.push({
+          updateOne: {
+            filter: { _id: existingPool._id },
+            update: { $set: { homeCourt: expectedHomeCourt } },
+          },
+        });
+      }
+    });
+
+    if (ensurePoolOperations.length > 0) {
+      await Pool.bulkWrite(ensurePoolOperations, { ordered: true });
+    }
+
+    const phase1Pools = await Pool.find({
+      tournamentId: id,
+      phase: 'phase1',
+      name: { $in: PHASE1_POOL_NAMES },
+    })
+      .select('_id name teamIds homeCourt')
+      .lean();
+    const poolsByName = new Map(phase1Pools.map((pool) => [pool.name, pool]));
+
+    const hasAnyAssignedTeams = PHASE1_POOL_NAMES.some((poolName) => {
+      const pool = poolsByName.get(poolName);
+      return Array.isArray(pool?.teamIds) && pool.teamIds.length > 0;
+    });
+
+    if (hasAnyAssignedTeams && !forceAutofill) {
+      return res.status(409).json({
+        message:
+          'Phase 1 pools already contain teams. Re-run with ?force=true to overwrite assignments.',
+      });
+    }
+
+    const teams = await TournamentTeam.find({ tournamentId: id })
+      .select('_id name shortName orderIndex createdAt')
+      .lean();
+    teams.sort(compareTeamsByTournamentOrder);
+
+    const assignments = buildSerpentineAssignments(teams.slice(0, 15));
+    const autofillUpdates = PHASE1_POOL_NAMES.map((poolName) => {
+      const pool = poolsByName.get(poolName);
+      if (!pool) {
+        return null;
+      }
+
+      const expectedHomeCourt = PHASE1_POOL_HOME_COURTS[poolName];
+      return {
+        updateOne: {
+          filter: { _id: pool._id },
+          update: {
+            $set: {
+              teamIds: assignments[poolName] || [],
+              homeCourt: expectedHomeCourt,
+            },
+          },
+        },
+      };
+    }).filter(Boolean);
+
+    if (autofillUpdates.length > 0) {
+      await Pool.bulkWrite(autofillUpdates, { ordered: true });
     }
 
     const pools = await loadPhase1Pools(id, { populateTeams: true });
@@ -2203,7 +2357,25 @@ router.post('/:id/teams', requireAuth, async (req, res, next) => {
       }
     }
 
-    const payload = rawTeams.map((team) => buildTeamInsertPayload(team, id));
+    const existingTeams = await TournamentTeam.find({ tournamentId: id })
+      .select('_id orderIndex createdAt name shortName')
+      .lean();
+    const maxExistingOrderIndex = existingTeams.reduce((maxValue, team) => {
+      const normalized = normalizeTeamOrderIndex(team?.orderIndex);
+      if (normalized === null) {
+        return maxValue;
+      }
+
+      return Math.max(maxValue, normalized);
+    }, 0);
+
+    let nextOrderIndex =
+      maxExistingOrderIndex > 0 ? maxExistingOrderIndex + 1 : existingTeams.length + 1;
+    const payload = rawTeams.map((team) => {
+      const teamPayload = buildTeamInsertPayload(team, id, nextOrderIndex);
+      nextOrderIndex += 1;
+      return teamPayload;
+    });
 
     if (Array.isArray(req.body)) {
       const createdTeams = await TournamentTeam.insertMany(payload, { ordered: true });
@@ -2212,6 +2384,61 @@ router.post('/:id/teams', requireAuth, async (req, res, next) => {
 
     const createdTeam = await TournamentTeam.create(payload[0]);
     return res.status(201).json(createdTeam.toObject());
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PUT /api/tournaments/:id/teams/order -> update tournament team order indices
+router.put('/:id/teams/order', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+
+    if (!ownedTournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    if (!Array.isArray(req.body?.orderedTeamIds)) {
+      return res.status(400).json({ message: 'orderedTeamIds must be an array of team ids' });
+    }
+
+    const orderedTeamIds = req.body.orderedTeamIds.map((teamId) => toIdString(teamId)).filter(Boolean);
+
+    if (orderedTeamIds.some((teamId) => !isObjectId(teamId))) {
+      return res.status(400).json({ message: 'orderedTeamIds includes an invalid team id' });
+    }
+
+    const tournamentTeams = await TournamentTeam.find({ tournamentId: id })
+      .select('_id')
+      .lean();
+    const tournamentTeamIds = tournamentTeams.map((team) => toIdString(team._id)).filter(Boolean);
+
+    if (!isPermutation(orderedTeamIds, tournamentTeamIds)) {
+      return res.status(400).json({
+        message: 'orderedTeamIds must be a permutation of all tournament team ids',
+      });
+    }
+
+    const writeOperations = orderedTeamIds.map((teamId, index) => ({
+      updateOne: {
+        filter: { _id: teamId, tournamentId: id },
+        update: { $set: { orderIndex: index + 1 } },
+      },
+    }));
+
+    if (writeOperations.length > 0) {
+      await TournamentTeam.bulkWrite(writeOperations, { ordered: true });
+    }
+
+    const teams = await TournamentTeam.find({ tournamentId: id }).lean();
+    teams.sort(compareTeamsByTournamentOrder);
+    return res.json(teams);
   } catch (error) {
     return next(error);
   }
@@ -2232,9 +2459,8 @@ router.get('/:id/teams', requireAuth, async (req, res, next) => {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
 
-    const teams = await TournamentTeam.find({ tournamentId: id })
-      .sort({ seed: 1, name: 1 })
-      .lean();
+    const teams = await TournamentTeam.find({ tournamentId: id }).lean();
+    teams.sort(compareTeamsByTournamentOrder);
 
     return res.json(teams);
   } catch (error) {

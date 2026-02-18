@@ -23,6 +23,10 @@ const TournamentTeamSchema = new mongoose.Schema(
       default: null,
       trim: true,
     },
+    orderIndex: {
+      type: Number,
+      default: null,
+    },
     seed: {
       type: Number,
       default: null,

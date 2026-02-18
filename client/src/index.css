@@ -929,34 +929,78 @@ button:disabled {
   color: #15803d;
 }
 
+.tournament-team-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: end;
+}
+
 .tournament-team-grid {
   display: grid;
   gap: 0.7rem;
 }
 
-.tournament-team-row {
+.tournament-team-card {
   border: 1px solid rgba(148, 163, 184, 0.35);
   border-radius: 12px;
   padding: 0.75rem;
   background: #f8fafc;
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(110px, 0.45fr) auto;
-  gap: 0.65rem;
-  align-items: end;
+  gap: 0.6rem;
 }
 
-.tournament-team-row-fields {
+.tournament-team-card.is-dragging {
+  opacity: 0.55;
+}
+
+.tournament-team-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.tournament-team-card-rank {
+  font-size: 0.82rem;
+  color: #475569;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tournament-team-card-fields {
   display: grid;
   gap: 0.35rem;
 }
 
-.tournament-team-row-fields--seed input {
-  text-align: center;
+.tournament-team-drag-handle {
+  border: 1px dashed rgba(37, 99, 235, 0.5);
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.08);
+  color: #1d4ed8;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 .tournament-team-remove {
-  align-self: center;
   justify-self: end;
+}
+
+.tournament-team-logo-preview {
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.tournament-team-logo-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 /* ===== Account & Board List ===== */
@@ -2127,6 +2171,13 @@ button:disabled {
   color: #15803d;
 }
 
+.phase1-pool-board {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  gap: 0.9rem;
+  align-items: start;
+}
+
 .phase1-pool-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -2145,6 +2196,10 @@ button:disabled {
   display: grid;
   gap: 0.75rem;
   align-content: start;
+}
+
+.phase1-team-bank-column {
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.92), rgba(248, 250, 252, 0.95));
 }
 
 .phase1-pool-column--invalid {
@@ -2169,6 +2224,19 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+.phase1-pool-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 0.12rem 0.55rem;
+  background: rgba(37, 99, 235, 0.14);
+  color: #1d4ed8;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .phase2-rematch-warnings {
   display: grid;
   gap: 0.35rem;
@@ -2182,6 +2250,24 @@ button:disabled {
 .phase1-drop-list {
   display: grid;
   gap: 0.45rem;
+  min-height: 72px;
+  border: 1px dashed rgba(148, 163, 184, 0.45);
+  border-radius: 10px;
+  padding: 0.45rem;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.phase1-drop-list.is-active {
+  border-color: rgba(37, 99, 235, 0.8);
+  background: rgba(219, 234, 254, 0.65);
+}
+
+.phase1-drop-list .subtle {
+  font-size: 0.8rem;
+}
+
+.phase1-drop-list--bank .subtle {
+  color: #334155;
 }
 
 .phase1-drop-block {
@@ -2207,18 +2293,52 @@ button:disabled {
   border: 1px solid rgba(148, 163, 184, 0.35);
   background: #ffffff;
   padding: 0.6rem 0.7rem;
-  display: grid;
-  gap: 0.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
   cursor: grab;
+}
+
+.phase1-team-card-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.phase1-team-card-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: #ffffff;
 }
 
 .phase1-team-card strong {
   font-size: 0.92rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .phase1-team-card span {
   font-size: 0.82rem;
   color: #475569;
+  width: 100%;
+}
+
+.phase1-team-drag-handle {
+  border: 1px dashed rgba(37, 99, 235, 0.45);
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.08);
+  color: #1d4ed8;
+  padding: 0.22rem 0.58rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 .phase1-team-card.is-dragging {
@@ -2629,6 +2749,10 @@ button:disabled {
   .tournaments-layout {
     grid-template-columns: 1fr;
   }
+
+  .phase1-pool-board {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -2805,9 +2929,12 @@ button:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .tournament-team-row {
+  .tournament-team-add-row {
     grid-template-columns: 1fr;
-    align-items: stretch;
+  }
+
+  .tournament-team-add-row .primary-button {
+    width: 100%;
   }
 
   .tournament-team-remove {

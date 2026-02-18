@@ -59,7 +59,12 @@ router.patch('/:teamId', requireAuth, async (req, res, next) => {
         return res.status(400).json({ message: 'Team shortName must be a non-empty string' });
       }
 
-      updates.shortName = req.body.shortName.trim();
+      const nextShortName = req.body.shortName.trim();
+      updates.shortName = nextShortName;
+
+      if (req.body?.name === undefined) {
+        updates.name = nextShortName;
+      }
     }
 
     if (req.body?.logoUrl !== undefined) {

@@ -21,6 +21,7 @@ const serializeTeam = (team) => ({
   _id: toIdString(team?._id),
   name: team?.name ?? '',
   shortName: team?.shortName ?? '',
+  orderIndex: team?.orderIndex ?? null,
   seed: team?.seed ?? null,
   logoUrl: team?.logoUrl ?? null,
 });
@@ -126,7 +127,7 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
         runValidators: true,
       }
     )
-      .populate('teamIds', 'name shortName seed logoUrl')
+      .populate('teamIds', 'name shortName orderIndex seed logoUrl')
       .lean();
 
     if (pool.phase === 'phase2') {
@@ -134,7 +135,7 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
     }
 
     const finalizedPool = await Pool.findById(updatedPool._id)
-      .populate('teamIds', 'name shortName seed logoUrl')
+      .populate('teamIds', 'name shortName orderIndex seed logoUrl')
       .lean();
     const io = req.app?.get('io');
     emitTournamentEvent(

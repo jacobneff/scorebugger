@@ -167,4 +167,92 @@ describe('tournament routes', () => {
       })
     );
   });
+
+  test('creating a team with shortName only defaults name and assigns incremental orderIndex', async () => {
+    const tournament = await Tournament.create({
+      name: 'Order Test',
+      date: new Date('2026-08-10T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'ORDER1',
+      createdByUserId: user._id,
+    });
+
+    const first = await request(app)
+      .post(`/api/tournaments/${tournament._id}/teams`)
+      .set(authHeader())
+      .send({
+        shortName: 'ALP',
+      });
+
+    expect(first.statusCode).toBe(201);
+    expect(first.body).toEqual(
+      expect.objectContaining({
+        name: 'ALP',
+        shortName: 'ALP',
+        orderIndex: 1,
+      })
+    );
+
+    const second = await request(app)
+      .post(`/api/tournaments/${tournament._id}/teams`)
+      .set(authHeader())
+      .send({
+        shortName: 'BRV',
+      });
+
+    expect(second.statusCode).toBe(201);
+    expect(second.body).toEqual(
+      expect.objectContaining({
+        name: 'BRV',
+        shortName: 'BRV',
+        orderIndex: 2,
+      })
+    );
+  });
+
+  test('bulk team reorder enforces permutation and persists orderIndex', async () => {
+    const tournament = await Tournament.create({
+      name: 'Reorder Test',
+      date: new Date('2026-08-10T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'ORDER2',
+      createdByUserId: user._id,
+    });
+
+    const teams = await TournamentTeam.insertMany(
+      [
+        { tournamentId: tournament._id, name: 'Alpha', shortName: 'ALP', orderIndex: 1 },
+        { tournamentId: tournament._id, name: 'Bravo', shortName: 'BRV', orderIndex: 2 },
+        { tournamentId: tournament._id, name: 'Charlie', shortName: 'CHR', orderIndex: 3 },
+      ],
+      { ordered: true }
+    );
+
+    const invalid = await request(app)
+      .put(`/api/tournaments/${tournament._id}/teams/order`)
+      .set(authHeader())
+      .send({
+        orderedTeamIds: [teams[0]._id.toString(), teams[1]._id.toString()],
+      });
+
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body.message).toMatch(/permutation/i);
+
+    const desiredOrder = [teams[2]._id.toString(), teams[0]._id.toString(), teams[1]._id.toString()];
+    const valid = await request(app)
+      .put(`/api/tournaments/${tournament._id}/teams/order`)
+      .set(authHeader())
+      .send({
+        orderedTeamIds: desiredOrder,
+      });
+
+    expect(valid.statusCode).toBe(200);
+    expect(valid.body.map((team) => String(team._id))).toEqual(desiredOrder);
+    expect(valid.body.map((team) => team.orderIndex)).toEqual([1, 2, 3]);
+
+    const persisted = await TournamentTeam.find({ tournamentId: tournament._id })
+      .sort({ orderIndex: 1 })
+      .lean();
+    expect(persisted.map((team) => String(team._id))).toEqual(desiredOrder);
+  });
 });

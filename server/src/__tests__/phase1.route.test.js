@@ -26,10 +26,11 @@ async function seedTournamentTeams(tournamentId, teamCount = 15) {
     tournamentId,
     name: `Team ${index + 1}`,
     shortName: `T${index + 1}`,
+    orderIndex: index + 1,
     seed: index + 1,
   }));
 
-  await TournamentTeam.insertMany(teams, { ordered: true });
+  return TournamentTeam.insertMany(teams, { ordered: true });
 }
 
 describe('phase1 pool + match generation routes', () => {
@@ -106,8 +107,51 @@ describe('phase1 pool + match generation routes', () => {
 
     Object.entries(PHASE1_HOME_COURTS).forEach(([poolName, homeCourt]) => {
       expect(byName[poolName].homeCourt).toBe(homeCourt);
-      expect(byName[poolName].teamIds).toHaveLength(3);
+      expect(byName[poolName].teamIds).toHaveLength(0);
     });
+  });
+
+  test('autofill fills pools with serpentine assignments from team orderIndex', async () => {
+    const tournament = await createOwnedTournament();
+    const teams = await seedTournamentTeams(tournament._id);
+
+    await request(app)
+      .post(`/api/tournaments/${tournament._id}/phase1/pools/init`)
+      .set(authHeader());
+
+    const response = await request(app)
+      .post(`/api/tournaments/${tournament._id}/phase1/pools/autofill`)
+      .set(authHeader());
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toHaveLength(5);
+
+    const byName = Object.fromEntries(response.body.map((pool) => [pool.name, pool]));
+    expect(byName.A.teamIds.map((team) => team._id)).toEqual([
+      teams[0]._id.toString(),
+      teams[9]._id.toString(),
+      teams[10]._id.toString(),
+    ]);
+    expect(byName.B.teamIds.map((team) => team._id)).toEqual([
+      teams[1]._id.toString(),
+      teams[8]._id.toString(),
+      teams[11]._id.toString(),
+    ]);
+    expect(byName.C.teamIds.map((team) => team._id)).toEqual([
+      teams[2]._id.toString(),
+      teams[7]._id.toString(),
+      teams[12]._id.toString(),
+    ]);
+    expect(byName.D.teamIds.map((team) => team._id)).toEqual([
+      teams[3]._id.toString(),
+      teams[6]._id.toString(),
+      teams[13]._id.toString(),
+    ]);
+    expect(byName.E.teamIds.map((team) => team._id)).toEqual([
+      teams[4]._id.toString(),
+      teams[5]._id.toString(),
+      teams[14]._id.toString(),
+    ]);
   });
 
   test('generate phase1 fails if any pool does not have exactly 3 teams', async () => {
@@ -117,8 +161,14 @@ describe('phase1 pool + match generation routes', () => {
     const init = await request(app)
       .post(`/api/tournaments/${tournament._id}/phase1/pools/init`)
       .set(authHeader());
+    expect(init.statusCode).toBe(200);
 
-    const poolA = init.body.find((pool) => pool.name === 'A');
+    const autofill = await request(app)
+      .post(`/api/tournaments/${tournament._id}/phase1/pools/autofill`)
+      .set(authHeader());
+    expect(autofill.statusCode).toBe(200);
+
+    const poolA = autofill.body.find((pool) => pool.name === 'A');
 
     const shrinkPool = await request(app)
       .patch(`/api/pools/${poolA._id}`)
@@ -143,6 +193,9 @@ describe('phase1 pool + match generation routes', () => {
 
     await request(app)
       .post(`/api/tournaments/${tournament._id}/phase1/pools/init`)
+      .set(authHeader());
+    await request(app)
+      .post(`/api/tournaments/${tournament._id}/phase1/pools/autofill`)
       .set(authHeader());
 
     const generate = await request(app)
@@ -185,9 +238,15 @@ describe('phase1 pool + match generation routes', () => {
     const init = await request(app)
       .post(`/api/tournaments/${tournament._id}/phase1/pools/init`)
       .set(authHeader());
+    expect(init.statusCode).toBe(200);
 
-    const poolA = init.body.find((pool) => pool.name === 'A');
-    const poolB = init.body.find((pool) => pool.name === 'B');
+    const autofill = await request(app)
+      .post(`/api/tournaments/${tournament._id}/phase1/pools/autofill`)
+      .set(authHeader());
+    expect(autofill.statusCode).toBe(200);
+
+    const poolA = autofill.body.find((pool) => pool.name === 'A');
+    const poolB = autofill.body.find((pool) => pool.name === 'B');
     const duplicatedTeamId = poolA.teamIds[0]._id;
 
     const response = await request(app)
@@ -208,8 +267,14 @@ describe('phase1 pool + match generation routes', () => {
     const init = await request(app)
       .post(`/api/tournaments/${tournament._id}/phase1/pools/init`)
       .set(authHeader());
+    expect(init.statusCode).toBe(200);
 
-    const poolA = init.body.find((pool) => pool.name === 'A');
+    const autofill = await request(app)
+      .post(`/api/tournaments/${tournament._id}/phase1/pools/autofill`)
+      .set(authHeader());
+    expect(autofill.statusCode).toBe(200);
+
+    const poolA = autofill.body.find((pool) => pool.name === 'A');
     const reorderedTeamIds = [
       poolA.teamIds[1]._id,
       poolA.teamIds[0]._id,

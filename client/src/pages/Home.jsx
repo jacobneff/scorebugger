@@ -685,6 +685,211 @@ function Home() {
     }
   };
 
+  const renderAuthCard = () => (
+    <div className="auth-card">
+      <div className="auth-header">
+        <h2 className="secondary-title" style={{ marginBottom: 4 }}>
+          {authHeading}
+        </h2>
+        <p className="subtle" style={{ margin: 0 }}>
+          {authSubheading}
+        </p>
+      </div>
+
+      {["signin", "signup"].includes(authMode) && (
+        <>
+          <div className="auth-switch" role="tablist" aria-label="Authentication mode">
+            <button
+              type="button"
+              role="tab"
+              className={`auth-switch-button ${authMode === "signin" ? "active" : ""}`}
+              aria-selected={authMode === "signin"}
+              onClick={() => switchAuthMode("signin")}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={`auth-switch-button ${authMode === "signup" ? "active" : ""}`}
+              aria-selected={authMode === "signup"}
+              onClick={() => switchAuthMode("signup")}
+            >
+              Create account
+            </button>
+          </div>
+
+          <form className="account-form auth-form" onSubmit={handleAuthSubmit}>
+            {authMode === "signup" && (
+              <>
+                <label className="input-label" htmlFor="displayName">
+                  Display Name
+                </label>
+                <input
+                  id="displayName"
+                  type="text"
+                  placeholder="Your name"
+                  value={authDisplayName}
+                  onChange={(e) => setAuthDisplayName(e.target.value)}
+                />
+              </>
+            )}
+
+            <label className="input-label" htmlFor="email">
+              Email
+            </label>
+            <input
+              id="email"
+              type="email"
+              placeholder="you@example.com"
+              required
+              value={authEmail}
+              onChange={(e) => setAuthEmail(e.target.value)}
+            />
+
+            <label className="input-label" htmlFor="password">
+              Password
+            </label>
+            <input
+              id="password"
+              type="password"
+              placeholder="••••••••"
+              required
+              value={authPassword}
+              onChange={(e) => setAuthPassword(e.target.value)}
+            />
+
+            {authError && (
+              <p className="error" style={{ marginTop: 4 }}>
+                {authError}
+              </p>
+            )}
+            {authInfo && (
+              <p className="subtle" style={{ marginTop: 4, color: "#16a34a" }}>
+                {authInfo}
+              </p>
+            )}
+
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={authBusy}
+              style={{ width: "100%", marginTop: "0.25rem" }}
+            >
+              {authBusy
+                ? authMode === "signin"
+                  ? "Signing in..."
+                  : "Creating..."
+                : authMode === "signin"
+                  ? "Sign in"
+                  : "Create account"}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            className="ghost-button"
+            style={{ marginTop: "0.75rem" }}
+            onClick={() => switchAuthMode("forgot")}
+          >
+            Forgot your password?
+          </button>
+        </>
+      )}
+
+      {authMode === "forgot" && (
+        <form className="account-form auth-form" onSubmit={handleForgotSubmit}>
+          <label className="input-label" htmlFor="forgot-email">
+            Email
+          </label>
+          <input
+            id="forgot-email"
+            type="email"
+            placeholder="you@example.com"
+            required
+            value={authEmail}
+            onChange={(e) => setAuthEmail(e.target.value)}
+          />
+
+          {authError && (
+            <p className="error" style={{ marginTop: 4 }}>
+              {authError}
+            </p>
+          )}
+          {authInfo && (
+            <p className="subtle" style={{ marginTop: 4, color: "#2563eb" }}>
+              {authInfo}
+            </p>
+          )}
+
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={forgotBusy}
+            style={{ width: "100%", marginTop: "0.25rem" }}
+          >
+            {forgotBusy ? "Sending..." : "Send reset link"}
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            style={{ marginTop: "0.75rem" }}
+            onClick={() => switchAuthMode("signin")}
+          >
+            Back to sign in
+          </button>
+        </form>
+      )}
+
+      {authMode === "verify" && (
+        <div className="account-form auth-form">
+          {!pendingVerificationEmail && (
+            <>
+              <label className="input-label" htmlFor="verify-email">
+                Email
+              </label>
+              <input
+                id="verify-email"
+                type="email"
+                placeholder="you@example.com"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+                style={{ marginBottom: "0.75rem" }}
+              />
+            </>
+          )}
+          {authInfo && (
+            <p className="subtle" style={{ marginBottom: "0.75rem", color: "#2563eb" }}>
+              {authInfo}
+            </p>
+          )}
+          {authError && (
+            <p className="error" style={{ marginBottom: "0.75rem" }}>
+              {authError}
+            </p>
+          )}
+          <button
+            type="button"
+            className="primary-button"
+            onClick={handleResendVerification}
+            disabled={resendBusy || !(pendingVerificationEmail || authEmail)}
+            style={{ width: "100%" }}
+          >
+            {resendBusy ? "Sending..." : "Resend verification email"}
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            style={{ marginTop: "0.75rem" }}
+            onClick={() => switchAuthMode("signin")}
+          >
+            Back to sign in
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <main className="container">
       {/* Toast Stack */}
@@ -731,6 +936,11 @@ function Home() {
                 <p>Plan tournament schedules, share public views, and follow live matches.</p>
               </button>
             </div>
+            {!user && (
+              <aside className="account-panel" id="account-panel" style={{ marginTop: "1.5rem" }}>
+                {renderAuthCard()}
+              </aside>
+            )}
           </>
         ) : (
           <>
@@ -1087,208 +1297,7 @@ function Home() {
                     </div>
                   </>
                 ) : (
-                  <div className="auth-card">
-                    <div className="auth-header">
-                      <h2 className="secondary-title" style={{ marginBottom: 4 }}>
-                        {authHeading}
-                      </h2>
-                      <p className="subtle" style={{ margin: 0 }}>
-                        {authSubheading}
-                      </p>
-                    </div>
-
-                    {["signin", "signup"].includes(authMode) && (
-                      <>
-                        <div className="auth-switch" role="tablist" aria-label="Authentication mode">
-                          <button
-                            type="button"
-                            role="tab"
-                            className={`auth-switch-button ${authMode === "signin" ? "active" : ""}`}
-                            aria-selected={authMode === "signin"}
-                            onClick={() => switchAuthMode("signin")}
-                          >
-                            Sign in
-                          </button>
-                          <button
-                            type="button"
-                            role="tab"
-                            className={`auth-switch-button ${authMode === "signup" ? "active" : ""}`}
-                            aria-selected={authMode === "signup"}
-                            onClick={() => switchAuthMode("signup")}
-                          >
-                            Create account
-                          </button>
-                        </div>
-
-                        <form className="account-form auth-form" onSubmit={handleAuthSubmit}>
-                          {authMode === "signup" && (
-                            <>
-                              <label className="input-label" htmlFor="displayName">
-                                Display Name
-                              </label>
-                              <input
-                                id="displayName"
-                                type="text"
-                                placeholder="Your name"
-                                value={authDisplayName}
-                                onChange={(e) => setAuthDisplayName(e.target.value)}
-                              />
-                            </>
-                          )}
-
-                          <label className="input-label" htmlFor="email">
-                            Email
-                          </label>
-                          <input
-                            id="email"
-                            type="email"
-                            placeholder="you@example.com"
-                            required
-                            value={authEmail}
-                            onChange={(e) => setAuthEmail(e.target.value)}
-                          />
-
-                          <label className="input-label" htmlFor="password">
-                            Password
-                          </label>
-                          <input
-                            id="password"
-                            type="password"
-                            placeholder="••••••••"
-                            required
-                            value={authPassword}
-                            onChange={(e) => setAuthPassword(e.target.value)}
-                          />
-
-                          {authError && (
-                            <p className="error" style={{ marginTop: 4 }}>
-                              {authError}
-                            </p>
-                          )}
-                          {authInfo && (
-                            <p className="subtle" style={{ marginTop: 4, color: "#16a34a" }}>
-                              {authInfo}
-                            </p>
-                          )}
-
-                          <button
-                            className="primary-button"
-                            type="submit"
-                            disabled={authBusy}
-                            style={{ width: "100%", marginTop: "0.25rem" }}
-                          >
-                            {authBusy
-                              ? authMode === "signin"
-                                ? "Signing in..."
-                                : "Creating..."
-                              : authMode === "signin"
-                                ? "Sign in"
-                                : "Create account"}
-                          </button>
-                        </form>
-
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          style={{ marginTop: "0.75rem" }}
-                          onClick={() => switchAuthMode("forgot")}
-                        >
-                          Forgot your password?
-                        </button>
-                      </>
-                    )}
-
-                    {authMode === "forgot" && (
-                      <form className="account-form auth-form" onSubmit={handleForgotSubmit}>
-                        <label className="input-label" htmlFor="forgot-email">
-                          Email
-                        </label>
-                        <input
-                          id="forgot-email"
-                          type="email"
-                          placeholder="you@example.com"
-                          required
-                          value={authEmail}
-                          onChange={(e) => setAuthEmail(e.target.value)}
-                        />
-
-                        {authError && (
-                          <p className="error" style={{ marginTop: 4 }}>
-                            {authError}
-                          </p>
-                        )}
-                        {authInfo && (
-                          <p className="subtle" style={{ marginTop: 4, color: "#2563eb" }}>
-                            {authInfo}
-                          </p>
-                        )}
-
-                        <button
-                          className="primary-button"
-                          type="submit"
-                          disabled={forgotBusy}
-                          style={{ width: "100%", marginTop: "0.25rem" }}
-                        >
-                          {forgotBusy ? "Sending..." : "Send reset link"}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          style={{ marginTop: "0.75rem" }}
-                          onClick={() => switchAuthMode("signin")}
-                        >
-                          Back to sign in
-                        </button>
-                      </form>
-                    )}
-
-                    {authMode === "verify" && (
-                      <div className="account-form auth-form">
-                        {!pendingVerificationEmail && (
-                          <>
-                            <label className="input-label" htmlFor="verify-email">
-                              Email
-                            </label>
-                            <input
-                              id="verify-email"
-                              type="email"
-                              placeholder="you@example.com"
-                              value={authEmail}
-                              onChange={(e) => setAuthEmail(e.target.value)}
-                              style={{ marginBottom: "0.75rem" }}
-                            />
-                          </>
-                        )}
-                        {authInfo && (
-                          <p className="subtle" style={{ marginBottom: "0.75rem", color: "#2563eb" }}>
-                            {authInfo}
-                          </p>
-                        )}
-                        {authError && (
-                          <p className="error" style={{ marginBottom: "0.75rem" }}>
-                            {authError}
-                          </p>
-                        )}
-                        <button
-                          type="button"
-                          className="primary-button"
-                          onClick={handleResendVerification}
-                          disabled={resendBusy || !(pendingVerificationEmail || authEmail)}
-                          style={{ width: "100%" }}
-                        >
-                          {resendBusy ? "Sending..." : "Resend verification email"}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          style={{ marginTop: "0.75rem" }}
-                          onClick={() => switchAuthMode("signin")}
-                        >
-                          Back to sign in
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  renderAuthCard()
                 )}
               </aside>
             </div>

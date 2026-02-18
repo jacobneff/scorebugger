@@ -23,6 +23,8 @@ const connectDB = require('./config/db');
 const Scoreboard = require('./models/Scoreboard');
 const scoreboardRoutes = require('./routes/scoreboards');
 const authRoutes = require('./routes/auth');
+const tournamentRoutes = require('./routes/tournaments');
+const tournamentTeamRoutes = require('./routes/tournamentTeams');
 
 const PORT = process.env.PORT || 5000;
 const DEFAULT_CLIENT_ORIGINS = [
@@ -60,6 +62,8 @@ async function bootstrap() {
 
   app.use('/api/auth', authRoutes);
   app.use('/api/scoreboards', scoreboardRoutes);
+  app.use('/api/tournaments', tournamentRoutes);
+  app.use('/api/tournament-teams', tournamentTeamRoutes);
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });

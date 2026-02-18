@@ -25,6 +25,7 @@ const scoreboardRoutes = require('./routes/scoreboards');
 const authRoutes = require('./routes/auth');
 const tournamentRoutes = require('./routes/tournaments');
 const tournamentTeamRoutes = require('./routes/tournamentTeams');
+const poolRoutes = require('./routes/pools');
 
 const PORT = process.env.PORT || 5000;
 const DEFAULT_CLIENT_ORIGINS = [
@@ -64,6 +65,7 @@ async function bootstrap() {
   app.use('/api/scoreboards', scoreboardRoutes);
   app.use('/api/tournaments', tournamentRoutes);
   app.use('/api/tournament-teams', tournamentTeamRoutes);
+  app.use('/api/pools', poolRoutes);
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
@@ -125,7 +127,7 @@ async function bootstrap() {
         !state ||
         !Array.isArray(state.teams) ||
         state.teams.length !== 2 ||
-        ![0, 1].includes(state.servingTeamIndex)
+        !(state.servingTeamIndex === null || [0, 1].includes(state.servingTeamIndex))
       ) {
         socket.emit('scoreboard:error', { message: 'Invalid scoreboard payload' });
         return;

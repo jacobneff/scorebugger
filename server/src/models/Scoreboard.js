@@ -58,6 +58,12 @@ const SetSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const SCORING_DEFAULTS = {
+  setTargets: [25, 25, 15],
+  winBy: 2,
+  caps: [27, 27, 17],
+};
+
 const ScoreboardSchema = new mongoose.Schema(
   {
     code: {
@@ -107,12 +113,29 @@ const ScoreboardSchema = new mongoose.Schema(
     },
     servingTeamIndex: {
       type: Number,
-      enum: [0, 1],
       default: 0,
+      validate: {
+        validator: (value) => value === null || value === 0 || value === 1,
+        message: 'servingTeamIndex must be 0, 1, or null.',
+      },
     },
     sets: {
       type: [SetSchema],
       default: [],
+    },
+    scoring: {
+      setTargets: {
+        type: [Number],
+        default: () => [...SCORING_DEFAULTS.setTargets],
+      },
+      winBy: {
+        type: Number,
+        default: SCORING_DEFAULTS.winBy,
+      },
+      caps: {
+        type: [Number],
+        default: () => [...SCORING_DEFAULTS.caps],
+      },
     },
     temporary: {
       type: Boolean,

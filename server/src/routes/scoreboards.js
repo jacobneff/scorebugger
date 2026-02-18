@@ -2,48 +2,9 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Scoreboard = require('../models/Scoreboard');
 const { requireAuth } = require('../middleware/auth');
+const { MAX_TITLE_LENGTH, createScoreboard } = require('../services/scoreboards');
 
 const router = express.Router();
-const MAX_TITLE_LENGTH = 30;
-const TEMPORARY_LIFETIME_MS = 24 * 60 * 60 * 1000;
-
-const sanitizeTeams = (teams) => {
-  if (!Array.isArray(teams) || teams.length !== 2) {
-    return undefined;
-  }
-
-  const fallbackNames = ['Home', 'Away'];
-
-  return teams.map((team, index) => {
-    const name =
-      typeof team?.name === 'string'
-        ? team.name.trim().slice(0, 10) || fallbackNames[index]
-        : fallbackNames[index];
-
-    const payload = {
-      name,
-      score: 0,
-    };
-
-    if (typeof team?.color === 'string' && team.color.trim()) {
-      payload.color = team.color;
-    }
-    if (typeof team?.teamTextColor === 'string' && team.teamTextColor.trim()) {
-      payload.teamTextColor = team.teamTextColor;
-    }
-    if (typeof team?.setColor === 'string' && team.setColor.trim()) {
-      payload.setColor = team.setColor;
-    }
-    if (typeof team?.scoreTextColor === 'string' && team.scoreTextColor.trim()) {
-      payload.scoreTextColor = team.scoreTextColor;
-    }
-    if (typeof team?.textColor === 'string' && team.textColor.trim()) {
-      payload.textColor = team.textColor;
-    }
-
-    return payload;
-  });
-};
 
 const resolveScoreboardQuery = (idOrCode) =>
   mongoose.Types.ObjectId.isValid(idOrCode)
@@ -54,7 +15,6 @@ const resolveScoreboardQuery = (idOrCode) =>
 router.post('/', requireAuth, async (req, res, next) => {
   try {
     const { teams, servingTeamIndex, title } = req.body ?? {};
-    const parsedServingIndex = Number(servingTeamIndex);
 
     // Determine the base title
     let scoreboardTitle = title?.trim();
@@ -65,16 +25,14 @@ router.post('/', requireAuth, async (req, res, next) => {
       scoreboardTitle = count === 0 ? 'New Scoreboard' : `New Scoreboard (${count + 1})`;
     }
 
-    const scoreboard = new Scoreboard({
+    const scoreboard = await createScoreboard({
+      ownerId: req.user.id,
       title: scoreboardTitle,
-      teams: sanitizeTeams(teams),
-      servingTeamIndex: [0, 1].includes(parsedServingIndex) ? parsedServingIndex : undefined,
-      owner: req.user.id,
+      teams,
+      servingTeamIndex,
       temporary: false,
-      expiresAt: null,
     });
 
-    await scoreboard.save();
     res.status(201).json(scoreboard.toObject());
   } catch (error) {
     next(error);
@@ -85,21 +43,18 @@ router.post('/', requireAuth, async (req, res, next) => {
 router.post('/guest', async (req, res, next) => {
   try {
     const { teams, servingTeamIndex, title } = req.body ?? {};
-    const parsedServingIndex = Number(servingTeamIndex);
-    const now = Date.now();
 
-    const scoreboard = new Scoreboard({
-      title: typeof title === 'string' && title.trim()
-        ? title.trim().slice(0, MAX_TITLE_LENGTH)
-        : 'Temporary Scoreboard',
-      teams: sanitizeTeams(teams),
-      servingTeamIndex: [0, 1].includes(parsedServingIndex) ? parsedServingIndex : undefined,
-      owner: null,
+    const scoreboard = await createScoreboard({
+      ownerId: null,
+      title:
+        typeof title === 'string' && title.trim()
+          ? title.trim().slice(0, MAX_TITLE_LENGTH)
+          : 'Temporary Scoreboard',
+      teams,
+      servingTeamIndex,
       temporary: true,
-      expiresAt: new Date(now + TEMPORARY_LIFETIME_MS),
     });
 
-    await scoreboard.save();
     res.status(201).json(scoreboard.toObject());
   } catch (error) {
     next(error);

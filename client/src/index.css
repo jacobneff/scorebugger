@@ -1880,6 +1880,189 @@ button:disabled {
   font-weight: 500;
 }
 
+/* ===== Tournament Phase 1 ===== */
+.phase1-admin-card,
+.phase1-public-card {
+  display: grid;
+  gap: 1.5rem;
+  text-align: left;
+}
+
+.phase1-admin-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.phase1-admin-header .subtitle {
+  margin-bottom: 0;
+}
+
+.phase1-admin-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.phase1-success {
+  color: #15803d;
+}
+
+.phase1-pool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.9rem;
+}
+
+.phase1-pool-grid--readonly {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.phase1-pool-column {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+}
+
+.phase1-pool-column--invalid {
+  border-color: rgba(220, 38, 38, 0.55);
+  background: rgba(254, 242, 242, 0.88);
+}
+
+.phase1-pool-header {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.phase1-pool-header h2,
+.phase1-pool-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.phase1-pool-header p {
+  margin: 0;
+  color: #475569;
+  font-size: 0.9rem;
+}
+
+.phase1-drop-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.phase1-drop-block {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.phase1-drop-slot {
+  height: 8px;
+  border-radius: 999px;
+  border: 1px dashed rgba(148, 163, 184, 0.55);
+  background: rgba(148, 163, 184, 0.12);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.phase1-drop-slot.is-active {
+  background: rgba(37, 99, 235, 0.24);
+  border-color: rgba(37, 99, 235, 0.8);
+}
+
+.phase1-team-card {
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: #ffffff;
+  padding: 0.6rem 0.7rem;
+  display: grid;
+  gap: 0.2rem;
+  cursor: grab;
+}
+
+.phase1-team-card strong {
+  font-size: 0.92rem;
+}
+
+.phase1-team-card span {
+  font-size: 0.82rem;
+  color: #475569;
+}
+
+.phase1-team-card.is-dragging {
+  opacity: 0.5;
+}
+
+.phase1-public-team-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.phase1-public-team-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  font-size: 0.88rem;
+}
+
+.phase1-schedule {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.phase1-table-wrap {
+  overflow-x: auto;
+}
+
+.phase1-schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 980px;
+}
+
+.phase1-schedule-table th,
+.phase1-schedule-table td {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  padding: 0.6rem;
+  vertical-align: top;
+}
+
+.phase1-schedule-table th {
+  background: #e2e8f0;
+  color: #0f172a;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.phase1-match-cell {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.phase1-match-cell p {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.phase1-match-cell a {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
 /* ===== Utilities ===== */
 .hint {
   color: #475569;
@@ -2137,6 +2320,15 @@ button:disabled {
 
   .overlay-frame .overlay-set-score {
     font-size: 1.1rem;
+  }
+
+  .phase1-admin-actions {
+    width: 100%;
+  }
+
+  .phase1-admin-actions .primary-button,
+  .phase1-admin-actions .secondary-button {
+    width: 100%;
   }
 }
 .team-card-header {

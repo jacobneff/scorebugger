@@ -3,6 +3,7 @@ import { MdContentCopy, MdDelete, MdEdit, MdSave } from "react-icons/md";
 import { FiCheckCircle, FiInfo, FiXCircle } from "react-icons/fi";
 import { useSearchParams } from "react-router-dom";
 import ControlPanelView from "../components/ControlPanelView.jsx";
+import TournamentsTab from "../components/TournamentsTab.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import SettingsMenu from "../components/SettingsMenu.jsx";
 import { API_URL } from "../config/env.js";
@@ -62,6 +63,7 @@ function Home() {
   // Tabs
   const [activeTab, setActiveTab] = useState("setup");
   const [selectedBoardId, setSelectedBoardId] = useState("");
+  const [selectedTournamentId, setSelectedTournamentId] = useState("");
 
   // Rename
   const [editingId, setEditingId] = useState(null);
@@ -223,6 +225,13 @@ function Home() {
           }
           return next;
         }
+        if (field === "teamTextColor" || field === "textColor") {
+          return {
+            ...team,
+            teamTextColor: value,
+            textColor: value,
+          };
+        }
         if (field === "name") {
           const nextName = value.slice(0, TEAM_NAME_LIMIT);
           return { ...team, name: nextName };
@@ -256,6 +265,8 @@ function Home() {
 
     const modeParam = searchParams.get("mode");
     const emailParam = searchParams.get("email");
+    const tabParam = searchParams.get("tab");
+    const tournamentIdParam = searchParams.get("tournamentId");
 
     if (modeParam) {
       const normalizedMode = modeParam.toLowerCase();
@@ -269,6 +280,21 @@ function Home() {
             setAuthInfo("Check your inbox and click the verification link to continue.");
           }
         }
+      }
+    }
+
+    const normalizedTab =
+      typeof tabParam === "string" ? tabParam.trim().toLowerCase() : "";
+    if (["setup", "control", "tournaments"].includes(normalizedTab)) {
+      setActiveTab(normalizedTab);
+    }
+
+    const normalizedTournamentId =
+      typeof tournamentIdParam === "string" ? tournamentIdParam.trim() : "";
+    if (normalizedTournamentId) {
+      setSelectedTournamentId(normalizedTournamentId);
+      if (!["setup", "control", "tournaments"].includes(normalizedTab)) {
+        setActiveTab("tournaments");
       }
     }
 
@@ -597,18 +623,27 @@ function Home() {
         <div className="card-settings">
           <SettingsMenu />
         </div>
-        {activeTab === "setup" ? (
+        {activeTab === "setup" && (
           <>
             <h1 className="title">scorebugger</h1>
             <p className="subtitle">
               A volleyball scoreboard you can control and embed live in your stream.
             </p>
           </>
-        ) : (
+        )}
+        {activeTab === "control" && (
           <>
             <h1 className="title">Control Panel</h1>
             <p className="subtitle">
               Share the overlay link with OBS and update the match from anywhere.
+            </p>
+          </>
+        )}
+        {activeTab === "tournaments" && (
+          <>
+            <h1 className="title">Tournament Hub</h1>
+            <p className="subtitle">
+              Create tournaments, manage team setup, and jump directly into phase administration.
             </p>
           </>
         )}
@@ -625,6 +660,12 @@ function Home() {
             onClick={() => setActiveTab("control")}
           >
             Control
+          </button>
+          <button
+            className={`home-tab-button ${activeTab === "tournaments" ? "active" : ""}`}
+            onClick={() => setActiveTab("tournaments")}
+          >
+            Tournaments
           </button>
         </div>
 
@@ -684,12 +725,35 @@ function Home() {
                             />
                             {showCountdown && <span className={countdownClass}>{nameRemaining}</span>}
                           </div>
-                          <label className="input-label">Accent Color</label>
-                          <input
-                            type="color"
-                            value={t.color}
-                            onChange={(e) => handleInputChange(i, "color", e.target.value)}
-                          />
+                          <div className="team-color-row">
+                            <label className="team-color-field">
+                              <span className="input-label">Panel Color</span>
+                              <input
+                                type="color"
+                                value={t.color}
+                                onChange={(e) => handleInputChange(i, "color", e.target.value)}
+                              />
+                            </label>
+                            <label className="team-color-field">
+                              <span className="input-label">Text Color</span>
+                              <input
+                                type="color"
+                                value={t.teamTextColor || t.textColor || "#ffffff"}
+                                onChange={(e) =>
+                                  handleInputChange(i, "teamTextColor", e.target.value)
+                                }
+                              />
+                            </label>
+                          </div>
+                          <div
+                            className="team-color-preview"
+                            style={{
+                              backgroundColor: t.color,
+                              color: t.teamTextColor || t.textColor || "#ffffff",
+                            }}
+                          >
+                            {t.name || (i === 0 ? "Home" : "Away")} Preview
+                          </div>
                         </div>
                       </div>
                     );
@@ -1101,7 +1165,7 @@ function Home() {
 
             {error && <p className="error">{error}</p>}
           </div>
-        ) : (
+        ) : activeTab === "control" ? (
           <div className="home-tabpanel fadein">
             <ControlPanelView
               scoreboardId={selectedBoardId}
@@ -1113,6 +1177,16 @@ function Home() {
                 setSelectedBoardId(cleaned.toUpperCase());
                 setActiveTab("control");
               }}
+            />
+          </div>
+        ) : (
+          <div className="home-tabpanel fadein">
+            <TournamentsTab
+              user={user}
+              token={token}
+              initialTournamentId={selectedTournamentId}
+              onTournamentIdChange={setSelectedTournamentId}
+              onShowToast={showToast}
             />
           </div>
         )}

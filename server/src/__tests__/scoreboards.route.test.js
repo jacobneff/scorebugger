@@ -145,7 +145,7 @@ describe('scoreboard routes', () => {
     const response = await request(app).post('/api/scoreboards/guest').send({
       title: '  Guest Final  ',
       teams: [
-        { name: 'Home Team', color: '#123456' },
+        { name: 'Home Team', color: '#123456', teamTextColor: '#101010' },
         { name: 'Away Team' },
       ],
     });
@@ -155,6 +155,10 @@ describe('scoreboard routes', () => {
     expect(response.body.temporary).toBe(true);
     expect(response.body.title).toBe('Guest Final');
     expect(response.body.teams).toHaveLength(2);
+    expect(response.body.teams[0].color).toBe('#123456');
+    expect(response.body.teams[0].teamTextColor).toBe('#101010');
+    expect(response.body.teams[1].color).toBe('#16a34a');
+    expect(response.body.teams[1].teamTextColor).toBe('#ffffff');
     expect(new Date(response.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
   });
 

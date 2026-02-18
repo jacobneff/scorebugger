@@ -509,6 +509,9 @@ function TournamentPhase1Admin() {
             </p>
           </div>
           <div className="phase1-admin-actions">
+            <a className="secondary-button" href={`/?tab=tournaments&tournamentId=${id}`}>
+              Manage Teams
+            </a>
             <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
               Open Phase 2 Setup
             </a>

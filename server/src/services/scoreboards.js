@@ -3,6 +3,22 @@ const { normalizeScoringConfig } = require('./phase1');
 
 const MAX_TITLE_LENGTH = 30;
 const TEMPORARY_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const TEAM_DEFAULTS = [
+  {
+    color: '#2563eb',
+    teamTextColor: '#ffffff',
+    setColor: '#0b1a3a',
+    scoreTextColor: '#ffffff',
+    textColor: '#ffffff',
+  },
+  {
+    color: '#16a34a',
+    teamTextColor: '#ffffff',
+    setColor: '#0b1a3a',
+    scoreTextColor: '#ffffff',
+    textColor: '#ffffff',
+  },
+];
 
 function sanitizeTeams(teams) {
   if (!Array.isArray(teams) || teams.length !== 2) {
@@ -12,6 +28,7 @@ function sanitizeTeams(teams) {
   const fallbackNames = ['Home', 'Away'];
 
   return teams.map((team, index) => {
+    const defaults = TEAM_DEFAULTS[index] || TEAM_DEFAULTS[0];
     const name =
       typeof team?.name === 'string'
         ? team.name.trim().slice(0, 10) || fallbackNames[index]
@@ -19,6 +36,11 @@ function sanitizeTeams(teams) {
 
     const payload = {
       name,
+      color: defaults.color,
+      teamTextColor: defaults.teamTextColor,
+      setColor: defaults.setColor,
+      scoreTextColor: defaults.scoreTextColor,
+      textColor: defaults.textColor,
       score: 0,
     };
 

@@ -1,0 +1,215 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+
+import Home from "../pages/Home.jsx";
+
+const mockNavigate = vi.fn();
+const mockUseAuth = vi.fn();
+let mockSearchParams = new URLSearchParams();
+
+vi.mock("react-router-dom", () => ({
+  useSearchParams: () => [mockSearchParams],
+  useNavigate: () => mockNavigate,
+}));
+
+vi.mock("../context/AuthContext.jsx", () => ({
+  useAuth: () => mockUseAuth(),
+}));
+
+vi.mock("../components/SettingsMenu.jsx", () => ({
+  default: () => <div data-testid="settings-menu" />,
+}));
+
+vi.mock("../components/ControlPanelView.jsx", () => ({
+  default: () => <div data-testid="control-panel-view" />,
+}));
+
+const baseAuth = {
+  logout: vi.fn(),
+  login: vi.fn(),
+  register: vi.fn(),
+  authBusy: false,
+  resendVerification: vi.fn(),
+  requestPasswordReset: vi.fn(),
+  changePassword: vi.fn(),
+};
+
+const createSignedOutAuth = () => ({
+  ...baseAuth,
+  user: null,
+  token: null,
+});
+
+const createSignedInAuth = () => ({
+  ...baseAuth,
+  user: {
+    email: "coach@example.com",
+    displayName: "Coach",
+  },
+  token: "test-token",
+});
+
+const jsonResponse = (payload, status = 200) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  json: async () => payload,
+});
+
+const renderHome = () => render(<Home />);
+
+describe("Home tournaments tab", () => {
+  beforeEach(() => {
+    mockNavigate.mockReset();
+    mockUseAuth.mockReset();
+    mockSearchParams = new URLSearchParams();
+    globalThis.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders and activates the Tournaments tab", async () => {
+    mockUseAuth.mockReturnValue(createSignedOutAuth());
+    const user = userEvent.setup();
+
+    renderHome();
+
+    const tournamentsTab = screen.getByRole("button", { name: "Tournaments" });
+    expect(tournamentsTab).toBeInTheDocument();
+
+    await user.click(tournamentsTab);
+    expect(screen.getByRole("heading", { name: "Tournament Hub" })).toBeInTheDocument();
+  });
+
+  it("shows sign-in call to action for signed-out users", async () => {
+    mockUseAuth.mockReturnValue(createSignedOutAuth());
+    const user = userEvent.setup();
+
+    renderHome();
+    await user.click(screen.getByRole("button", { name: "Tournaments" }));
+
+    expect(
+      screen.getByRole("link", { name: "Sign in to manage tournaments" })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create tournament" })).not.toBeInTheDocument();
+  });
+
+  it("creates a tournament and navigates to Phase 1", async () => {
+    mockUseAuth.mockReturnValue(createSignedInAuth());
+    const user = userEvent.setup();
+
+    const createdTournament = {
+      _id: "tour-1",
+      name: "City Finals",
+      date: "2026-06-01T00:00:00.000Z",
+      timezone: "America/New_York",
+      publicCode: "AB12CD",
+      status: "setup",
+    };
+
+    let tournamentListCalls = 0;
+    globalThis.fetch.mockImplementation(async (url, options = {}) => {
+      const requestUrl = String(url);
+      const method = options.method || "GET";
+
+      if (requestUrl.endsWith("/api/scoreboards/mine")) {
+        return jsonResponse([]);
+      }
+
+      if (requestUrl.endsWith("/api/tournaments") && method === "GET") {
+        tournamentListCalls += 1;
+        return jsonResponse(tournamentListCalls > 1 ? [createdTournament] : []);
+      }
+
+      if (requestUrl.endsWith("/api/tournaments") && method === "POST") {
+        return jsonResponse(createdTournament, 201);
+      }
+
+      if (requestUrl.endsWith("/api/tournaments/tour-1")) {
+        return jsonResponse(createdTournament);
+      }
+
+      if (requestUrl.endsWith("/api/tournaments/tour-1/teams")) {
+        return jsonResponse([]);
+      }
+
+      return jsonResponse([]);
+    });
+
+    renderHome();
+    await user.click(screen.getByRole("button", { name: "Tournaments" }));
+
+    await user.type(screen.getByLabelText("Tournament name"), "City Finals");
+    fireEvent.change(screen.getByLabelText("Tournament date"), {
+      target: { value: "2026-06-01" },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Create tournament" }));
+
+    await waitFor(() => {
+      expect(
+        globalThis.fetch.mock.calls.some(
+          ([url, options]) =>
+            String(url).includes("/api/tournaments") && options?.method === "POST"
+        )
+      ).toBe(true);
+    });
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith("/tournaments/tour-1/phase1");
+    });
+  });
+
+  it("shows read-only team setup when tournament status is not setup", async () => {
+    mockUseAuth.mockReturnValue(createSignedInAuth());
+    const user = userEvent.setup();
+
+    const tournamentSummary = {
+      _id: "tour-locked",
+      name: "Spring Open",
+      date: "2026-04-20T00:00:00.000Z",
+      timezone: "America/New_York",
+      publicCode: "LOCKED",
+      status: "phase1",
+    };
+
+    globalThis.fetch.mockImplementation(async (url) => {
+      const requestUrl = String(url);
+
+      if (requestUrl.endsWith("/api/scoreboards/mine")) {
+        return jsonResponse([]);
+      }
+
+      if (requestUrl.endsWith("/api/tournaments")) {
+        return jsonResponse([tournamentSummary]);
+      }
+
+      if (requestUrl.endsWith("/api/tournaments/tour-locked")) {
+        return jsonResponse(tournamentSummary);
+      }
+
+      if (requestUrl.endsWith("/api/tournaments/tour-locked/teams")) {
+        return jsonResponse([
+          {
+            _id: "team-1",
+            name: "Rockets",
+            shortName: "RCK",
+            seed: 1,
+          },
+        ]);
+      }
+
+      return jsonResponse([]);
+    });
+
+    renderHome();
+    await user.click(screen.getByRole("button", { name: "Tournaments" }));
+
+    expect(
+      await screen.findByText(/Team edits are locked because this tournament is in/i)
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save team changes" })).toBeDisabled();
+    expect(await screen.findByLabelText("Team name 1")).toBeDisabled();
+  });
+});

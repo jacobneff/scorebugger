@@ -35,7 +35,12 @@ function TournamentPublicView() {
   const [tournament, setTournament] = useState(null);
   const [pools, setPools] = useState([]);
   const [matches, setMatches] = useState([]);
-  const [standings, setStandings] = useState({ pools: [], overall: [] });
+  const [standingsByPhase, setStandingsByPhase] = useState({
+    phase1: { pools: [], overall: [] },
+    phase2: { pools: [], overall: [] },
+    cumulative: { pools: [], overall: [] },
+  });
+  const [activeStandingsTab, setActiveStandingsTab] = useState('phase1');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -47,18 +52,36 @@ function TournamentPublicView() {
       setError('');
 
       try {
-        const [tournamentResponse, poolResponse, matchResponse, standingsResponse] = await Promise.all([
+        const [
+          tournamentResponse,
+          poolResponse,
+          matchResponse,
+          phase1StandingsResponse,
+          phase2StandingsResponse,
+          cumulativeStandingsResponse,
+        ] = await Promise.all([
           fetch(`${API_URL}/api/tournaments/code/${publicCode}`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/phase1/pools`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/matches?phase=phase1`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=phase1`),
+          fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=phase2`),
+          fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=cumulative`),
         ]);
 
-        const [tournamentPayload, poolPayload, matchPayload, standingsPayload] = await Promise.all([
+        const [
+          tournamentPayload,
+          poolPayload,
+          matchPayload,
+          phase1StandingsPayload,
+          phase2StandingsPayload,
+          cumulativeStandingsPayload,
+        ] = await Promise.all([
           tournamentResponse.json().catch(() => null),
           poolResponse.json().catch(() => null),
           matchResponse.json().catch(() => null),
-          standingsResponse.json().catch(() => null),
+          phase1StandingsResponse.json().catch(() => null),
+          phase2StandingsResponse.json().catch(() => null),
+          cumulativeStandingsResponse.json().catch(() => null),
         ]);
 
         if (!tournamentResponse.ok) {
@@ -70,8 +93,14 @@ function TournamentPublicView() {
         if (!matchResponse.ok) {
           throw new Error(matchPayload?.message || 'Unable to load matches');
         }
-        if (!standingsResponse.ok) {
-          throw new Error(standingsPayload?.message || 'Unable to load standings');
+        if (!phase1StandingsResponse.ok) {
+          throw new Error(phase1StandingsPayload?.message || 'Unable to load Phase 1 standings');
+        }
+        if (!phase2StandingsResponse.ok) {
+          throw new Error(phase2StandingsPayload?.message || 'Unable to load Phase 2 standings');
+        }
+        if (!cumulativeStandingsResponse.ok) {
+          throw new Error(cumulativeStandingsPayload?.message || 'Unable to load cumulative standings');
         }
 
         if (cancelled) {
@@ -81,9 +110,31 @@ function TournamentPublicView() {
         setTournament(tournamentPayload.tournament);
         setPools(normalizePools(poolPayload));
         setMatches(Array.isArray(matchPayload) ? matchPayload : []);
-        setStandings({
-          pools: Array.isArray(standingsPayload?.pools) ? standingsPayload.pools : [],
-          overall: Array.isArray(standingsPayload?.overall) ? standingsPayload.overall : [],
+        setStandingsByPhase({
+          phase1: {
+            pools: Array.isArray(phase1StandingsPayload?.pools)
+              ? phase1StandingsPayload.pools
+              : [],
+            overall: Array.isArray(phase1StandingsPayload?.overall)
+              ? phase1StandingsPayload.overall
+              : [],
+          },
+          phase2: {
+            pools: Array.isArray(phase2StandingsPayload?.pools)
+              ? phase2StandingsPayload.pools
+              : [],
+            overall: Array.isArray(phase2StandingsPayload?.overall)
+              ? phase2StandingsPayload.overall
+              : [],
+          },
+          cumulative: {
+            pools: Array.isArray(cumulativeStandingsPayload?.pools)
+              ? cumulativeStandingsPayload.pools
+              : [],
+            overall: Array.isArray(cumulativeStandingsPayload?.overall)
+              ? cumulativeStandingsPayload.overall
+              : [],
+          },
         });
       } catch (loadError) {
         if (!cancelled) {
@@ -109,6 +160,12 @@ function TournamentPublicView() {
   }, [publicCode]);
 
   const scheduleLookup = useMemo(() => buildPhase1ScheduleLookup(matches), [matches]);
+  const activeStandings =
+    activeStandingsTab === 'phase2'
+      ? standingsByPhase.phase2
+      : activeStandingsTab === 'cumulative'
+        ? standingsByPhase.cumulative
+        : standingsByPhase.phase1;
 
   if (loading) {
     return (
@@ -217,44 +274,78 @@ function TournamentPublicView() {
         </section>
 
         <section className="phase1-standings">
-          <h2 className="secondary-title">Phase 1 Standings</h2>
+          <h2 className="secondary-title">Standings</h2>
           <p className="subtle">Standings are based on finalized matches only.</p>
-          <div className="phase1-standings-grid">
-            {standings.pools.map((poolStanding) => (
-              <article key={poolStanding.poolName} className="phase1-standings-card">
-                <h3>Pool {poolStanding.poolName}</h3>
-                <div className="phase1-table-wrap">
-                  <table className="phase1-standings-table">
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>Team</th>
-                        <th>W-L</th>
-                        <th>Set %</th>
-                        <th>Pt Diff</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(poolStanding.teams || []).map((team) => (
-                        <tr key={team.teamId}>
-                          <td>{team.rank}</td>
-                          <td>{team.shortName || team.name}</td>
-                          <td>
-                            {team.matchesWon}-{team.matchesLost}
-                          </td>
-                          <td>{formatSetPct(team.setPct)}</td>
-                          <td>{formatPointDiff(team.pointDiff)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </article>
-            ))}
+          <div className="phase1-admin-actions">
+            <button
+              className={activeStandingsTab === 'phase1' ? 'primary-button' : 'secondary-button'}
+              type="button"
+              onClick={() => setActiveStandingsTab('phase1')}
+            >
+              Phase 1
+            </button>
+            <button
+              className={activeStandingsTab === 'phase2' ? 'primary-button' : 'secondary-button'}
+              type="button"
+              onClick={() => setActiveStandingsTab('phase2')}
+            >
+              Phase 2
+            </button>
+            <button
+              className={
+                activeStandingsTab === 'cumulative' ? 'primary-button' : 'secondary-button'
+              }
+              type="button"
+              onClick={() => setActiveStandingsTab('cumulative')}
+            >
+              Cumulative
+            </button>
           </div>
 
+          {activeStandingsTab !== 'cumulative' && (
+            <div className="phase1-standings-grid">
+              {activeStandings.pools.map((poolStanding) => (
+                <article key={poolStanding.poolName} className="phase1-standings-card">
+                  <h3>Pool {poolStanding.poolName}</h3>
+                  <div className="phase1-table-wrap">
+                    <table className="phase1-standings-table">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Team</th>
+                          <th>W-L</th>
+                          <th>Set %</th>
+                          <th>Pt Diff</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(poolStanding.teams || []).map((team) => (
+                          <tr key={team.teamId}>
+                            <td>{team.rank}</td>
+                            <td>{team.shortName || team.name}</td>
+                            <td>
+                              {team.matchesWon}-{team.matchesLost}
+                            </td>
+                            <td>{formatSetPct(team.setPct)}</td>
+                            <td>{formatPointDiff(team.pointDiff)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+
           <article className="phase1-standings-card phase1-standings-card--overall">
-            <h3>Overall Seeds</h3>
+            <h3>
+              {activeStandingsTab === 'phase1'
+                ? 'Phase 1 Overall'
+                : activeStandingsTab === 'phase2'
+                  ? 'Phase 2 Overall'
+                  : 'Cumulative Overall'}
+            </h3>
             <div className="phase1-table-wrap">
               <table className="phase1-standings-table">
                 <thead>
@@ -267,7 +358,7 @@ function TournamentPublicView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(standings.overall || []).map((team) => (
+                  {(activeStandings.overall || []).map((team) => (
                     <tr key={team.teamId}>
                       <td>{team.rank}</td>
                       <td>{team.shortName || team.name}</td>

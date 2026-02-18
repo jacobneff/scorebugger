@@ -99,6 +99,10 @@ const TournamentSchema = new mongoose.Schema(
         type: StandingsPhaseOverridesSchema,
         default: undefined,
       },
+      phase2: {
+        type: StandingsPhaseOverridesSchema,
+        default: undefined,
+      },
     },
     createdByUserId: {
       type: mongoose.Schema.Types.ObjectId,

@@ -16,6 +16,12 @@ const {
   normalizeScoringConfig,
   sortPoolsByPhase1Name,
 } = require('../services/phase1');
+const {
+  PHASE2_MATCH_ORDER,
+  PHASE2_POOL_HOME_COURTS,
+  PHASE2_POOL_NAMES,
+  buildPhase2PoolsFromPhase1Results,
+} = require('../services/phase2');
 const { createMatchScoreboard } = require('../services/scoreboards');
 const { computeStandingsBundle } = require('../services/tournamentEngine/standings');
 const {
@@ -27,8 +33,21 @@ const router = express.Router();
 
 const TOURNAMENT_STATUSES = ['setup', 'phase1', 'phase2', 'playoffs', 'complete'];
 const MATCH_PHASES = ['phase1', 'phase2', 'playoffs'];
-const STANDINGS_PHASES = ['phase1'];
+const STANDINGS_PHASES = ['phase1', 'phase2', 'cumulative'];
+const STANDINGS_OVERRIDE_PHASES = ['phase1'];
 const DUPLICATE_KEY_ERROR_CODE = 11000;
+const TOURNAMENT_STATUS_ORDER = {
+  setup: 0,
+  phase1: 1,
+  phase2: 2,
+  playoffs: 3,
+  complete: 4,
+};
+
+const phase2PoolNameIndex = PHASE2_POOL_NAMES.reduce((lookup, poolName, index) => {
+  lookup[poolName] = index;
+  return lookup;
+}, {});
 
 const isObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
@@ -103,6 +122,14 @@ function validateStandingsPhaseFilter(phase) {
   }
 
   return STANDINGS_PHASES.includes(phase) ? null : 'Invalid standings phase';
+}
+
+function validateStandingsOverridePhaseFilter(phase) {
+  if (!phase) {
+    return null;
+  }
+
+  return STANDINGS_OVERRIDE_PHASES.includes(phase) ? null : 'Invalid standings override phase';
 }
 
 async function ensureTournamentOwnership(tournamentId, userId) {
@@ -190,6 +217,14 @@ function serializePool(pool) {
           : { _id: toIdString(team) }
       )
     : [];
+  const rematchWarnings = Array.isArray(pool?.rematchWarnings)
+    ? pool.rematchWarnings
+        .map((warning) => ({
+          teamIdA: toIdString(warning?.teamIdA),
+          teamIdB: toIdString(warning?.teamIdB),
+        }))
+        .filter((warning) => warning.teamIdA && warning.teamIdB)
+    : [];
 
   return {
     _id: toIdString(pool?._id),
@@ -198,6 +233,7 @@ function serializePool(pool) {
     name: pool?.name ?? '',
     homeCourt: pool?.homeCourt ?? null,
     teamIds,
+    rematchWarnings,
     createdAt: pool?.createdAt ?? null,
     updatedAt: pool?.updatedAt ?? null,
   };
@@ -283,6 +319,32 @@ async function loadPhase1Pools(tournamentId, { populateTeams = true } = {}) {
   return pools.sort(sortPoolsByPhase1Name);
 }
 
+function sortPoolsByPhase2Name(poolA, poolB) {
+  const indexA = phase2PoolNameIndex[poolA?.name] ?? Number.MAX_SAFE_INTEGER;
+  const indexB = phase2PoolNameIndex[poolB?.name] ?? Number.MAX_SAFE_INTEGER;
+
+  if (indexA !== indexB) {
+    return indexA - indexB;
+  }
+
+  return String(poolA?.name || '').localeCompare(String(poolB?.name || ''));
+}
+
+async function loadPhase2Pools(tournamentId, { populateTeams = true } = {}) {
+  let query = Pool.find({
+    tournamentId,
+    phase: 'phase2',
+    name: { $in: PHASE2_POOL_NAMES },
+  });
+
+  if (populateTeams) {
+    query = query.populate('teamIds', 'name shortName logoUrl seed');
+  }
+
+  const pools = await query.lean();
+  return pools.sort(sortPoolsByPhase2Name);
+}
+
 async function loadMatchesForResponse(query) {
   const matches = await Match.find(query)
     .populate('poolId', 'name')
@@ -327,6 +389,46 @@ function validatePhase1PoolsForGeneration(pools) {
   }
 
   return null;
+}
+
+function validatePhase2PoolsForGeneration(pools) {
+  const byName = new Map((Array.isArray(pools) ? pools : []).map((pool) => [pool.name, pool]));
+  const allTeamIds = [];
+
+  for (const poolName of PHASE2_POOL_NAMES) {
+    const pool = byName.get(poolName);
+
+    if (!pool) {
+      return `Pool ${poolName} is missing`;
+    }
+
+    if (!Array.isArray(pool.teamIds) || pool.teamIds.length !== 3) {
+      return `Pool ${poolName} must have exactly 3 teams`;
+    }
+
+    pool.teamIds.forEach((teamId) => allTeamIds.push(toIdString(teamId)));
+  }
+
+  if (new Set(allTeamIds).size !== allTeamIds.length) {
+    return 'Each Phase 2 team can only appear in one pool';
+  }
+
+  return null;
+}
+
+async function ensureTournamentStatusAtLeast(tournamentId, nextStatus) {
+  const nextIndex = TOURNAMENT_STATUS_ORDER[nextStatus];
+
+  if (nextIndex === undefined) {
+    return;
+  }
+
+  const tournament = await Tournament.findById(tournamentId).select('status').lean();
+  const currentIndex = TOURNAMENT_STATUS_ORDER[tournament?.status] ?? 0;
+
+  if (currentIndex < nextIndex) {
+    await Tournament.updateOne({ _id: tournamentId }, { $set: { status: nextStatus } });
+  }
 }
 
 async function findTournamentForPublicCode(publicCode) {
@@ -475,6 +577,28 @@ router.get('/code/:publicCode/phase1/pools', async (req, res, next) => {
   }
 });
 
+// GET /api/tournaments/code/:publicCode/phase2/pools -> public read-only phase2 pools
+router.get('/code/:publicCode/phase2/pools', async (req, res, next) => {
+  try {
+    const publicCode = normalizePublicCode(req.params.publicCode);
+
+    if (!new RegExp(`^[A-Z0-9]{${CODE_LENGTH}}$`).test(publicCode)) {
+      return res.status(400).json({ message: 'Invalid tournament code' });
+    }
+
+    const tournament = await Tournament.findOne({ publicCode }).select('_id').lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found' });
+    }
+
+    const pools = await loadPhase2Pools(tournament._id, { populateTeams: true });
+    return res.json(pools.map(serializePool));
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // GET /api/tournaments/code/:publicCode/matches?phase=phase1|phase2|playoffs
 router.get('/code/:publicCode/matches', async (req, res, next) => {
   try {
@@ -509,7 +633,7 @@ router.get('/code/:publicCode/matches', async (req, res, next) => {
   }
 });
 
-// GET /api/tournaments/code/:publicCode/standings?phase=phase1 -> public standings
+// GET /api/tournaments/code/:publicCode/standings?phase=phase1|phase2|cumulative -> public standings
 router.get('/code/:publicCode/standings', async (req, res, next) => {
   try {
     const publicCode = normalizePublicCode(req.params.publicCode);
@@ -795,6 +919,109 @@ router.get('/:id/phase1/pools', requireAuth, async (req, res, next) => {
   }
 });
 
+// GET /api/tournaments/:id/phase2/pools -> list phase2 pools for an owned tournament
+router.get('/:id/phase2/pools', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+
+    if (!ownedTournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const pools = await loadPhase2Pools(id, { populateTeams: true });
+    return res.json(pools.map(serializePool));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /api/tournaments/:id/phase2/pools/generate -> generate/update phase2 pools from phase1 results
+router.post('/:id/phase2/pools/generate', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+
+    if (!ownedTournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const forceRegenerate = parseBooleanFlag(req.query?.force, false);
+
+    const [existingPhase2Pools, existingPhase2Matches] = await Promise.all([
+      Pool.find({
+        tournamentId: id,
+        phase: 'phase2',
+        name: { $in: PHASE2_POOL_NAMES },
+      })
+        .select('_id name')
+        .lean(),
+      Match.find({
+        tournamentId: id,
+        phase: 'phase2',
+      })
+        .select('_id')
+        .limit(1)
+        .lean(),
+    ]);
+
+    if (existingPhase2Matches.length > 0 && !forceRegenerate) {
+      const poolsPrefix =
+        existingPhase2Pools.length > 0 ? 'pools already exist and ' : '';
+      return res.status(409).json({
+        message:
+          `Phase 2 ${poolsPrefix}matches have been generated. Re-run with ?force=true to overwrite pools.`,
+      });
+    }
+
+    const generation = await buildPhase2PoolsFromPhase1Results(id);
+
+    if (!generation.ok) {
+      return res.status(400).json({
+        message: 'Phase 2 pools cannot be generated yet',
+        missing: generation.missing || [],
+      });
+    }
+
+    await Pool.bulkWrite(
+      generation.pools.map((pool) => ({
+        updateOne: {
+          filter: { tournamentId: id, phase: 'phase2', name: pool.name },
+          update: {
+            $set: {
+              teamIds: pool.teamIds,
+              homeCourt: pool.homeCourt,
+              rematchWarnings: pool.rematchWarnings,
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: true }
+    );
+
+    await ensureTournamentStatusAtLeast(id, 'phase2');
+
+    const pools = await loadPhase2Pools(id, { populateTeams: true });
+    return res.json({
+      source: generation.source,
+      pools: pools.map(serializePool),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // POST /api/tournaments/:id/generate/phase1 -> generate 15 phase1 matches + scoreboards
 router.post('/:id/generate/phase1', requireAuth, async (req, res, next) => {
   try {
@@ -950,6 +1177,159 @@ router.post('/:id/generate/phase1', requireAuth, async (req, res, next) => {
   }
 });
 
+// POST /api/tournaments/:id/generate/phase2 -> generate 15 phase2 matches + scoreboards
+router.post('/:id/generate/phase2', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const tournament = await Tournament.findOne({
+      _id: id,
+      createdByUserId: req.user.id,
+    })
+      .select('settings status')
+      .lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const pools = await Pool.find({
+      tournamentId: id,
+      phase: 'phase2',
+      name: { $in: PHASE2_POOL_NAMES },
+    })
+      .select('_id name teamIds homeCourt')
+      .lean();
+
+    const poolValidationError = validatePhase2PoolsForGeneration(pools);
+
+    if (poolValidationError) {
+      return res.status(400).json({ message: poolValidationError });
+    }
+
+    const forceRegenerate = parseBooleanFlag(req.query?.force, false);
+
+    const existingPhase2Matches = await Match.find({
+      tournamentId: id,
+      phase: 'phase2',
+    })
+      .select('_id scoreboardId')
+      .lean();
+
+    if (existingPhase2Matches.length > 0 && !forceRegenerate) {
+      return res.status(409).json({
+        message: 'Phase 2 matches already generated. Re-run with ?force=true to regenerate.',
+      });
+    }
+
+    if (existingPhase2Matches.length > 0 && forceRegenerate) {
+      const staleScoreboardIds = existingPhase2Matches
+        .map((match) => match.scoreboardId)
+        .filter(Boolean);
+
+      await Match.deleteMany({
+        _id: { $in: existingPhase2Matches.map((match) => match._id) },
+      });
+
+      if (staleScoreboardIds.length > 0) {
+        await Scoreboard.deleteMany({
+          _id: { $in: staleScoreboardIds },
+        });
+      }
+    }
+
+    const teamIds = [...new Set(pools.flatMap((pool) => pool.teamIds.map((teamId) => toIdString(teamId))))];
+    const teams = await TournamentTeam.find({
+      _id: { $in: teamIds },
+      tournamentId: id,
+    })
+      .select('name shortName logoUrl seed')
+      .lean();
+
+    if (teams.length !== teamIds.length) {
+      return res.status(400).json({ message: 'Phase 2 pools include teams outside this tournament' });
+    }
+
+    const teamsById = new Map(teams.map((team) => [team._id.toString(), team]));
+    const poolsByName = new Map(pools.map((pool) => [pool.name, pool]));
+    const scoring = normalizeScoringConfig(tournament?.settings?.scoring);
+    const createdMatchIds = [];
+    const createdScoreboardIds = [];
+
+    try {
+      for (const poolName of PHASE2_POOL_NAMES) {
+        const pool = poolsByName.get(poolName);
+        const orderedTeamIds = pool.teamIds.map((teamId) => toIdString(teamId));
+        const homeCourt = pool.homeCourt || PHASE2_POOL_HOME_COURTS[pool.name];
+        const facility = getFacilityFromCourt(homeCourt);
+
+        if (!facility) {
+          throw new Error(`Pool ${pool.name} has an invalid home court`);
+        }
+
+        for (const matchTemplate of PHASE2_MATCH_ORDER) {
+          const teamAId = orderedTeamIds[matchTemplate.teamAIndex];
+          const teamBId = orderedTeamIds[matchTemplate.teamBIndex];
+          const refTeamId = orderedTeamIds[matchTemplate.refIndex];
+          const teamA = teamsById.get(teamAId);
+          const teamB = teamsById.get(teamBId);
+
+          if (!teamA || !teamB) {
+            throw new Error(`Missing team data for Pool ${pool.name}`);
+          }
+
+          const scoreboard = await createMatchScoreboard({
+            ownerId: req.user.id,
+            title: `Pool ${pool.name} - Round ${matchTemplate.roundBlock}`,
+            teamA,
+            teamB,
+            scoring,
+          });
+
+          createdScoreboardIds.push(scoreboard._id);
+
+          const match = await Match.create({
+            tournamentId: id,
+            phase: 'phase2',
+            poolId: pool._id,
+            roundBlock: matchTemplate.roundBlock,
+            facility,
+            court: homeCourt,
+            teamAId,
+            teamBId,
+            refTeamIds: [refTeamId],
+            scoreboardId: scoreboard._id,
+            status: 'scheduled',
+          });
+
+          createdMatchIds.push(match._id);
+        }
+      }
+    } catch (generationError) {
+      if (createdMatchIds.length > 0) {
+        await Match.deleteMany({ _id: { $in: createdMatchIds } });
+      }
+
+      if (createdScoreboardIds.length > 0) {
+        await Scoreboard.deleteMany({ _id: { $in: createdScoreboardIds } });
+      }
+
+      throw generationError;
+    }
+
+    await ensureTournamentStatusAtLeast(id, 'phase2');
+
+    const matches = await loadMatchesForResponse({ _id: { $in: createdMatchIds } });
+    return res.status(201).json(matches);
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // GET /api/tournaments/:id/matches?phase=phase1|phase2|playoffs -> owned tournament matches
 router.get('/:id/matches', requireAuth, async (req, res, next) => {
   try {
@@ -984,7 +1364,7 @@ router.get('/:id/matches', requireAuth, async (req, res, next) => {
   }
 });
 
-// GET /api/tournaments/:id/standings?phase=phase1 -> owned tournament standings
+// GET /api/tournaments/:id/standings?phase=phase1|phase2|cumulative -> owned tournament standings
 router.get('/:id/standings', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -1031,7 +1411,7 @@ router.put('/:id/standings-overrides', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const phaseError = validateStandingsPhaseFilter(phase);
+    const phaseError = validateStandingsOverridePhaseFilter(phase);
 
     if (phaseError) {
       return res.status(400).json({ message: phaseError });

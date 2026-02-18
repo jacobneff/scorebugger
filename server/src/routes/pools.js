@@ -5,6 +5,7 @@ const Pool = require('../models/Pool');
 const Tournament = require('../models/Tournament');
 const TournamentTeam = require('../models/TournamentTeam');
 const { requireAuth } = require('../middleware/auth');
+const { recomputePhase2RematchWarnings } = require('../services/phase2');
 
 const router = express.Router();
 
@@ -27,6 +28,14 @@ const serializePool = (pool) => ({
   name: pool?.name ?? '',
   homeCourt: pool?.homeCourt ?? null,
   teamIds: Array.isArray(pool?.teamIds) ? pool.teamIds.map(serializeTeam) : [],
+  rematchWarnings: Array.isArray(pool?.rematchWarnings)
+    ? pool.rematchWarnings
+        .map((warning) => ({
+          teamIdA: toIdString(warning?.teamIdA),
+          teamIdB: toIdString(warning?.teamIdB),
+        }))
+        .filter((warning) => warning.teamIdA && warning.teamIdB)
+    : [],
   createdAt: pool?.createdAt ?? null,
   updatedAt: pool?.updatedAt ?? null,
 });
@@ -114,7 +123,15 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
       .populate('teamIds', 'name shortName seed logoUrl')
       .lean();
 
-    return res.json(serializePool(updatedPool));
+    if (pool.phase === 'phase2') {
+      await recomputePhase2RematchWarnings(pool.tournamentId);
+    }
+
+    const finalizedPool = await Pool.findById(updatedPool._id)
+      .populate('teamIds', 'name shortName seed logoUrl')
+      .lean();
+
+    return res.json(serializePool(finalizedPool));
   } catch (error) {
     return next(error);
   }

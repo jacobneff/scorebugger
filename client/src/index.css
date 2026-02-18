@@ -1953,6 +1953,16 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+.phase2-rematch-warnings {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.phase2-rematch-warnings .error {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
 .phase1-drop-list {
   display: grid;
   gap: 0.45rem;

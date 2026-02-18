@@ -3,7 +3,9 @@ const Pool = require('../../models/Pool');
 const Tournament = require('../../models/Tournament');
 const TournamentTeam = require('../../models/TournamentTeam');
 
-const SUPPORTED_PHASES = new Set(['phase1']);
+const SUPPORTED_PHASES = new Set(['phase1', 'phase2', 'cumulative']);
+const PHASES_WITH_POOLS = new Set(['phase1', 'phase2']);
+const CUMULATIVE_PHASE_MATCHES = ['phase1', 'phase2'];
 const REQUIRED_SET_WINS = 2;
 const MAX_BEST_OF_THREE_SETS = 3;
 
@@ -479,13 +481,19 @@ function computeOverallStandingsFromData({ teams, matches, phaseOverrides }) {
 }
 
 async function loadStandingsContext(tournamentId, phase) {
+  const matchPhaseQuery =
+    phase === 'cumulative' ? { $in: CUMULATIVE_PHASE_MATCHES } : phase;
+  const poolsPromise = PHASES_WITH_POOLS.has(phase)
+    ? Pool.find({ tournamentId, phase }).select('_id name teamIds').lean()
+    : Promise.resolve([]);
+
   const [tournament, teams, pools, matches] = await Promise.all([
     Tournament.findById(tournamentId).select('standingsOverrides').lean(),
     TournamentTeam.find({ tournamentId }).select('_id name shortName seed').lean(),
-    Pool.find({ tournamentId, phase }).select('_id name teamIds').lean(),
+    poolsPromise,
     Match.find({
       tournamentId,
-      phase,
+      phase: matchPhaseQuery,
       status: 'final',
       result: { $ne: null },
     })
@@ -498,13 +506,20 @@ async function loadStandingsContext(tournamentId, phase) {
     teams,
     pools,
     matches,
-    phaseOverrides: normalizePhaseOverrides(tournament, phase),
+    phaseOverrides:
+      phase === 'cumulative'
+        ? { poolOrderOverrides: {}, overallOrderOverrides: [] }
+        : normalizePhaseOverrides(tournament, phase),
   };
 }
 
 async function computePoolStandings(tournamentId, phase = 'phase1') {
   if (!SUPPORTED_PHASES.has(phase)) {
     throw new Error(`Unsupported phase: ${phase}`);
+  }
+
+  if (!PHASES_WITH_POOLS.has(phase)) {
+    return [];
   }
 
   const context = await loadStandingsContext(tournamentId, phase);
@@ -528,7 +543,7 @@ async function computeStandingsBundle(tournamentId, phase = 'phase1') {
   const context = await loadStandingsContext(tournamentId, phase);
 
   return {
-    pools: computePoolStandingsFromData(context),
+    pools: PHASES_WITH_POOLS.has(phase) ? computePoolStandingsFromData(context) : [],
     overall: computeOverallStandingsFromData(context),
   };
 }

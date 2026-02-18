@@ -1,5 +1,21 @@
 const mongoose = require('mongoose');
 
+const PoolRematchWarningSchema = new mongoose.Schema(
+  {
+    teamIdA: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TournamentTeam',
+      required: true,
+    },
+    teamIdB: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TournamentTeam',
+      required: true,
+    },
+  },
+  { _id: false }
+);
+
 const PoolSchema = new mongoose.Schema(
   {
     tournamentId: {
@@ -36,6 +52,10 @@ const PoolSchema = new mongoose.Schema(
       type: String,
       default: null,
       trim: true,
+    },
+    rematchWarnings: {
+      type: [PoolRematchWarningSchema],
+      default: [],
     },
   },
   {

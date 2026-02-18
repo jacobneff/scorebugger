@@ -4,11 +4,11 @@ import { useParams } from 'react-router-dom';
 import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import {
-  PHASE1_COURT_ORDER,
-  PHASE1_ROUND_BLOCKS,
-  buildPhase1ScheduleLookup,
+  PHASE2_COURT_ORDER,
+  PHASE2_ROUND_BLOCKS,
+  buildPhase2ScheduleLookup,
   formatTeamLabel,
-  sortPhase1Pools,
+  sortPhase2Pools,
 } from '../utils/phase1.js';
 
 const jsonHeaders = (token) => ({
@@ -21,7 +21,7 @@ const authHeaders = (token) => ({
 });
 
 const normalizePools = (pools) =>
-  sortPhase1Pools(pools).map((pool) => ({
+  sortPhase2Pools(pools).map((pool) => ({
     ...pool,
     teamIds: Array.isArray(pool.teamIds)
       ? pool.teamIds.map((team) => ({
@@ -32,6 +32,14 @@ const normalizePools = (pools) =>
           logoUrl: team.logoUrl ?? null,
         }))
       : [],
+    rematchWarnings: Array.isArray(pool.rematchWarnings)
+      ? pool.rematchWarnings
+          .map((warning) => ({
+            teamIdA: warning?.teamIdA ? String(warning.teamIdA) : null,
+            teamIdB: warning?.teamIdB ? String(warning.teamIdB) : null,
+          }))
+          .filter((warning) => warning.teamIdA && warning.teamIdB)
+      : [],
   }));
 
 const formatSetPct = (value) => `${(Math.max(0, Number(value) || 0) * 100).toFixed(1)}%`;
@@ -41,20 +49,44 @@ const formatPointDiff = (value) => {
   return parsed > 0 ? `+${parsed}` : `${parsed}`;
 };
 
-function TournamentPhase1Admin() {
+const normalizeStandingsPayload = (payload) => ({
+  pools: Array.isArray(payload?.pools) ? payload.pools : [],
+  overall: Array.isArray(payload?.overall) ? payload.overall : [],
+});
+
+function buildRematchWarningLabels(pool) {
+  const teamsById = new Map(
+    (Array.isArray(pool?.teamIds) ? pool.teamIds : []).map((team) => [
+      String(team._id),
+      team.shortName || team.name || 'Unknown',
+    ])
+  );
+
+  return (Array.isArray(pool?.rematchWarnings) ? pool.rematchWarnings : []).map((warning) => {
+    const teamAName = teamsById.get(String(warning.teamIdA)) || 'Unknown';
+    const teamBName = teamsById.get(String(warning.teamIdB)) || 'Unknown';
+    return `${teamAName} vs ${teamBName}`;
+  });
+}
+
+function TournamentPhase2Admin() {
   const { id } = useParams();
   const { token, user, initializing } = useAuth();
 
   const [tournament, setTournament] = useState(null);
   const [pools, setPools] = useState([]);
   const [matches, setMatches] = useState([]);
-  const [standings, setStandings] = useState({ pools: [], overall: [] });
+  const [standingsByPhase, setStandingsByPhase] = useState({
+    phase2: { pools: [], overall: [] },
+    cumulative: { pools: [], overall: [] },
+  });
+  const [activeStandingsTab, setActiveStandingsTab] = useState('phase2');
   const [dragState, setDragState] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
 
   const [loading, setLoading] = useState(true);
-  const [initLoading, setInitLoading] = useState(false);
   const [savingPools, setSavingPools] = useState(false);
+  const [poolsGenerateLoading, setPoolsGenerateLoading] = useState(false);
   const [generateLoading, setGenerateLoading] = useState(false);
   const [standingsLoading, setStandingsLoading] = useState(false);
   const [matchActionId, setMatchActionId] = useState('');
@@ -73,32 +105,32 @@ function TournamentPhase1Admin() {
   }, []);
 
   const loadPools = useCallback(async () => {
-    const poolData = await fetchJson(`${API_URL}/api/tournaments/${id}/phase1/pools`, {
+    const poolData = await fetchJson(`${API_URL}/api/tournaments/${id}/phase2/pools`, {
       headers: authHeaders(token),
     });
     return normalizePools(poolData);
   }, [fetchJson, id, token]);
 
   const loadMatches = useCallback(async () => {
-    const matchData = await fetchJson(`${API_URL}/api/tournaments/${id}/matches?phase=phase1`, {
+    const matchData = await fetchJson(`${API_URL}/api/tournaments/${id}/matches?phase=phase2`, {
       headers: authHeaders(token),
     });
     return Array.isArray(matchData) ? matchData : [];
   }, [fetchJson, id, token]);
 
-  const loadStandings = useCallback(async () => {
-    const standingsPayload = await fetchJson(
-      `${API_URL}/api/tournaments/${id}/standings?phase=phase1`,
-      {
-        headers: authHeaders(token),
-      }
-    );
+  const loadStandings = useCallback(
+    async (phase) => {
+      const standingsPayload = await fetchJson(
+        `${API_URL}/api/tournaments/${id}/standings?phase=${phase}`,
+        {
+          headers: authHeaders(token),
+        }
+      );
 
-    return {
-      pools: Array.isArray(standingsPayload?.pools) ? standingsPayload.pools : [],
-      overall: Array.isArray(standingsPayload?.overall) ? standingsPayload.overall : [],
-    };
-  }, [fetchJson, id, token]);
+      return normalizeStandingsPayload(standingsPayload);
+    },
+    [fetchJson, id, token]
+  );
 
   const loadData = useCallback(async () => {
     if (!token || !id) {
@@ -109,21 +141,26 @@ function TournamentPhase1Admin() {
     setError('');
 
     try {
-      const [tournamentData, poolData, matchData, standingsData] = await Promise.all([
-        fetchJson(`${API_URL}/api/tournaments/${id}`, {
-          headers: authHeaders(token),
-        }),
-        loadPools(),
-        loadMatches(),
-        loadStandings(),
-      ]);
+      const [tournamentData, poolData, matchData, phase2Standings, cumulativeStandings] =
+        await Promise.all([
+          fetchJson(`${API_URL}/api/tournaments/${id}`, {
+            headers: authHeaders(token),
+          }),
+          loadPools(),
+          loadMatches(),
+          loadStandings('phase2'),
+          loadStandings('cumulative'),
+        ]);
 
       setTournament(tournamentData);
       setPools(poolData);
       setMatches(matchData);
-      setStandings(standingsData);
+      setStandingsByPhase({
+        phase2: phase2Standings,
+        cumulative: cumulativeStandings,
+      });
     } catch (loadError) {
-      setError(loadError.message || 'Unable to load tournament data');
+      setError(loadError.message || 'Unable to load Phase 2 data');
     } finally {
       setLoading(false);
     }
@@ -133,9 +170,16 @@ function TournamentPhase1Admin() {
     setStandingsLoading(true);
 
     try {
-      const [matchData, standingsData] = await Promise.all([loadMatches(), loadStandings()]);
+      const [matchData, phase2Standings, cumulativeStandings] = await Promise.all([
+        loadMatches(),
+        loadStandings('phase2'),
+        loadStandings('cumulative'),
+      ]);
       setMatches(matchData);
-      setStandings(standingsData);
+      setStandingsByPhase({
+        phase2: phase2Standings,
+        cumulative: cumulativeStandings,
+      });
     } finally {
       setStandingsLoading(false);
     }
@@ -159,7 +203,7 @@ function TournamentPhase1Admin() {
     [pools]
   );
 
-  const scheduleLookup = useMemo(() => buildPhase1ScheduleLookup(matches), [matches]);
+  const scheduleLookup = useMemo(() => buildPhase2ScheduleLookup(matches), [matches]);
 
   const moveTeam = useCallback(
     (sourcePoolId, teamId, targetPoolId, targetIndex) => {
@@ -200,10 +244,7 @@ function TournamentPhase1Admin() {
 
       nextPools[targetPoolIndex].teamIds.splice(boundedTargetIndex, 0, draggedTeam);
 
-      if (
-        sourcePoolIndex === targetPoolIndex &&
-        sourceTeamIndex === boundedTargetIndex
-      ) {
+      if (sourcePoolIndex === targetPoolIndex && sourceTeamIndex === boundedTargetIndex) {
         return null;
       }
 
@@ -267,7 +308,7 @@ function TournamentPhase1Admin() {
         await persistPoolChanges(nextPools, dragState.poolId, targetPoolId);
         const refreshedPools = await loadPools();
         setPools(refreshedPools);
-        setMessage('Pool assignments saved.');
+        setMessage('Phase 2 pool assignments saved.');
       } catch (saveError) {
         setPools(previousPools);
         setError(saveError.message || 'Unable to save pool changes');
@@ -278,33 +319,84 @@ function TournamentPhase1Admin() {
     [dragState, loadPools, moveTeam, persistPoolChanges, pools, savingPools]
   );
 
-  const handleInitializePools = useCallback(async () => {
-    if (!token || !id) {
+  const generatePhase2Pools = useCallback(
+    async (force = false) => {
+      const suffix = force ? '?force=true' : '';
+      const response = await fetch(
+        `${API_URL}/api/tournaments/${id}/phase2/pools/generate${suffix}`,
+        {
+          method: 'POST',
+          headers: authHeaders(token),
+        }
+      );
+      const payload = await response.json().catch(() => null);
+
+      if (response.status === 409 && !force) {
+        return {
+          requiresForce: true,
+          message: payload?.message || 'Phase 2 pools already exist.',
+        };
+      }
+
+      if (!response.ok || !payload) {
+        const details =
+          Array.isArray(payload?.missing) && payload.missing.length > 0
+            ? `\n${payload.missing.join('\n')}`
+            : '';
+        throw new Error(`${payload?.message || 'Unable to generate Phase 2 pools'}${details}`);
+      }
+
+      const generatedPools = Array.isArray(payload?.pools) ? payload.pools : payload;
+
+      return {
+        requiresForce: false,
+        pools: normalizePools(generatedPools),
+      };
+    },
+    [id, token]
+  );
+
+  const handleGeneratePhase2Pools = useCallback(async () => {
+    if (!token || !id || poolsGenerateLoading) {
       return;
     }
 
-    setInitLoading(true);
+    setPoolsGenerateLoading(true);
     setError('');
     setMessage('');
 
     try {
-      const poolData = await fetchJson(`${API_URL}/api/tournaments/${id}/phase1/pools/init`, {
-        method: 'POST',
-        headers: authHeaders(token),
-      });
-      setPools(normalizePools(poolData));
-      setMessage('Phase 1 pools initialized.');
-    } catch (initError) {
-      setError(initError.message || 'Unable to initialize pools');
-    } finally {
-      setInitLoading(false);
-    }
-  }, [fetchJson, id, token]);
+      const firstAttempt = await generatePhase2Pools(false);
 
-  const generatePhase1 = useCallback(
+      if (firstAttempt.requiresForce) {
+        const shouldForce = window.confirm(
+          `${firstAttempt.message}\n\nThis can overwrite existing Phase 2 pools. Continue?`
+        );
+
+        if (!shouldForce) {
+          setMessage(firstAttempt.message);
+          return;
+        }
+
+        const forcedAttempt = await generatePhase2Pools(true);
+        setPools(forcedAttempt.pools);
+        setMessage('Phase 2 pools regenerated from Phase 1 results.');
+        return;
+      }
+
+      setPools(firstAttempt.pools);
+      setMessage('Phase 2 pools generated from Phase 1 results.');
+    } catch (generateError) {
+      setError(generateError.message || 'Unable to generate Phase 2 pools');
+    } finally {
+      setPoolsGenerateLoading(false);
+    }
+  }, [generatePhase2Pools, id, poolsGenerateLoading, token]);
+
+  const generatePhase2Matches = useCallback(
     async (force = false) => {
       const suffix = force ? '?force=true' : '';
-      const response = await fetch(`${API_URL}/api/tournaments/${id}/generate/phase1${suffix}`, {
+      const response = await fetch(`${API_URL}/api/tournaments/${id}/generate/phase2${suffix}`, {
         method: 'POST',
         headers: authHeaders(token),
       });
@@ -313,12 +405,12 @@ function TournamentPhase1Admin() {
       if (response.status === 409 && !force) {
         return {
           requiresForce: true,
-          message: payload?.message || 'Phase 1 matches already exist.',
+          message: payload?.message || 'Phase 2 matches already exist.',
         };
       }
 
       if (!response.ok || !Array.isArray(payload)) {
-        throw new Error(payload?.message || 'Unable to generate Phase 1 matches');
+        throw new Error(payload?.message || 'Unable to generate Phase 2 matches');
       }
 
       return {
@@ -339,11 +431,11 @@ function TournamentPhase1Admin() {
     setMessage('');
 
     try {
-      const firstAttempt = await generatePhase1(false);
+      const firstAttempt = await generatePhase2Matches(false);
 
       if (firstAttempt.requiresForce) {
         const shouldForce = window.confirm(
-          `${firstAttempt.message}\n\nThis will delete and regenerate all Phase 1 matches and scoreboards. Continue?`
+          `${firstAttempt.message}\n\nThis will delete and regenerate all Phase 2 matches and scoreboards. Continue?`
         );
 
         if (!shouldForce) {
@@ -351,20 +443,22 @@ function TournamentPhase1Admin() {
           return;
         }
 
-        const forcedAttempt = await generatePhase1(true);
+        const forcedAttempt = await generatePhase2Matches(true);
         setMatches(forcedAttempt.matches);
-        setMessage('Phase 1 matches regenerated.');
+        setMessage('Phase 2 matches regenerated.');
+        await refreshMatchesAndStandings();
         return;
       }
 
       setMatches(firstAttempt.matches);
-      setMessage('Phase 1 matches generated.');
+      setMessage('Phase 2 matches generated.');
+      await refreshMatchesAndStandings();
     } catch (generateError) {
-      setError(generateError.message || 'Unable to generate matches');
+      setError(generateError.message || 'Unable to generate Phase 2 matches');
     } finally {
       setGenerateLoading(false);
     }
-  }, [generateLoading, generatePhase1, id, token]);
+  }, [generateLoading, generatePhase2Matches, id, refreshMatchesAndStandings, token]);
 
   const handleFinalizeMatch = useCallback(
     async (matchId) => {
@@ -418,13 +512,19 @@ function TournamentPhase1Admin() {
     [fetchJson, matchActionId, refreshMatchesAndStandings, token]
   );
 
-  const canGenerate = pools.length === 5 && invalidPools.length === 0 && !savingPools;
+  const canGenerateMatches =
+    pools.length === 5 && invalidPools.length === 0 && !savingPools;
+
+  const activeStandings =
+    activeStandingsTab === 'cumulative'
+      ? standingsByPhase.cumulative
+      : standingsByPhase.phase2;
 
   if (initializing || loading) {
     return (
       <main className="container">
         <section className="card phase1-admin-card">
-          <p className="subtle">Loading Phase 1 setup...</p>
+          <p className="subtle">Loading Phase 2 setup...</p>
         </section>
       </main>
     );
@@ -434,8 +534,8 @@ function TournamentPhase1Admin() {
     return (
       <main className="container">
         <section className="card phase1-admin-card">
-          <h1 className="title">Phase 1 Setup</h1>
-          <p className="subtle">Sign in to manage tournament pools and generate Phase 1 matches.</p>
+          <h1 className="title">Phase 2 Setup</h1>
+          <p className="subtle">Sign in to manage Phase 2 pools and schedule.</p>
           <a className="primary-button" href="/?mode=signin">
             Sign In
           </a>
@@ -449,31 +549,30 @@ function TournamentPhase1Admin() {
       <section className="card phase1-admin-card">
         <div className="phase1-admin-header">
           <div>
-            <h1 className="title">Phase 1 Setup</h1>
+            <h1 className="title">Phase 2 Setup</h1>
             <p className="subtitle">
-              {tournament?.name || 'Tournament'} • Drag teams to adjust pools, then generate the
-              fixed Phase 1 schedule.
+              {tournament?.name || 'Tournament'} • Build pools F-J from Phase 1 placements, then
+              generate fixed rounds 4-6.
             </p>
           </div>
           <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-              Open Phase 2 Setup
-            </a>
             <button
               className="secondary-button"
               type="button"
-              onClick={handleInitializePools}
-              disabled={initLoading || savingPools || generateLoading}
+              onClick={handleGeneratePhase2Pools}
+              disabled={poolsGenerateLoading || savingPools || generateLoading}
             >
-              {initLoading ? 'Initializing...' : 'Initialize Phase 1 Pools'}
+              {poolsGenerateLoading
+                ? 'Generating Pools...'
+                : 'Generate Phase 2 Pools from Phase 1 Results'}
             </button>
             <button
               className="primary-button"
               type="button"
               onClick={handleGenerateMatches}
-              disabled={!canGenerate || generateLoading}
+              disabled={!canGenerateMatches || generateLoading}
             >
-              {generateLoading ? 'Generating...' : 'Generate Phase 1 Matches'}
+              {generateLoading ? 'Generating Matches...' : 'Generate Phase 2 Matches'}
             </button>
           </div>
         </div>
@@ -489,85 +588,99 @@ function TournamentPhase1Admin() {
         {message && <p className="subtle phase1-success">{message}</p>}
 
         <div className="phase1-pool-grid">
-          {pools.map((pool) => (
-            <section
-              key={pool._id}
-              className={`phase1-pool-column ${
-                pool.teamIds.length === 3 ? '' : 'phase1-pool-column--invalid'
-              }`}
-            >
-              <header className="phase1-pool-header">
-                <h2>Pool {pool.name}</h2>
-                <p>{pool.homeCourt || 'No home court'}</p>
-              </header>
+          {pools.map((pool) => {
+            const rematchLabels = buildRematchWarningLabels(pool);
 
-              <div className="phase1-drop-list">
-                {Array.from({ length: pool.teamIds.length + 1 }).map((_, slotIndex) => (
-                  <div key={`${pool._id}-slot-${slotIndex}`} className="phase1-drop-block">
-                    <div
-                      className={`phase1-drop-slot ${
-                        dropTarget === `${pool._id}:${slotIndex}` ? 'is-active' : ''
-                      }`}
-                      onDragOver={(event) => {
-                        event.preventDefault();
-                        setDropTarget(`${pool._id}:${slotIndex}`);
-                      }}
-                      onDragLeave={() => {
-                        if (dropTarget === `${pool._id}:${slotIndex}`) {
-                          setDropTarget(null);
-                        }
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        handleDrop(pool._id, slotIndex);
-                      }}
-                    />
-                    {slotIndex < pool.teamIds.length && (
-                      <article
-                        className={`phase1-team-card ${
-                          dragState?.teamId === pool.teamIds[slotIndex]._id ? 'is-dragging' : ''
-                        }`}
-                        draggable
-                        onDragStart={() =>
-                          setDragState({
-                            poolId: pool._id,
-                            teamId: pool.teamIds[slotIndex]._id,
-                          })
-                        }
-                        onDragEnd={() => {
-                          setDragState(null);
-                          setDropTarget(null);
-                        }}
-                      >
-                        <strong>{pool.teamIds[slotIndex].name}</strong>
-                        <span>Seed #{pool.teamIds[slotIndex].seed ?? 'N/A'}</span>
-                      </article>
-                    )}
+            return (
+              <section
+                key={pool._id}
+                className={`phase1-pool-column ${
+                  pool.teamIds.length === 3 ? '' : 'phase1-pool-column--invalid'
+                }`}
+              >
+                <header className="phase1-pool-header">
+                  <h2>Pool {pool.name}</h2>
+                  <p>{pool.homeCourt || 'No home court'}</p>
+                </header>
+
+                {rematchLabels.length > 0 && (
+                  <div className="phase2-rematch-warnings">
+                    {rematchLabels.map((label) => (
+                      <p key={`${pool._id}-${label}`} className="error">
+                        Warning: rematch {label}
+                      </p>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </section>
-          ))}
+                )}
+
+                <div className="phase1-drop-list">
+                  {Array.from({ length: pool.teamIds.length + 1 }).map((_, slotIndex) => (
+                    <div key={`${pool._id}-slot-${slotIndex}`} className="phase1-drop-block">
+                      <div
+                        className={`phase1-drop-slot ${
+                          dropTarget === `${pool._id}:${slotIndex}` ? 'is-active' : ''
+                        }`}
+                        onDragOver={(event) => {
+                          event.preventDefault();
+                          setDropTarget(`${pool._id}:${slotIndex}`);
+                        }}
+                        onDragLeave={() => {
+                          if (dropTarget === `${pool._id}:${slotIndex}`) {
+                            setDropTarget(null);
+                          }
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          handleDrop(pool._id, slotIndex);
+                        }}
+                      />
+                      {slotIndex < pool.teamIds.length && (
+                        <article
+                          className={`phase1-team-card ${
+                            dragState?.teamId === pool.teamIds[slotIndex]._id ? 'is-dragging' : ''
+                          }`}
+                          draggable
+                          onDragStart={() =>
+                            setDragState({
+                              poolId: pool._id,
+                              teamId: pool.teamIds[slotIndex]._id,
+                            })
+                          }
+                          onDragEnd={() => {
+                            setDragState(null);
+                            setDropTarget(null);
+                          }}
+                        >
+                          <strong>{pool.teamIds[slotIndex].name}</strong>
+                          <span>Seed #{pool.teamIds[slotIndex].seed ?? 'N/A'}</span>
+                        </article>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            );
+          })}
         </div>
 
         {matches.length > 0 && (
           <section className="phase1-schedule">
-            <h2 className="secondary-title">Phase 1 Schedule</h2>
+            <h2 className="secondary-title">Phase 2 Schedule</h2>
             <div className="phase1-table-wrap">
               <table className="phase1-schedule-table">
                 <thead>
                   <tr>
                     <th>Round</th>
-                    {PHASE1_COURT_ORDER.map((court) => (
+                    {PHASE2_COURT_ORDER.map((court) => (
                       <th key={court}>{court}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {PHASE1_ROUND_BLOCKS.map((roundBlock) => (
+                  {PHASE2_ROUND_BLOCKS.map((roundBlock) => (
                     <tr key={roundBlock}>
                       <th>Round {roundBlock}</th>
-                      {PHASE1_COURT_ORDER.map((court) => {
+                      {PHASE2_COURT_ORDER.map((court) => {
                         const match = scheduleLookup[`${roundBlock}-${court}`];
                         const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
                         const refLabel = formatTeamLabel(match?.refTeams?.[0]);
@@ -646,51 +759,72 @@ function TournamentPhase1Admin() {
         )}
 
         <section className="phase1-standings">
-          <h2 className="secondary-title">Phase 1 Standings</h2>
-          <p className="subtle">Only finalized matches count toward standings.</p>
+          <h2 className="secondary-title">Standings</h2>
+          <p className="subtle">Counts finalized matches only.</p>
           {standingsLoading && <p className="subtle">Refreshing standings...</p>}
 
-          <div className="phase1-standings-grid">
-            {standings.pools.map((poolStanding) => (
-              <article key={poolStanding.poolName} className="phase1-standings-card">
-                <h3>Pool {poolStanding.poolName}</h3>
-                <div className="phase1-table-wrap">
-                  <table className="phase1-standings-table">
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>Team</th>
-                        <th>W-L</th>
-                        <th>Set %</th>
-                        <th>Pt Diff</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(poolStanding.teams || []).map((team) => (
-                        <tr key={team.teamId}>
-                          <td>{team.rank}</td>
-                          <td>{team.shortName || team.name}</td>
-                          <td>
-                            {team.matchesWon}-{team.matchesLost}
-                          </td>
-                          <td>{formatSetPct(team.setPct)}</td>
-                          <td>{formatPointDiff(team.pointDiff)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </article>
-            ))}
+          <div className="phase1-admin-actions">
+            <button
+              className={activeStandingsTab === 'phase2' ? 'primary-button' : 'secondary-button'}
+              type="button"
+              onClick={() => setActiveStandingsTab('phase2')}
+            >
+              Phase 2
+            </button>
+            <button
+              className={
+                activeStandingsTab === 'cumulative' ? 'primary-button' : 'secondary-button'
+              }
+              type="button"
+              onClick={() => setActiveStandingsTab('cumulative')}
+            >
+              Cumulative
+            </button>
           </div>
 
+          {activeStandingsTab === 'phase2' && (
+            <div className="phase1-standings-grid">
+              {activeStandings.pools.map((poolStanding) => (
+                <article key={poolStanding.poolName} className="phase1-standings-card">
+                  <h3>Pool {poolStanding.poolName}</h3>
+                  <div className="phase1-table-wrap">
+                    <table className="phase1-standings-table">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Team</th>
+                          <th>W-L</th>
+                          <th>Set %</th>
+                          <th>Pt Diff</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(poolStanding.teams || []).map((team) => (
+                          <tr key={team.teamId}>
+                            <td>{team.rank}</td>
+                            <td>{team.shortName || team.name}</td>
+                            <td>
+                              {team.matchesWon}-{team.matchesLost}
+                            </td>
+                            <td>{formatSetPct(team.setPct)}</td>
+                            <td>{formatPointDiff(team.pointDiff)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+
           <article className="phase1-standings-card phase1-standings-card--overall">
-            <h3>Overall Seeds</h3>
+            <h3>{activeStandingsTab === 'phase2' ? 'Phase 2 Overall' : 'Cumulative Overall'}</h3>
             <div className="phase1-table-wrap">
               <table className="phase1-standings-table">
                 <thead>
                   <tr>
-                    <th>Seed</th>
+                    <th>Rank</th>
                     <th>Team</th>
                     <th>W-L</th>
                     <th>Set %</th>
@@ -698,7 +832,7 @@ function TournamentPhase1Admin() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(standings.overall || []).map((team) => (
+                  {(activeStandings.overall || []).map((team) => (
                     <tr key={team.teamId}>
                       <td>{team.rank}</td>
                       <td>{team.shortName || team.name}</td>
@@ -719,4 +853,4 @@ function TournamentPhase1Admin() {
   );
 }
 
-export default TournamentPhase1Admin;
+export default TournamentPhase2Admin;

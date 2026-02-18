@@ -936,11 +936,9 @@ function Home() {
                 <p>Plan tournament schedules, share public views, and follow live matches.</p>
               </button>
             </div>
-            {!user && (
-              <aside className="account-panel" id="account-panel" style={{ marginTop: "1.5rem" }}>
-                {renderAuthCard()}
-              </aside>
-            )}
+            <aside className="account-panel" id="account-panel" style={{ marginTop: "1.5rem" }}>
+              {renderAuthCard()}
+            </aside>
           </>
         ) : (
           <>

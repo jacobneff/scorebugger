@@ -5,6 +5,10 @@ import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import { formatTeamLabel } from '../utils/phase1.js';
+import {
+  buildTournamentMatchControlHref,
+  getMatchStatusMeta,
+} from '../utils/tournamentMatchControl.js';
 
 const PLAYOFF_BRACKET_ORDER = ['gold', 'silver', 'bronze'];
 const PLAYOFF_BRACKET_LABELS = {
@@ -407,7 +411,7 @@ function TournamentPlayoffsAdmin() {
                         <th>Match</th>
                         <th>Teams</th>
                         <th>Ref</th>
-                        <th>Control Panel</th>
+                        <th>Match Control</th>
                         <th>Status</th>
                         <th>Actions</th>
                       </tr>
@@ -416,6 +420,12 @@ function TournamentPlayoffsAdmin() {
                       {roundBlock.slots.map((slot) => {
                         const match = slot.matchId ? matchesById[slot.matchId] : null;
                         const scoreboardKey = match?.scoreboardCode || match?.scoreboardId || null;
+                        const controlPanelHref = buildTournamentMatchControlHref({
+                          matchId: match?._id,
+                          scoreboardKey,
+                          status: match?.status,
+                        });
+                        const matchStatusMeta = getMatchStatusMeta(match?.status);
                         const currentRefId = match?.refTeamIds?.[0] || '';
                         const selectedRefId = refSelections[slot.matchId] ?? currentRefId;
                         const canEditRefs = Boolean(match) && Number(match.roundBlock) > 7;
@@ -467,9 +477,9 @@ function TournamentPlayoffsAdmin() {
                               )}
                             </td>
                             <td>
-                              {scoreboardKey ? (
-                                <a href={`/board/${scoreboardKey}/control`} target="_blank" rel="noreferrer">
-                                  Open Control Panel
+                              {controlPanelHref ? (
+                                <a href={controlPanelHref} target="_blank" rel="noreferrer">
+                                  Open Match Control
                                 </a>
                               ) : (
                                 <span className="subtle">No control link</span>
@@ -482,12 +492,10 @@ function TournamentPlayoffsAdmin() {
                                 <>
                                   <span
                                     className={`phase1-status-badge ${
-                                      match.status === 'final'
-                                        ? 'phase1-status-badge--final'
-                                        : 'phase1-status-badge--scheduled'
+                                      matchStatusMeta.badgeClassName
                                     }`}
                                   >
-                                    {match.status === 'final' ? 'Finalized' : 'Not Finalized'}
+                                    {matchStatusMeta.label}
                                   </span>
                                   {liveSummary && <p className="subtle">{formatLiveSummary(liveSummary)}</p>}
                                 </>
@@ -558,25 +566,29 @@ function TournamentPlayoffsAdmin() {
                     {['R1', 'R2', 'R3'].map((roundKey) => (
                       <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
                         <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
-                        {(bracketData.rounds?.[roundKey] || []).map((match) => (
-                          <div key={match._id} className="playoff-round-match">
-                            <p>{formatBracketMatchSummary(match)}</p>
-                            <p className="subtle">
-                              {match.court} • {match.status === 'final' ? 'Final' : 'Scheduled'}
-                            </p>
-                            {liveSummariesByMatchId[match._id] && (
+                        {(bracketData.rounds?.[roundKey] || []).map((match) => {
+                          const bracketStatusMeta = getMatchStatusMeta(match?.status);
+
+                          return (
+                            <div key={match._id} className="playoff-round-match">
+                              <p>{formatBracketMatchSummary(match)}</p>
                               <p className="subtle">
-                                {formatLiveSummary(liveSummariesByMatchId[match._id])}
+                                {match.court} • {bracketStatusMeta.label}
                               </p>
-                            )}
-                            {match.result && (
-                              <p className="subtle">
-                                Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
-                                {match.result.pointsForA}-{match.result.pointsForB}
-                              </p>
-                            )}
-                          </div>
-                        ))}
+                              {liveSummariesByMatchId[match._id] && (
+                                <p className="subtle">
+                                  {formatLiveSummary(liveSummariesByMatchId[match._id])}
+                                </p>
+                              )}
+                              {match.result && (
+                                <p className="subtle">
+                                  Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
+                                  {match.result.pointsForA}-{match.result.pointsForB}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     ))}
                   </article>

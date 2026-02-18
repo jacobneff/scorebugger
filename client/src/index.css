@@ -2320,6 +2320,12 @@ button:disabled {
   color: #334155;
 }
 
+.phase1-status-badge--live {
+  background: rgba(37, 99, 235, 0.16);
+  border: 1px solid rgba(37, 99, 235, 0.4);
+  color: #1d4ed8;
+}
+
 .phase1-match-result {
   font-size: 0.76rem;
   color: #334155;
@@ -2443,6 +2449,124 @@ button:disabled {
 .playoff-round-match p {
   margin: 0;
   font-size: 0.8rem;
+}
+
+/* ===== Tournament Match Control ===== */
+.tournament-match-control {
+  display: grid;
+  gap: 1rem;
+}
+
+.tournament-match-control__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.tournament-match-control__title {
+  font-size: 1.8rem;
+}
+
+.tournament-match-control__subtitle {
+  margin-bottom: 0;
+}
+
+.tournament-match-control__section {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.tournament-match-control__start-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.tournament-score-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.tournament-score-card {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.tournament-score-card h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.tournament-score-card__controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.tournament-score-card__controls .score-chip {
+  width: 3.2rem;
+  height: 3.2rem;
+}
+
+.tournament-score-card__value {
+  min-width: 3rem;
+  text-align: center;
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.tournament-manual-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  align-items: end;
+}
+
+.tournament-manual-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.tournament-manual-field input {
+  width: 100%;
+}
+
+.tournament-manual-apply {
+  grid-column: span 2;
+}
+
+.tournament-set-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.tournament-set-list {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.tournament-set-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.9);
+  padding: 0.45rem 0.6rem;
 }
 
 /* ===== Utilities ===== */
@@ -2689,6 +2813,22 @@ button:disabled {
   .tournament-team-remove {
     width: 100%;
     justify-self: stretch;
+  }
+
+  .tournament-score-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tournament-manual-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tournament-manual-apply {
+    grid-column: span 1;
+  }
+
+  .tournament-set-actions {
+    grid-template-columns: 1fr;
   }
 }
 

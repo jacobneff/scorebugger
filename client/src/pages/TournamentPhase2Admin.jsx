@@ -11,6 +11,10 @@ import {
   formatTeamLabel,
   sortPhase2Pools,
 } from '../utils/phase1.js';
+import {
+  buildTournamentMatchControlHref,
+  getMatchStatusMeta,
+} from '../utils/tournamentMatchControl.js';
 
 const jsonHeaders = (token) => ({
   'Content-Type': 'application/json',
@@ -741,6 +745,12 @@ function TournamentPhase2Admin() {
                         const match = scheduleLookup[`${roundBlock}-${court}`];
                         const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
                         const refLabel = formatTeamLabel(match?.refTeams?.[0]);
+                        const matchStatusMeta = getMatchStatusMeta(match?.status);
+                        const controlPanelHref = buildTournamentMatchControlHref({
+                          matchId: match?._id,
+                          scoreboardKey,
+                          status: match?.status,
+                        });
 
                         return (
                           <td key={`${roundBlock}-${court}`}>
@@ -756,13 +766,13 @@ function TournamentPhase2Admin() {
                                     {formatLiveSummary(liveSummariesByMatchId[match._id])}
                                   </p>
                                 )}
-                                {scoreboardKey ? (
+                                {controlPanelHref ? (
                                   <a
-                                    href={`/board/${scoreboardKey}/control`}
+                                    href={controlPanelHref}
                                     target="_blank"
                                     rel="noreferrer"
                                   >
-                                    Open Control Panel
+                                    Open Match Control
                                   </a>
                                 ) : (
                                   <span className="subtle">No control link</span>
@@ -770,12 +780,10 @@ function TournamentPhase2Admin() {
                                 <div className="phase1-match-admin-meta">
                                   <span
                                     className={`phase1-status-badge ${
-                                      match.status === 'final'
-                                        ? 'phase1-status-badge--final'
-                                        : 'phase1-status-badge--scheduled'
+                                      matchStatusMeta.badgeClassName
                                     }`}
                                   >
-                                    {match.status === 'final' ? 'Finalized' : 'Not Finalized'}
+                                    {matchStatusMeta.label}
                                   </span>
                                   {match.result && (
                                     <span className="phase1-match-result">

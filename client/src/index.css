@@ -2063,6 +2063,102 @@ button:disabled {
   font-weight: 600;
 }
 
+.phase1-match-admin-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.phase1-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.phase1-status-badge--final {
+  background: rgba(22, 163, 74, 0.16);
+  border: 1px solid rgba(22, 163, 74, 0.4);
+  color: #166534;
+}
+
+.phase1-status-badge--scheduled {
+  background: rgba(148, 163, 184, 0.2);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  color: #334155;
+}
+
+.phase1-match-result {
+  font-size: 0.76rem;
+  color: #334155;
+}
+
+.phase1-match-actions {
+  display: flex;
+  align-items: center;
+  margin-top: 0.2rem;
+}
+
+.phase1-inline-button {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.76rem;
+}
+
+.phase1-standings {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.phase1-standings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.9rem;
+}
+
+.phase1-standings-card {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.phase1-standings-card h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.phase1-standings-card--overall {
+  margin-top: 0.15rem;
+}
+
+.phase1-standings-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 360px;
+}
+
+.phase1-standings-table th,
+.phase1-standings-table td {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  padding: 0.5rem 0.45rem;
+  font-size: 0.8rem;
+  text-align: left;
+}
+
+.phase1-standings-table th {
+  background: #e2e8f0;
+  color: #0f172a;
+  font-size: 0.78rem;
+}
+
 /* ===== Utilities ===== */
 .hint {
   color: #475569;

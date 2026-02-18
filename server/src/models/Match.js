@@ -1,6 +1,82 @@
 const mongoose = require('mongoose');
 const Tournament = require('./Tournament');
 
+const MatchResultSetScoreSchema = new mongoose.Schema(
+  {
+    setNo: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+    a: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    b: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+  },
+  { _id: false }
+);
+
+const MatchResultSchema = new mongoose.Schema(
+  {
+    winnerTeamId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TournamentTeam',
+      required: true,
+    },
+    loserTeamId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TournamentTeam',
+      required: true,
+    },
+    setsWonA: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    setsWonB: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    setsPlayed: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    pointsForA: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    pointsAgainstA: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    pointsForB: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    pointsAgainstB: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    setScores: {
+      type: [MatchResultSetScoreSchema],
+      default: [],
+    },
+  },
+  { _id: false }
+);
+
 const MatchSchema = new mongoose.Schema(
   {
     tournamentId: {
@@ -93,6 +169,10 @@ const MatchSchema = new mongoose.Schema(
       type: String,
       enum: ['scheduled', 'live', 'final'],
       default: 'scheduled',
+    },
+    result: {
+      type: MatchResultSchema,
+      default: null,
     },
     finalizedAt: {
       type: Date,

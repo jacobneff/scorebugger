@@ -26,6 +26,7 @@ const authRoutes = require('./routes/auth');
 const tournamentRoutes = require('./routes/tournaments');
 const tournamentTeamRoutes = require('./routes/tournamentTeams');
 const poolRoutes = require('./routes/pools');
+const matchRoutes = require('./routes/matches');
 
 const PORT = process.env.PORT || 5000;
 const DEFAULT_CLIENT_ORIGINS = [
@@ -66,6 +67,7 @@ async function bootstrap() {
   app.use('/api/tournaments', tournamentRoutes);
   app.use('/api/tournament-teams', tournamentTeamRoutes);
   app.use('/api/pools', poolRoutes);
+  app.use('/api/matches', matchRoutes);
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });

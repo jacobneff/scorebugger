@@ -34,6 +34,13 @@ const normalizePools = (pools) =>
       : [],
   }));
 
+const formatSetPct = (value) => `${(Math.max(0, Number(value) || 0) * 100).toFixed(1)}%`;
+
+const formatPointDiff = (value) => {
+  const parsed = Number(value) || 0;
+  return parsed > 0 ? `+${parsed}` : `${parsed}`;
+};
+
 function TournamentPhase1Admin() {
   const { id } = useParams();
   const { token, user, initializing } = useAuth();
@@ -41,6 +48,7 @@ function TournamentPhase1Admin() {
   const [tournament, setTournament] = useState(null);
   const [pools, setPools] = useState([]);
   const [matches, setMatches] = useState([]);
+  const [standings, setStandings] = useState({ pools: [], overall: [] });
   const [dragState, setDragState] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
 
@@ -48,6 +56,8 @@ function TournamentPhase1Admin() {
   const [initLoading, setInitLoading] = useState(false);
   const [savingPools, setSavingPools] = useState(false);
   const [generateLoading, setGenerateLoading] = useState(false);
+  const [standingsLoading, setStandingsLoading] = useState(false);
+  const [matchActionId, setMatchActionId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
@@ -76,6 +86,20 @@ function TournamentPhase1Admin() {
     return Array.isArray(matchData) ? matchData : [];
   }, [fetchJson, id, token]);
 
+  const loadStandings = useCallback(async () => {
+    const standingsPayload = await fetchJson(
+      `${API_URL}/api/tournaments/${id}/standings?phase=phase1`,
+      {
+        headers: authHeaders(token),
+      }
+    );
+
+    return {
+      pools: Array.isArray(standingsPayload?.pools) ? standingsPayload.pools : [],
+      overall: Array.isArray(standingsPayload?.overall) ? standingsPayload.overall : [],
+    };
+  }, [fetchJson, id, token]);
+
   const loadData = useCallback(async () => {
     if (!token || !id) {
       return;
@@ -85,23 +109,37 @@ function TournamentPhase1Admin() {
     setError('');
 
     try {
-      const [tournamentData, poolData, matchData] = await Promise.all([
+      const [tournamentData, poolData, matchData, standingsData] = await Promise.all([
         fetchJson(`${API_URL}/api/tournaments/${id}`, {
           headers: authHeaders(token),
         }),
         loadPools(),
         loadMatches(),
+        loadStandings(),
       ]);
 
       setTournament(tournamentData);
       setPools(poolData);
       setMatches(matchData);
+      setStandings(standingsData);
     } catch (loadError) {
       setError(loadError.message || 'Unable to load tournament data');
     } finally {
       setLoading(false);
     }
-  }, [fetchJson, id, loadMatches, loadPools, token]);
+  }, [fetchJson, id, loadMatches, loadPools, loadStandings, token]);
+
+  const refreshMatchesAndStandings = useCallback(async () => {
+    setStandingsLoading(true);
+
+    try {
+      const [matchData, standingsData] = await Promise.all([loadMatches(), loadStandings()]);
+      setMatches(matchData);
+      setStandings(standingsData);
+    } finally {
+      setStandingsLoading(false);
+    }
+  }, [loadMatches, loadStandings]);
 
   useEffect(() => {
     if (initializing) {
@@ -328,6 +366,58 @@ function TournamentPhase1Admin() {
     }
   }, [generateLoading, generatePhase1, id, token]);
 
+  const handleFinalizeMatch = useCallback(
+    async (matchId) => {
+      if (!token || !matchId || matchActionId) {
+        return;
+      }
+
+      setMatchActionId(matchId);
+      setError('');
+      setMessage('');
+
+      try {
+        await fetchJson(`${API_URL}/api/matches/${matchId}/finalize`, {
+          method: 'POST',
+          headers: authHeaders(token),
+        });
+        await refreshMatchesAndStandings();
+        setMessage('Match finalized. Standings updated.');
+      } catch (finalizeError) {
+        setError(finalizeError.message || 'Unable to finalize match');
+      } finally {
+        setMatchActionId('');
+      }
+    },
+    [fetchJson, matchActionId, refreshMatchesAndStandings, token]
+  );
+
+  const handleUnfinalizeMatch = useCallback(
+    async (matchId) => {
+      if (!token || !matchId || matchActionId) {
+        return;
+      }
+
+      setMatchActionId(matchId);
+      setError('');
+      setMessage('');
+
+      try {
+        await fetchJson(`${API_URL}/api/matches/${matchId}/unfinalize`, {
+          method: 'POST',
+          headers: authHeaders(token),
+        });
+        await refreshMatchesAndStandings();
+        setMessage('Match unfinalized. Standings updated.');
+      } catch (unfinalizeError) {
+        setError(unfinalizeError.message || 'Unable to unfinalize match');
+      } finally {
+        setMatchActionId('');
+      }
+    },
+    [fetchJson, matchActionId, refreshMatchesAndStandings, token]
+  );
+
   const canGenerate = pools.length === 5 && invalidPools.length === 0 && !savingPools;
 
   if (initializing || loading) {
@@ -499,6 +589,44 @@ function TournamentPhase1Admin() {
                                 ) : (
                                   <span className="subtle">No control link</span>
                                 )}
+                                <div className="phase1-match-admin-meta">
+                                  <span
+                                    className={`phase1-status-badge ${
+                                      match.status === 'final'
+                                        ? 'phase1-status-badge--final'
+                                        : 'phase1-status-badge--scheduled'
+                                    }`}
+                                  >
+                                    {match.status === 'final' ? 'Finalized' : 'Not Finalized'}
+                                  </span>
+                                  {match.result && (
+                                    <span className="phase1-match-result">
+                                      Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
+                                      {match.result.pointsForA}-{match.result.pointsForB}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="phase1-match-actions">
+                                  {match.status === 'final' ? (
+                                    <button
+                                      className="secondary-button phase1-inline-button"
+                                      type="button"
+                                      onClick={() => handleUnfinalizeMatch(match._id)}
+                                      disabled={Boolean(matchActionId)}
+                                    >
+                                      {matchActionId === match._id ? 'Unfinalizing...' : 'Unfinalize'}
+                                    </button>
+                                  ) : (
+                                    <button
+                                      className="primary-button phase1-inline-button"
+                                      type="button"
+                                      onClick={() => handleFinalizeMatch(match._id)}
+                                      disabled={Boolean(matchActionId)}
+                                    >
+                                      {matchActionId === match._id ? 'Finalizing...' : 'Finalize'}
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             ) : (
                               <span className="subtle">-</span>
@@ -513,6 +641,76 @@ function TournamentPhase1Admin() {
             </div>
           </section>
         )}
+
+        <section className="phase1-standings">
+          <h2 className="secondary-title">Phase 1 Standings</h2>
+          <p className="subtle">Only finalized matches count toward standings.</p>
+          {standingsLoading && <p className="subtle">Refreshing standings...</p>}
+
+          <div className="phase1-standings-grid">
+            {standings.pools.map((poolStanding) => (
+              <article key={poolStanding.poolName} className="phase1-standings-card">
+                <h3>Pool {poolStanding.poolName}</h3>
+                <div className="phase1-table-wrap">
+                  <table className="phase1-standings-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Team</th>
+                        <th>W-L</th>
+                        <th>Set %</th>
+                        <th>Pt Diff</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(poolStanding.teams || []).map((team) => (
+                        <tr key={team.teamId}>
+                          <td>{team.rank}</td>
+                          <td>{team.shortName || team.name}</td>
+                          <td>
+                            {team.matchesWon}-{team.matchesLost}
+                          </td>
+                          <td>{formatSetPct(team.setPct)}</td>
+                          <td>{formatPointDiff(team.pointDiff)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          <article className="phase1-standings-card phase1-standings-card--overall">
+            <h3>Overall Seeds</h3>
+            <div className="phase1-table-wrap">
+              <table className="phase1-standings-table">
+                <thead>
+                  <tr>
+                    <th>Seed</th>
+                    <th>Team</th>
+                    <th>W-L</th>
+                    <th>Set %</th>
+                    <th>Pt Diff</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(standings.overall || []).map((team) => (
+                    <tr key={team.teamId}>
+                      <td>{team.rank}</td>
+                      <td>{team.shortName || team.name}</td>
+                      <td>
+                        {team.matchesWon}-{team.matchesLost}
+                      </td>
+                      <td>{formatSetPct(team.setPct)}</td>
+                      <td>{formatPointDiff(team.pointDiff)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </section>
       </section>
     </main>
   );

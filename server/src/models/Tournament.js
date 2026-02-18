@@ -11,6 +11,31 @@ const SCORING_DEFAULTS = {
   caps: [27, 27, 17],
 };
 
+const StandingsPhaseOverridesSchema = new mongoose.Schema(
+  {
+    poolOrderOverrides: {
+      type: Map,
+      of: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'TournamentTeam',
+        },
+      ],
+      default: undefined,
+    },
+    overallOrderOverrides: {
+      type: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'TournamentTeam',
+        },
+      ],
+      default: undefined,
+    },
+  },
+  { _id: false }
+);
+
 const TournamentSchema = new mongoose.Schema(
   {
     name: {
@@ -67,6 +92,12 @@ const TournamentSchema = new mongoose.Schema(
           type: [Number],
           default: () => [...SCORING_DEFAULTS.caps],
         },
+      },
+    },
+    standingsOverrides: {
+      phase1: {
+        type: StandingsPhaseOverridesSchema,
+        default: undefined,
       },
     },
     createdByUserId: {

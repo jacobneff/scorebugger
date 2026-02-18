@@ -17,6 +17,7 @@ const {
   sortPoolsByPhase1Name,
 } = require('../services/phase1');
 const { createMatchScoreboard } = require('../services/scoreboards');
+const { computeStandingsBundle } = require('../services/tournamentEngine/standings');
 const {
   CODE_LENGTH,
   createUniqueTournamentPublicCode,
@@ -26,6 +27,7 @@ const router = express.Router();
 
 const TOURNAMENT_STATUSES = ['setup', 'phase1', 'phase2', 'playoffs', 'complete'];
 const MATCH_PHASES = ['phase1', 'phase2', 'playoffs'];
+const STANDINGS_PHASES = ['phase1'];
 const DUPLICATE_KEY_ERROR_CODE = 11000;
 
 const isObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
@@ -50,6 +52,29 @@ const normalizePublicCode = (value) =>
 
 const toIdString = (value) => (value ? value.toString() : null);
 
+const normalizeStandingsPhase = (value) =>
+  typeof value === 'string' && value.trim() ? value.trim() : 'phase1';
+
+const normalizeTeamIdList = (value) =>
+  Array.isArray(value) ? value.map((teamId) => toIdString(teamId)).filter(Boolean) : null;
+
+const isPermutation = (candidate, expected) => {
+  if (!Array.isArray(candidate) || !Array.isArray(expected)) {
+    return false;
+  }
+
+  if (candidate.length !== expected.length) {
+    return false;
+  }
+
+  if (new Set(candidate).size !== candidate.length) {
+    return false;
+  }
+
+  const expectedSet = new Set(expected);
+  return candidate.every((teamId) => expectedSet.has(teamId));
+};
+
 const parseBooleanFlag = (value, fallback = false) => {
   if (typeof value === 'boolean') {
     return value;
@@ -71,6 +96,14 @@ const parseBooleanFlag = (value, fallback = false) => {
 
   return fallback;
 };
+
+function validateStandingsPhaseFilter(phase) {
+  if (!phase) {
+    return null;
+  }
+
+  return STANDINGS_PHASES.includes(phase) ? null : 'Invalid standings phase';
+}
 
 async function ensureTournamentOwnership(tournamentId, userId) {
   return Tournament.exists({
@@ -170,6 +203,31 @@ function serializePool(pool) {
   };
 }
 
+function serializeMatchResult(result) {
+  if (!result) {
+    return null;
+  }
+
+  return {
+    winnerTeamId: toIdString(result.winnerTeamId),
+    loserTeamId: toIdString(result.loserTeamId),
+    setsWonA: result.setsWonA ?? 0,
+    setsWonB: result.setsWonB ?? 0,
+    setsPlayed: result.setsPlayed ?? 0,
+    pointsForA: result.pointsForA ?? 0,
+    pointsAgainstA: result.pointsAgainstA ?? 0,
+    pointsForB: result.pointsForB ?? 0,
+    pointsAgainstB: result.pointsAgainstB ?? 0,
+    setScores: Array.isArray(result.setScores)
+      ? result.setScores.map((set) => ({
+          setNo: set.setNo,
+          a: set.a,
+          b: set.b,
+        }))
+      : [],
+  };
+}
+
 function serializeMatch(match) {
   const teamA = match?.teamAId && typeof match.teamAId === 'object' ? match.teamAId : null;
   const teamB = match?.teamBId && typeof match.teamBId === 'object' ? match.teamBId : null;
@@ -202,7 +260,9 @@ function serializeMatch(match) {
     scoreboardId: scoreboard ? toIdString(scoreboard._id) : toIdString(match?.scoreboardId),
     scoreboardCode: scoreboard?.code ?? null,
     status: match?.status ?? null,
+    result: serializeMatchResult(match?.result),
     finalizedAt: match?.finalizedAt ?? null,
+    finalizedBy: toIdString(match?.finalizedBy),
     createdAt: match?.createdAt ?? null,
     updatedAt: match?.updatedAt ?? null,
   };
@@ -271,6 +331,83 @@ function validatePhase1PoolsForGeneration(pools) {
 
 async function findTournamentForPublicCode(publicCode) {
   return Tournament.findOne({ publicCode }).select('_id name date timezone status facilities publicCode').lean();
+}
+
+function formatStandingsPayload(standings) {
+  return {
+    pools: Array.isArray(standings?.pools)
+      ? standings.pools.map((pool) => ({
+          poolId: pool.poolId ?? null,
+          poolName: pool.poolName ?? '',
+          teams: Array.isArray(pool.teams)
+            ? pool.teams.map((team) => ({
+                rank: team.rank ?? null,
+                teamId: team.teamId ?? null,
+                name: team.name ?? '',
+                shortName: team.shortName ?? '',
+                seed: team.seed ?? null,
+                matchesPlayed: team.matchesPlayed ?? 0,
+                matchesWon: team.matchesWon ?? 0,
+                matchesLost: team.matchesLost ?? 0,
+                setsWon: team.setsWon ?? 0,
+                setsLost: team.setsLost ?? 0,
+                setsPlayed: team.setsPlayed ?? 0,
+                setPct: team.setPct ?? 0,
+                pointsFor: team.pointsFor ?? 0,
+                pointsAgainst: team.pointsAgainst ?? 0,
+                pointDiff: team.pointDiff ?? 0,
+              }))
+            : [],
+        }))
+      : [],
+    overall: Array.isArray(standings?.overall)
+      ? standings.overall.map((team) => ({
+          rank: team.rank ?? null,
+          teamId: team.teamId ?? null,
+          name: team.name ?? '',
+          shortName: team.shortName ?? '',
+          seed: team.seed ?? null,
+          matchesPlayed: team.matchesPlayed ?? 0,
+          matchesWon: team.matchesWon ?? 0,
+          matchesLost: team.matchesLost ?? 0,
+          setsWon: team.setsWon ?? 0,
+          setsLost: team.setsLost ?? 0,
+          setsPlayed: team.setsPlayed ?? 0,
+          setPct: team.setPct ?? 0,
+          pointsFor: team.pointsFor ?? 0,
+          pointsAgainst: team.pointsAgainst ?? 0,
+          pointDiff: team.pointDiff ?? 0,
+        }))
+      : [],
+  };
+}
+
+function serializePhaseOverrides(phaseOverrides) {
+  const rawPoolOverrides = phaseOverrides?.poolOrderOverrides;
+  const poolEntries =
+    rawPoolOverrides instanceof Map
+      ? Array.from(rawPoolOverrides.entries())
+      : rawPoolOverrides && typeof rawPoolOverrides === 'object'
+        ? Object.entries(rawPoolOverrides)
+        : [];
+
+  const poolOrderOverrides = Object.fromEntries(
+    poolEntries.map(([poolName, teamIds]) => [
+      poolName,
+      Array.isArray(teamIds) ? teamIds.map((teamId) => toIdString(teamId)).filter(Boolean) : [],
+    ])
+  );
+
+  const overallOrderOverrides = Array.isArray(phaseOverrides?.overallOrderOverrides)
+    ? phaseOverrides.overallOrderOverrides
+        .map((teamId) => toIdString(teamId))
+        .filter(Boolean)
+    : [];
+
+  return {
+    poolOrderOverrides,
+    overallOrderOverrides,
+  };
 }
 
 // GET /api/tournaments/code/:publicCode -> public tournament + teams payload
@@ -367,6 +504,40 @@ router.get('/code/:publicCode/matches', async (req, res, next) => {
 
     const matches = await loadMatchesForResponse(query);
     return res.json(matches);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/code/:publicCode/standings?phase=phase1 -> public standings
+router.get('/code/:publicCode/standings', async (req, res, next) => {
+  try {
+    const publicCode = normalizePublicCode(req.params.publicCode);
+    const phase = normalizeStandingsPhase(req.query?.phase);
+
+    if (!new RegExp(`^[A-Z0-9]{${CODE_LENGTH}}$`).test(publicCode)) {
+      return res.status(400).json({ message: 'Invalid tournament code' });
+    }
+
+    const phaseError = validateStandingsPhaseFilter(phase);
+
+    if (phaseError) {
+      return res.status(400).json({ message: phaseError });
+    }
+
+    const tournament = await Tournament.findOne({ publicCode }).select('_id').lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found' });
+    }
+
+    const standings = await computeStandingsBundle(tournament._id, phase);
+
+    return res.json({
+      phase,
+      basedOn: 'finalized',
+      ...formatStandingsPayload(standings),
+    });
   } catch (error) {
     return next(error);
   }
@@ -808,6 +979,169 @@ router.get('/:id/matches', requireAuth, async (req, res, next) => {
 
     const matches = await loadMatchesForResponse(query);
     return res.json(matches);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/:id/standings?phase=phase1 -> owned tournament standings
+router.get('/:id/standings', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const phase = normalizeStandingsPhase(req.query?.phase);
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const phaseError = validateStandingsPhaseFilter(phase);
+
+    if (phaseError) {
+      return res.status(400).json({ message: phaseError });
+    }
+
+    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+
+    if (!ownedTournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const standings = await computeStandingsBundle(id, phase);
+
+    return res.json({
+      phase,
+      basedOn: 'finalized',
+      ...formatStandingsPayload(standings),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PUT /api/tournaments/:id/standings-overrides -> owner-only tie/ordering overrides
+router.put('/:id/standings-overrides', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const phase = normalizeStandingsPhase(req.body?.phase);
+    const hasPoolOrder = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'poolOrder');
+    const hasOverallOrder = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'overallOrder');
+    const poolName = req.body?.poolName;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const phaseError = validateStandingsPhaseFilter(phase);
+
+    if (phaseError) {
+      return res.status(400).json({ message: phaseError });
+    }
+
+    if (!hasPoolOrder && !hasOverallOrder) {
+      return res.status(400).json({ message: 'Provide poolOrder and/or overallOrder' });
+    }
+
+    const poolOrder = hasPoolOrder ? normalizeTeamIdList(req.body?.poolOrder) : null;
+    const overallOrder = hasOverallOrder ? normalizeTeamIdList(req.body?.overallOrder) : null;
+
+    if (hasPoolOrder && !poolOrder) {
+      return res.status(400).json({ message: 'poolOrder must be an array of team ids' });
+    }
+
+    if (hasOverallOrder && !overallOrder) {
+      return res.status(400).json({ message: 'overallOrder must be an array of team ids' });
+    }
+
+    const tournament = await Tournament.findOne({
+      _id: id,
+      createdByUserId: req.user.id,
+    })
+      .select('_id standingsOverrides')
+      .lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const allTeams = await TournamentTeam.find({ tournamentId: id }).select('_id').lean();
+    const allTeamIds = allTeams.map((team) => toIdString(team._id));
+    const tournamentTeamIdSet = new Set(allTeamIds);
+
+    const updates = {};
+
+    if (hasPoolOrder) {
+      if (!isNonEmptyString(poolName)) {
+        return res.status(400).json({ message: 'poolName is required when setting poolOrder' });
+      }
+
+      if (poolOrder.some((teamId) => !isObjectId(teamId))) {
+        return res.status(400).json({ message: 'poolOrder includes an invalid team id' });
+      }
+
+      if (!poolOrder.every((teamId) => tournamentTeamIdSet.has(teamId))) {
+        return res.status(400).json({ message: 'poolOrder teams must belong to this tournament' });
+      }
+
+      const pool = await Pool.findOne({
+        tournamentId: id,
+        phase,
+        name: poolName.trim(),
+      })
+        .select('teamIds name')
+        .lean();
+
+      if (!pool) {
+        return res.status(404).json({ message: 'Pool not found for this phase' });
+      }
+
+      const poolTeamIds = Array.isArray(pool.teamIds)
+        ? pool.teamIds.map((teamId) => toIdString(teamId)).filter(Boolean)
+        : [];
+
+      if (!isPermutation(poolOrder, poolTeamIds)) {
+        return res.status(400).json({
+          message: 'poolOrder must be a permutation of the teams assigned to that pool',
+        });
+      }
+
+      updates[`standingsOverrides.${phase}.poolOrderOverrides.${pool.name}`] = poolOrder;
+    }
+
+    if (hasOverallOrder) {
+      if (overallOrder.some((teamId) => !isObjectId(teamId))) {
+        return res.status(400).json({ message: 'overallOrder includes an invalid team id' });
+      }
+
+      if (!overallOrder.every((teamId) => tournamentTeamIdSet.has(teamId))) {
+        return res.status(400).json({ message: 'overallOrder teams must belong to this tournament' });
+      }
+
+      if (!isPermutation(overallOrder, allTeamIds)) {
+        return res.status(400).json({
+          message: 'overallOrder must be a permutation of all tournament teams',
+        });
+      }
+
+      updates[`standingsOverrides.${phase}.overallOrderOverrides`] = overallOrder;
+    }
+
+    const updatedTournament = await Tournament.findOneAndUpdate(
+      {
+        _id: id,
+        createdByUserId: req.user.id,
+      },
+      { $set: updates },
+      {
+        new: true,
+        runValidators: true,
+        omitUndefined: true,
+      }
+    ).lean();
+
+    return res.json({
+      phase,
+      overrides: serializePhaseOverrides(updatedTournament?.standingsOverrides?.[phase]),
+    });
   } catch (error) {
     return next(error);
   }

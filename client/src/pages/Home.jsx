@@ -3,6 +3,7 @@ import { MdContentCopy, MdDelete, MdEdit, MdSave } from "react-icons/md";
 import { FiCheckCircle, FiInfo, FiXCircle } from "react-icons/fi";
 import { useSearchParams } from "react-router-dom";
 import ControlPanelView from "../components/ControlPanelView.jsx";
+import TournamentsTab from "../components/TournamentsTab.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import SettingsMenu from "../components/SettingsMenu.jsx";
 import { API_URL } from "../config/env.js";
@@ -61,7 +62,9 @@ function Home() {
 
   // Tabs
   const [activeTab, setActiveTab] = useState("setup");
+  const [activeService, setActiveService] = useState("landing");
   const [selectedBoardId, setSelectedBoardId] = useState("");
+  const [selectedTournamentId, setSelectedTournamentId] = useState("");
 
   // Rename
   const [editingId, setEditingId] = useState(null);
@@ -124,6 +127,7 @@ function Home() {
   const openBoard = (id) => {
     if (!id) return;
     setSelectedBoardId(String(id).toUpperCase());
+    setActiveService("scoreboards");
     setActiveTab("control");
   };
 
@@ -223,6 +227,13 @@ function Home() {
           }
           return next;
         }
+        if (field === "teamTextColor" || field === "textColor") {
+          return {
+            ...team,
+            teamTextColor: value,
+            textColor: value,
+          };
+        }
         if (field === "name") {
           const nextName = value.slice(0, TEAM_NAME_LIMIT);
           return { ...team, name: nextName };
@@ -248,7 +259,7 @@ function Home() {
     }
   }, []);
 
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const initializedFromQuery = useRef(false);
 
   useEffect(() => {
@@ -256,6 +267,8 @@ function Home() {
 
     const modeParam = searchParams.get("mode");
     const emailParam = searchParams.get("email");
+    const tabParam = searchParams.get("tab");
+    const tournamentIdParam = searchParams.get("tournamentId");
 
     if (modeParam) {
       const normalizedMode = modeParam.toLowerCase();
@@ -272,8 +285,103 @@ function Home() {
       }
     }
 
+    const normalizedTab =
+      typeof tabParam === "string" ? tabParam.trim().toLowerCase() : "";
+    if (["setup", "control"].includes(normalizedTab)) {
+      setActiveTab(normalizedTab);
+      setActiveService("scoreboards");
+    }
+    if (normalizedTab === "tournaments") {
+      setActiveTab("tournaments");
+      setActiveService("tournaments");
+    }
+
+    const normalizedTournamentId =
+      typeof tournamentIdParam === "string" ? tournamentIdParam.trim() : "";
+    if (normalizedTournamentId) {
+      setSelectedTournamentId(normalizedTournamentId);
+      if (!["setup", "control", "tournaments"].includes(normalizedTab)) {
+        setActiveService("tournaments");
+        setActiveTab("tournaments");
+      }
+    }
+
     initializedFromQuery.current = true;
   }, [searchParams, switchAuthMode]);
+
+  const syncHomeQuery = useCallback(
+    ({ service, tab, tournamentId = "" }) => {
+      const nextParams = new URLSearchParams(searchParams);
+
+      if (service === "landing") {
+        nextParams.delete("tab");
+        nextParams.delete("tournamentId");
+      } else if (service === "scoreboards") {
+        nextParams.set("tab", tab === "control" ? "control" : "setup");
+        nextParams.delete("tournamentId");
+      } else if (service === "tournaments") {
+        nextParams.set("tab", "tournaments");
+        if (typeof tournamentId === "string" && tournamentId.trim()) {
+          nextParams.set("tournamentId", tournamentId.trim());
+        } else {
+          nextParams.delete("tournamentId");
+        }
+      }
+
+      if (nextParams.toString() !== searchParams.toString()) {
+        setSearchParams(nextParams);
+      }
+    },
+    [searchParams, setSearchParams]
+  );
+
+  const openScoreboardsService = useCallback(
+    (tab = "setup") => {
+      const normalizedTab = tab === "control" ? "control" : "setup";
+      setActiveService("scoreboards");
+      setActiveTab(normalizedTab);
+      syncHomeQuery({ service: "scoreboards", tab: normalizedTab });
+    },
+    [syncHomeQuery]
+  );
+
+  const openTournamentsService = useCallback(() => {
+    setActiveService("tournaments");
+    setActiveTab("tournaments");
+    syncHomeQuery({
+      service: "tournaments",
+      tab: "tournaments",
+      tournamentId: selectedTournamentId,
+    });
+  }, [selectedTournamentId, syncHomeQuery]);
+
+  const openServicesLanding = useCallback(() => {
+    setActiveService("landing");
+    syncHomeQuery({ service: "landing" });
+  }, [syncHomeQuery]);
+
+  useEffect(() => {
+    if (!initializedFromQuery.current || activeService !== "tournaments") {
+      return;
+    }
+
+    syncHomeQuery({
+      service: "tournaments",
+      tab: "tournaments",
+      tournamentId: selectedTournamentId,
+    });
+  }, [activeService, selectedTournamentId, syncHomeQuery]);
+
+  useEffect(() => {
+    if (!initializedFromQuery.current || activeService !== "scoreboards") {
+      return;
+    }
+
+    syncHomeQuery({
+      service: "scoreboards",
+      tab: activeTab === "control" ? "control" : "setup",
+    });
+  }, [activeService, activeTab, syncHomeQuery]);
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -510,13 +618,13 @@ function Home() {
   };
 
   const promptSignIn = useCallback(() => {
-    setActiveTab("setup");
+    openScoreboardsService("setup");
     switchAuthMode("signin");
     if (typeof document !== "undefined") {
       const target = document.getElementById("account-panel");
       target?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-  }, [setActiveTab, switchAuthMode]);
+  }, [openScoreboardsService, switchAuthMode]);
 
   // --- Auth submit handler (uses AuthContext) ---
   const handleAuthSubmit = async (e) => {
@@ -597,38 +705,101 @@ function Home() {
         <div className="card-settings">
           <SettingsMenu />
         </div>
-        {activeTab === "setup" ? (
+        {activeService === "landing" ? (
           <>
             <h1 className="title">scorebugger</h1>
             <p className="subtitle">
-              A volleyball scoreboard you can control and embed live in your stream.
+              Choose a service to get started.
             </p>
+            <div className="service-landing-grid">
+              <button
+                type="button"
+                className="service-landing-card"
+                onClick={() => openScoreboardsService("setup")}
+              >
+                <span className="service-landing-kicker">Scorebugger</span>
+                <h2>Scoreboard Overlays</h2>
+                <p>Create and control live overlays for streaming and in-venue displays.</p>
+              </button>
+              <button
+                type="button"
+                className="service-landing-card"
+                onClick={openTournamentsService}
+              >
+                <span className="service-landing-kicker">Scorebugger</span>
+                <h2>Tournaments</h2>
+                <p>Plan tournament schedules, share public views, and follow live matches.</p>
+              </button>
+            </div>
           </>
         ) : (
           <>
-            <h1 className="title">Control Panel</h1>
-            <p className="subtitle">
-              Share the overlay link with OBS and update the match from anywhere.
-            </p>
+            {activeService === "scoreboards" && activeTab === "setup" && (
+              <>
+                <h1 className="title">Scoreboard Overlays</h1>
+                <p className="subtitle">
+                  A volleyball scoreboard you can control and embed live in your stream.
+                </p>
+              </>
+            )}
+            {activeService === "scoreboards" && activeTab === "control" && (
+              <>
+                <h1 className="title">Control Panel</h1>
+                <p className="subtitle">
+                  Share the overlay link with OBS and update the match from anywhere.
+                </p>
+              </>
+            )}
+            {activeService === "tournaments" && (
+              <>
+                <h1 className="title">Tournament Hub</h1>
+                <p className="subtitle">
+                  Create tournaments, manage teams, and publish live event updates.
+                </p>
+              </>
+            )}
+
+            <div className="home-service-nav">
+              <button type="button" className="ghost-button" onClick={openServicesLanding}>
+                All services
+              </button>
+              {activeService === "scoreboards" ? (
+                <button type="button" className="ghost-button" onClick={openTournamentsService}>
+                  Open Tournaments
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => openScoreboardsService("setup")}
+                >
+                  Open Scoreboard Overlays
+                </button>
+              )}
+            </div>
+
+            {activeService === "scoreboards" && (
+              <div className="home-tabs">
+                <button
+                  className={`home-tab-button ${activeTab === "setup" ? "active" : ""}`}
+                  onClick={() => openScoreboardsService("setup")}
+                >
+                  Setup
+                </button>
+                <button
+                  className={`home-tab-button ${activeTab === "control" ? "active" : ""}`}
+                  onClick={() => openScoreboardsService("control")}
+                >
+                  Control
+                </button>
+              </div>
+            )}
           </>
         )}
 
-        <div className="home-tabs">
-          <button
-            className={`home-tab-button ${activeTab === "setup" ? "active" : ""}`}
-            onClick={() => setActiveTab("setup")}
-          >
-            Setup
-          </button>
-          <button
-            className={`home-tab-button ${activeTab === "control" ? "active" : ""}`}
-            onClick={() => setActiveTab("control")}
-          >
-            Control
-          </button>
-        </div>
-
-        {activeTab === "setup" ? (
+        {activeService !== "landing" && (
+          activeService === "scoreboards" ? (
+        activeTab === "setup" ? (
           <div className="home-tabpanel fadein">
             {!user && (
               <div className="temporary-banner" role="status">
@@ -684,12 +855,35 @@ function Home() {
                             />
                             {showCountdown && <span className={countdownClass}>{nameRemaining}</span>}
                           </div>
-                          <label className="input-label">Accent Color</label>
-                          <input
-                            type="color"
-                            value={t.color}
-                            onChange={(e) => handleInputChange(i, "color", e.target.value)}
-                          />
+                          <div className="team-color-row">
+                            <label className="team-color-field">
+                              <span className="input-label">Panel Color</span>
+                              <input
+                                type="color"
+                                value={t.color}
+                                onChange={(e) => handleInputChange(i, "color", e.target.value)}
+                              />
+                            </label>
+                            <label className="team-color-field">
+                              <span className="input-label">Text Color</span>
+                              <input
+                                type="color"
+                                value={t.teamTextColor || t.textColor || "#ffffff"}
+                                onChange={(e) =>
+                                  handleInputChange(i, "teamTextColor", e.target.value)
+                                }
+                              />
+                            </label>
+                          </div>
+                          <div
+                            className="team-color-preview"
+                            style={{
+                              backgroundColor: t.color,
+                              color: t.teamTextColor || t.textColor || "#ffffff",
+                            }}
+                          >
+                            {t.name || (i === 0 ? "Home" : "Away")} Preview
+                          </div>
                         </div>
                       </div>
                     );
@@ -1111,10 +1305,23 @@ function Home() {
                 const cleaned = nextId?.trim();
                 if (!cleaned) return;
                 setSelectedBoardId(cleaned.toUpperCase());
-                setActiveTab("control");
+                openScoreboardsService("control");
               }}
             />
           </div>
+        )
+        ) : (
+          <div className="home-tabpanel fadein">
+            <TournamentsTab
+              user={user}
+              token={token}
+              initialTournamentId={selectedTournamentId}
+              onTournamentIdChange={setSelectedTournamentId}
+              onShowToast={showToast}
+              mode="hub"
+            />
+          </div>
+        )
         )}
       </section>
 

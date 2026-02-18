@@ -8,5 +8,10 @@ export default defineConfig({
     setupFiles: ['./vitest.setup.js'],
     globals: true,
     css: false,
+    server: {
+      deps: {
+        inline: ['react-router', 'react-router-dom'],
+      },
+    },
   },
 });

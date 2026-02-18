@@ -21,8 +21,19 @@ const { Server } = require('socket.io');
 
 const connectDB = require('./config/db');
 const Scoreboard = require('./models/Scoreboard');
+const Tournament = require('./models/Tournament');
 const scoreboardRoutes = require('./routes/scoreboards');
 const authRoutes = require('./routes/auth');
+const tournamentRoutes = require('./routes/tournaments');
+const tournamentTeamRoutes = require('./routes/tournamentTeams');
+const poolRoutes = require('./routes/pools');
+const matchRoutes = require('./routes/matches');
+const adminRoutes = require('./routes/admin');
+const {
+  emitScoreboardSummaryEvent,
+  getTournamentRoom,
+  normalizeTournamentCode,
+} = require('./services/tournamentRealtime');
 
 const PORT = process.env.PORT || 5000;
 const DEFAULT_CLIENT_ORIGINS = [
@@ -60,6 +71,11 @@ async function bootstrap() {
 
   app.use('/api/auth', authRoutes);
   app.use('/api/scoreboards', scoreboardRoutes);
+  app.use('/api/tournaments', tournamentRoutes);
+  app.use('/api/tournament-teams', tournamentTeamRoutes);
+  app.use('/api/pools', poolRoutes);
+  app.use('/api/matches', matchRoutes);
+  app.use('/api/admin', adminRoutes);
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
@@ -76,6 +92,40 @@ async function bootstrap() {
   });
 
   io.on('connection', (socket) => {
+    socket.on('tournament:join', async ({ code } = {}) => {
+      const normalizedCode = normalizeTournamentCode(code);
+
+      if (!normalizedCode) {
+        socket.emit('tournament:error', { message: 'Not found' });
+        return;
+      }
+
+      try {
+        const tournament = await Tournament.findOne({ publicCode: normalizedCode })
+          .select('_id publicCode')
+          .lean();
+
+        if (!tournament) {
+          socket.emit('tournament:error', { message: 'Not found' });
+          return;
+        }
+
+        socket.join(getTournamentRoom(normalizedCode));
+        socket.emit('tournament:joined', { code: normalizedCode });
+      } catch (error) {
+        socket.emit('tournament:error', { message: 'Not found' });
+      }
+    });
+
+    socket.on('tournament:leave', ({ code } = {}) => {
+      const normalizedCode = normalizeTournamentCode(code);
+      if (!normalizedCode) {
+        return;
+      }
+
+      socket.leave(getTournamentRoom(normalizedCode));
+    });
+
     // Scorekeeper or viewer wants to subscribe to live updates
     socket.on('scoreboard:join', async ({ scoreboardId }) => {
       const key = typeof scoreboardId === 'string' ? scoreboardId.trim() : '';
@@ -121,7 +171,7 @@ async function bootstrap() {
         !state ||
         !Array.isArray(state.teams) ||
         state.teams.length !== 2 ||
-        ![0, 1].includes(state.servingTeamIndex)
+        !(state.servingTeamIndex === null || [0, 1].includes(state.servingTeamIndex))
       ) {
         socket.emit('scoreboard:error', { message: 'Invalid scoreboard payload' });
         return;
@@ -212,6 +262,7 @@ async function bootstrap() {
         socket.data.room = liveRoom;
 
         io.to(liveRoom).emit('scoreboard:state', scoreboard);
+        await emitScoreboardSummaryEvent(io, scoreboard);
       } catch (error) {
         socket.emit('scoreboard:error', { message: 'Failed to save scoreboard' });
       }

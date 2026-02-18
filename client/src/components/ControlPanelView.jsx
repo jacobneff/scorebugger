@@ -69,8 +69,7 @@ const SHORTCUTS = buildShortcutMap({
 function ControlPanelView({
   scoreboardId,
   showHeader = true,
-  // eslint-disable-next-line no-unused-vars
-  standalone = true, // unused but kept for API compatibility
+  standalone = true,
   // eslint-disable-next-line no-unused-vars
   showTitleEditor = true, // superseded by inline title editor below
   onScoreboardChange,
@@ -656,6 +655,11 @@ function ControlPanelView({
           </p>
         </div>
         <div className="control-settings">
+          {standalone && (
+            <a className="secondary-button control-main-link" href="/">
+              Main UI
+            </a>
+          )}
           <SettingsMenu />
         </div>
       </div>
@@ -912,85 +916,86 @@ function ControlPanelView({
           )}
         </div>
 
-        {/* Control link row */}
-        <div className="control-link-card">
-          <div className="control-link-header">
-            <span className="control-link-label">Control Link</span>
+        {/* Control + Overlay link row */}
+        <div className="control-link-card control-link-card--pair">
+          <div className="control-link-item">
+            <div className="control-link-header">
+              <span className="control-link-label">Control Link</span>
+            </div>
+            <div className="control-link-row">
+              <a
+                className="control-link-url"
+                href={controlUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={controlUrl || "Control link"}
+              >
+                {controlUrl}
+              </a>
+              <button
+                className={`control-link-copy ${controlCopied ? "is-copied" : ""}`}
+                type="button"
+                title={controlCopied ? "Copied!" : "Copy control link"}
+                onClick={async () => {
+                  if (!controlUrl) return;
+                  try {
+                    await navigator.clipboard.writeText(controlUrl);
+                    setControlCopied(true);
+                    setTimeout(() => setControlCopied(false), 1500);
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+                aria-live="polite"
+              >
+                <span className="copy-icon copy-icon--copy">
+                  <MdContentCopy />
+                </span>
+                <span className="copy-icon copy-icon--check" aria-hidden={!controlCopied}>
+                  ✓
+                </span>
+              </button>
+            </div>
           </div>
-          <div className="control-link-row">
-            <a
-              className="control-link-url"
-              href={controlUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={controlUrl || "Control link"}
-            >
-              {controlUrl}
-            </a>
-            <button
-              className={`control-link-copy ${controlCopied ? "is-copied" : ""}`}
-              type="button"
-              title={controlCopied ? "Copied!" : "Copy control link"}
-              onClick={async () => {
-                if (!controlUrl) return;
-                try {
-                  await navigator.clipboard.writeText(controlUrl);
-                  setControlCopied(true);
-                  setTimeout(() => setControlCopied(false), 1500);
-                } catch {
-                  /* ignore */
-                }
-              }}
-              aria-live="polite"
-            >
-              <span className="copy-icon copy-icon--copy">
-                <MdContentCopy />
-              </span>
-              <span className="copy-icon copy-icon--check" aria-hidden={!controlCopied}>
-                ✓
-              </span>
-            </button>
-          </div>
-        </div>
 
-        {/* Overlay link row (clickable + copy) */}
-        <div className="control-link-card">
-          <div className="control-link-header">
-            <span className="control-link-label">Overlay Link</span>
-          </div>
-          <div className="control-link-row">
-            <a
-              className="control-link-url"
-              href={overlayUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={overlayUrl || "Overlay link"}
-            >
-              {overlayUrl}
-            </a>
-            <button
-              className={`control-link-copy ${overlayCopied ? "is-copied" : ""}`}
-              type="button"
-              title={overlayCopied ? "Copied!" : "Copy overlay link"}
-              onClick={async () => {
-                if (!overlayUrl) return;
-                try {
-                  await navigator.clipboard.writeText(overlayUrl);
-                  setOverlayCopied(true);
-                  setTimeout(() => setOverlayCopied(false), 1500);
-                } catch {
-                  /* ignore */
-                }
-              }}
-              aria-live="polite"
-            >
-              <span className="copy-icon copy-icon--copy">
-                <MdContentCopy />
-              </span>
-              <span className="copy-icon copy-icon--check" aria-hidden={!overlayCopied}>
-                ✓
-              </span>
-            </button>
+          <div className="control-link-item">
+            <div className="control-link-header">
+              <span className="control-link-label">Overlay Link</span>
+            </div>
+            <div className="control-link-row">
+              <a
+                className="control-link-url"
+                href={overlayUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={overlayUrl || "Overlay link"}
+              >
+                {overlayUrl}
+              </a>
+              <button
+                className={`control-link-copy ${overlayCopied ? "is-copied" : ""}`}
+                type="button"
+                title={overlayCopied ? "Copied!" : "Copy overlay link"}
+                onClick={async () => {
+                  if (!overlayUrl) return;
+                  try {
+                    await navigator.clipboard.writeText(overlayUrl);
+                    setOverlayCopied(true);
+                    setTimeout(() => setOverlayCopied(false), 1500);
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+                aria-live="polite"
+              >
+                <span className="copy-icon copy-icon--copy">
+                  <MdContentCopy />
+                </span>
+                <span className="copy-icon copy-icon--check" aria-hidden={!overlayCopied}>
+                  ✓
+                </span>
+              </button>
+            </div>
           </div>
         </div>
 

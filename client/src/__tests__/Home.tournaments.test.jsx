@@ -82,6 +82,22 @@ describe("Home tournaments tab", () => {
     expect(screen.getByRole("heading", { name: "Tournament Hub" })).toBeInTheDocument();
   });
 
+  it("shows signed-in account controls on All services without scoreboards list", () => {
+    mockUseAuth.mockReturnValue({
+      ...createSignedInAuth(),
+      token: null,
+    });
+
+    renderHome();
+
+    expect(screen.getByRole("heading", { name: "Welcome back" })).toBeInTheDocument();
+    expect(screen.getByText(/Signed in as/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Change password" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Your Scoreboards" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument();
+  });
+
   it("shows sign-in call to action for signed-out users", async () => {
     mockUseAuth.mockReturnValue(createSignedOutAuth());
     const user = userEvent.setup();

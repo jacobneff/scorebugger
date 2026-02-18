@@ -421,6 +421,7 @@ function TournamentPhase1Admin() {
           .then(([nextPools, nextTeams]) => {
             setPools(nextPools);
             setTeams(nextTeams);
+            refreshMatchesAndStandings().catch(() => {});
           })
           .catch(() => {});
         return;
@@ -811,6 +812,7 @@ function TournamentPhase1Admin() {
         });
         const refreshedPools = await loadPools();
         setPools(refreshedPools);
+        await refreshMatchesAndStandings();
         setMessage('Pool assignments saved.');
       } catch (saveError) {
         setPools(previousPools);
@@ -830,6 +832,7 @@ function TournamentPhase1Admin() {
       loadPools,
       persistPoolChanges,
       pools,
+      refreshMatchesAndStandings,
       resetDragState,
       resolveSwapTargetPoolId,
       savingCourtAssignments,

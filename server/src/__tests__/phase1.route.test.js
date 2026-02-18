@@ -21,6 +21,14 @@ const PHASE1_HOME_COURTS = {
   E: 'VC-2',
 };
 
+const PHASE1_ALT_HOME_COURTS = {
+  A: 'VC-2',
+  B: 'SRC-3',
+  C: 'VC-1',
+  D: 'SRC-1',
+  E: 'SRC-2',
+};
+
 async function seedTournamentTeams(tournamentId, teamCount = 15) {
   const teams = Array.from({ length: teamCount }, (_, index) => ({
     tournamentId,
@@ -154,6 +162,33 @@ describe('phase1 pool + match generation routes', () => {
     ]);
   });
 
+  test('court assignment endpoint rejects duplicate courts within a phase', async () => {
+    const tournament = await createOwnedTournament();
+    await seedTournamentTeams(tournament._id);
+
+    const init = await request(app)
+      .post(`/api/tournaments/${tournament._id}/phase1/pools/init`)
+      .set(authHeader());
+
+    expect(init.statusCode).toBe(200);
+
+    const duplicateAssignments = init.body.map((pool) => ({
+      poolId: pool._id,
+      homeCourt: pool.name === 'A' ? 'SRC-1' : pool.name === 'B' ? 'SRC-1' : PHASE1_HOME_COURTS[pool.name],
+    }));
+
+    const response = await request(app)
+      .put(`/api/tournaments/${tournament._id}/pools/courts`)
+      .set(authHeader())
+      .send({
+        phase: 'phase1',
+        assignments: duplicateAssignments,
+      });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.message).toMatch(/unique court/i);
+  });
+
   test('generate phase1 fails if any pool does not have exactly 3 teams', async () => {
     const tournament = await createOwnedTournament();
     await seedTournamentTeams(tournament._id);
@@ -187,16 +222,33 @@ describe('phase1 pool + match generation routes', () => {
     expect(generate.body.message).toMatch(/exactly 3 teams/i);
   });
 
-  test('generate phase1 creates 15 matches and 15 scoreboards with linked scoreboardId', async () => {
+  test('generate phase1 creates 15 matches and 15 scoreboards using each pool home court', async () => {
     const tournament = await createOwnedTournament();
     await seedTournamentTeams(tournament._id);
 
-    await request(app)
+    const init = await request(app)
       .post(`/api/tournaments/${tournament._id}/phase1/pools/init`)
       .set(authHeader());
+    expect(init.statusCode).toBe(200);
+
     await request(app)
       .post(`/api/tournaments/${tournament._id}/phase1/pools/autofill`)
       .set(authHeader());
+
+    const customCourtAssignments = init.body.map((pool) => ({
+      poolId: pool._id,
+      homeCourt: PHASE1_ALT_HOME_COURTS[pool.name],
+    }));
+
+    const assign = await request(app)
+      .put(`/api/tournaments/${tournament._id}/pools/courts`)
+      .set(authHeader())
+      .send({
+        phase: 'phase1',
+        assignments: customCourtAssignments,
+      });
+
+    expect(assign.statusCode).toBe(200);
 
     const generate = await request(app)
       .post(`/api/tournaments/${tournament._id}/generate/phase1`)
@@ -227,7 +279,7 @@ describe('phase1 pool + match generation routes', () => {
       expect(match.roundBlock).toBeLessThanOrEqual(3);
 
       const poolName = match.poolId?.name;
-      expect(PHASE1_HOME_COURTS[poolName]).toBe(match.court);
+      expect(PHASE1_ALT_HOME_COURTS[poolName]).toBe(match.court);
     });
   });
 

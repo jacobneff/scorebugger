@@ -28,6 +28,14 @@ const PHASE2_HOME_COURTS = {
   J: 'VC-2',
 };
 
+const PHASE2_ALT_HOME_COURTS = {
+  F: 'VC-2',
+  G: 'SRC-3',
+  H: 'VC-1',
+  I: 'SRC-1',
+  J: 'SRC-2',
+};
+
 const PHASE2_MAPPING = {
   F: ['A1', 'B2', 'C3'],
   G: ['B1', 'C2', 'D3'],
@@ -251,14 +259,31 @@ describe('phase2 generation + standings routes', () => {
     expect(byName.F.rematchWarnings).toEqual([]);
   });
 
-  test('phase2 match generation creates 15 matches and 15 scoreboards on rounds 4-6 with fixed courts', async () => {
+  test('phase2 match generation creates 15 matches and 15 scoreboards on rounds 4-6 using pool home courts', async () => {
     const tournament = await createOwnedTournament();
     const teamByLabel = await seedPhase1PoolsWithLabeledTeams(tournament._id);
     await setFullPhase1PoolOverrides(tournament._id, teamByLabel);
 
-    await request(app)
+    const generatePools = await request(app)
       .post(`/api/tournaments/${tournament._id}/phase2/pools/generate`)
       .set(authHeader());
+
+    expect(generatePools.statusCode).toBe(200);
+
+    const customCourtAssignments = generatePools.body.pools.map((pool) => ({
+      poolId: pool._id,
+      homeCourt: PHASE2_ALT_HOME_COURTS[pool.name],
+    }));
+
+    const assign = await request(app)
+      .put(`/api/tournaments/${tournament._id}/pools/courts`)
+      .set(authHeader())
+      .send({
+        phase: 'phase2',
+        assignments: customCourtAssignments,
+      });
+
+    expect(assign.statusCode).toBe(200);
 
     const generate = await request(app)
       .post(`/api/tournaments/${tournament._id}/generate/phase2`)
@@ -287,7 +312,7 @@ describe('phase2 generation + standings routes', () => {
     matches.forEach((match) => {
       expect(match.roundBlock).toBeGreaterThanOrEqual(4);
       expect(match.roundBlock).toBeLessThanOrEqual(6);
-      expect(PHASE2_HOME_COURTS[match.poolId?.name]).toBe(match.court);
+      expect(PHASE2_ALT_HOME_COURTS[match.poolId?.name]).toBe(match.court);
     });
   });
 

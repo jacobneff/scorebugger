@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
   TouchSensor,
   KeyboardSensor,
   closestCenter,
+  useDraggable,
   useDroppable,
   useSensor,
   useSensors,
@@ -21,6 +23,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
+import CourtAssignmentsBoard from '../components/CourtAssignmentsBoard.jsx';
 import {
   formatRoundBlockStartTime,
   formatSetRecord,
@@ -34,6 +37,19 @@ import {
   buildTournamentMatchControlHref,
   getMatchStatusMeta,
 } from '../utils/tournamentMatchControl.js';
+import {
+  TEAM_BANK_CONTAINER_ID,
+  buildPoolSwapDragId,
+  buildPoolSwapTargetId,
+  buildTeamBankFromPools,
+  buildTwoPassPoolPatchPlan,
+  clonePoolsForDnd,
+  collectChangedPoolIds,
+  computePoolSwapPreview,
+  computeTeamDragPreview,
+  parsePoolSwapDragPoolId,
+  parsePoolSwapTargetPoolId,
+} from '../utils/phase1PoolDnd.js';
 
 const jsonHeaders = (token) => ({
   'Content-Type': 'application/json',
@@ -43,8 +59,6 @@ const jsonHeaders = (token) => ({
 const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
 });
-
-const TEAM_BANK_CONTAINER_ID = 'team-bank';
 
 const formatShortTeamLabel = (team) => team?.shortName || team?.name || 'TBD';
 
@@ -65,6 +79,7 @@ function DraggableTeamCard({ team, disabled }) {
     transform: CSS.Transform.toString(transform),
     transition,
   };
+  const label = formatShortTeamLabel(team);
 
   return (
     <article
@@ -74,14 +89,14 @@ function DraggableTeamCard({ team, disabled }) {
     >
       <div className="phase1-team-card-main">
         {team.logoUrl ? (
-          <img className="phase1-team-card-logo" src={team.logoUrl} alt={`${formatShortTeamLabel(team)} logo`} />
+          <img className="phase1-team-card-logo" src={team.logoUrl} alt={`${label} logo`} />
         ) : null}
-        <strong>{formatShortTeamLabel(team)}</strong>
+        <strong>{label}</strong>
       </div>
       <button
         type="button"
         className="phase1-team-drag-handle"
-        aria-label={`Drag ${formatShortTeamLabel(team)}`}
+        aria-label={`Drag ${label}`}
         disabled={disabled}
         {...attributes}
         {...listeners}
@@ -89,6 +104,60 @@ function DraggableTeamCard({ team, disabled }) {
         Drag
       </button>
     </article>
+  );
+}
+
+function TeamCardPreview({ team }) {
+  if (!team) {
+    return null;
+  }
+
+  const label = formatShortTeamLabel(team);
+
+  return (
+    <article className="phase1-team-card phase1-team-card--overlay">
+      <div className="phase1-team-card-main">
+        {team.logoUrl ? (
+          <img className="phase1-team-card-logo" src={team.logoUrl} alt={`${label} logo`} />
+        ) : null}
+        <strong>{label}</strong>
+      </div>
+      <span className="phase1-team-drag-handle">Drag</span>
+    </article>
+  );
+}
+
+function PoolSwapHandle({ poolId, disabled }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useDraggable({
+    id: buildPoolSwapDragId(poolId),
+    disabled,
+  });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      className={`phase1-pool-swap-handle ${isDragging ? 'is-dragging' : ''}`}
+      disabled={disabled}
+      style={style}
+      aria-label="Swap all 3 teams with another pool"
+      {...attributes}
+      {...listeners}
+    >
+      Swap 3 Teams
+    </button>
   );
 }
 
@@ -102,18 +171,53 @@ function TeamDropContainer({ containerId, className = '', children }) {
   );
 }
 
+function PoolHeaderDropTarget({
+  poolId,
+  activeSwapPoolId,
+  children,
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: buildPoolSwapTargetId(poolId),
+  });
+
+  const isDropTarget =
+    Boolean(activeSwapPoolId) && activeSwapPoolId !== poolId && isOver;
+
+  return (
+    <header
+      ref={setNodeRef}
+      className={`phase1-pool-header ${isDropTarget ? 'phase1-pool-header--swap-target' : ''}`}
+    >
+      {children}
+    </header>
+  );
+}
+
 const normalizePools = (pools) =>
   sortPhase1Pools(pools).map((pool) => ({
     ...pool,
     teamIds: Array.isArray(pool.teamIds)
-      ? pool.teamIds.map((team) => ({
-          _id: String(team._id),
-          name: team.name || '',
-          shortName: team.shortName || '',
-          orderIndex: Number.isFinite(Number(team.orderIndex)) ? Number(team.orderIndex) : null,
-          seed: team.seed ?? null,
-          logoUrl: team.logoUrl ?? null,
-        }))
+      ? pool.teamIds
+          .map((team) => {
+            const teamId =
+              typeof team === 'string' ? team : team?._id ? String(team._id) : '';
+            if (!teamId) {
+              return null;
+            }
+
+            return {
+              _id: String(teamId),
+              name: typeof team === 'object' && team ? team.name || '' : '',
+              shortName: typeof team === 'object' && team ? team.shortName || '' : '',
+              orderIndex:
+                typeof team === 'object' && team && Number.isFinite(Number(team.orderIndex))
+                  ? Number(team.orderIndex)
+                  : null,
+              seed: typeof team === 'object' && team ? team.seed ?? null : null,
+              logoUrl: typeof team === 'object' && team ? team.logoUrl ?? null : null,
+            };
+          })
+          .filter(Boolean)
       : [],
   }));
 
@@ -138,12 +242,19 @@ function TournamentPhase1Admin() {
   const [loading, setLoading] = useState(true);
   const [initLoading, setInitLoading] = useState(false);
   const [savingPools, setSavingPools] = useState(false);
+  const [savingCourtAssignments, setSavingCourtAssignments] = useState(false);
   const [generateLoading, setGenerateLoading] = useState(false);
   const [standingsLoading, setStandingsLoading] = useState(false);
   const [matchActionId, setMatchActionId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
+  const [dragPreviewPools, setDragPreviewPools] = useState(null);
+  const [activeDrag, setActiveDrag] = useState(null);
+  const dragOriginPoolsRef = useRef(null);
+  const dragPreviewSignatureRef = useRef('');
+  const lastValidTeamOverIdRef = useRef('');
+  const suppressRealtimePoolUpdatesRef = useRef(false);
 
   const dragSensors = useSensors(
     useSensor(PointerSensor, {
@@ -293,6 +404,10 @@ function TournamentPhase1Admin() {
       }
 
       if (event.type === 'POOLS_UPDATED' && event.data?.phase === 'phase1') {
+        if (suppressRealtimePoolUpdatesRef.current) {
+          return;
+        }
+
         Promise.all([loadPools(), loadTeams()])
           .then(([nextPools, nextTeams]) => {
             setPools(nextPools);
@@ -318,17 +433,11 @@ function TournamentPhase1Admin() {
     onEvent: handleTournamentRealtimeEvent,
   });
 
-  const assignedTeamIdSet = useMemo(() => {
-    const ids = new Set();
-    pools.forEach((pool) => {
-      pool.teamIds.forEach((team) => ids.add(team._id));
-    });
-    return ids;
-  }, [pools]);
+  const displayedPools = dragPreviewPools || pools;
 
   const teamBank = useMemo(
-    () => teams.filter((team) => !assignedTeamIdSet.has(team._id)),
-    [assignedTeamIdSet, teams]
+    () => buildTeamBankFromPools(teams, displayedPools),
+    [displayedPools, teams]
   );
 
   const poolIssues = useMemo(
@@ -347,154 +456,358 @@ function TournamentPhase1Admin() {
     [pools]
   );
 
+  const courtIssues = useMemo(() => {
+    const issues = [];
+    const missingCourts = pools
+      .filter((pool) => !pool.homeCourt)
+      .map((pool) => `Pool ${pool.name} needs a court`);
+
+    if (missingCourts.length > 0) {
+      issues.push(...missingCourts);
+    }
+
+    const poolsByCourt = new Map();
+
+    pools.forEach((pool) => {
+      if (!pool.homeCourt) {
+        return;
+      }
+
+      if (!poolsByCourt.has(pool.homeCourt)) {
+        poolsByCourt.set(pool.homeCourt, [pool.name]);
+        return;
+      }
+
+      poolsByCourt.get(pool.homeCourt).push(pool.name);
+    });
+
+    poolsByCourt.forEach((poolNames, courtCode) => {
+      if (poolNames.length > 1) {
+        issues.push(`${mapCourtLabel(courtCode)} is assigned to pools ${poolNames.join(', ')}`);
+      }
+    });
+
+    return issues;
+  }, [pools]);
+
+  const activeSwapPoolId = activeDrag?.type === 'pool-swap' ? activeDrag.poolId : null;
   const scheduleLookup = useMemo(() => buildPhase1ScheduleLookup(matches), [matches]);
 
-  const resolveContainerId = useCallback(
-    (idValue) => {
-      if (!idValue) {
+  const findTeamById = useCallback(
+    (teamId, poolsToSearch = pools) => {
+      const normalizedTeamId = teamId ? String(teamId) : '';
+      if (!normalizedTeamId) {
         return null;
       }
 
-      const normalized = String(idValue);
-      if (normalized === TEAM_BANK_CONTAINER_ID) {
-        return TEAM_BANK_CONTAINER_ID;
-      }
-
-      if (pools.some((pool) => pool._id === normalized)) {
-        return normalized;
-      }
-
-      if (teamBank.some((team) => team._id === normalized)) {
-        return TEAM_BANK_CONTAINER_ID;
-      }
-
-      const owningPool = pools.find((pool) => pool.teamIds.some((team) => team._id === normalized));
-      return owningPool ? owningPool._id : null;
-    },
-    [pools, teamBank]
-  );
-
-  const moveTeam = useCallback(
-    (activeId, overId) => {
-      const sourceContainerId = resolveContainerId(activeId);
-      const targetContainerId = resolveContainerId(overId);
-
-      if (!sourceContainerId || !targetContainerId) {
-        return null;
-      }
-
-      if (sourceContainerId === TEAM_BANK_CONTAINER_ID && targetContainerId === TEAM_BANK_CONTAINER_ID) {
-        return null;
-      }
-
-      const nextPools = pools.map((pool) => ({
-        ...pool,
-        teamIds: [...pool.teamIds],
-      }));
-
-      const sourcePoolIndex = nextPools.findIndex((pool) => pool._id === sourceContainerId);
-      const targetPoolIndex = nextPools.findIndex((pool) => pool._id === targetContainerId);
-      const sourcePool = sourcePoolIndex >= 0 ? nextPools[sourcePoolIndex] : null;
-      const targetPool = targetPoolIndex >= 0 ? nextPools[targetPoolIndex] : null;
-      const sourcePoolBefore = pools.find((pool) => pool._id === sourceContainerId) || null;
-      const sourceTeamIndex = sourcePool
-        ? sourcePool.teamIds.findIndex((team) => team._id === String(activeId))
-        : -1;
-
-      const draggedTeam =
-        sourceContainerId === TEAM_BANK_CONTAINER_ID
-          ? teamBank.find((team) => team._id === String(activeId)) || null
-          : sourcePool && sourceTeamIndex >= 0
-            ? sourcePool.teamIds[sourceTeamIndex]
-            : null;
-
-      if (!draggedTeam) {
-        return null;
-      }
-
-      if (sourcePool && sourceTeamIndex >= 0) {
-        sourcePool.teamIds.splice(sourceTeamIndex, 1);
-      }
-
-      if (targetPool) {
-        if (sourceContainerId !== targetContainerId && targetPool.teamIds.length >= 3) {
-          return { error: 'A pool can include at most 3 teams. Move one out first.' };
-        }
-
-        const overIdAsString = String(overId);
-        const targetTeamIds = targetPool.teamIds.map((team) => team._id);
-        let targetIndex =
-          overIdAsString === targetContainerId
-            ? targetPool.teamIds.length
-            : targetTeamIds.indexOf(overIdAsString);
-
-        if (targetIndex < 0) {
-          targetIndex = targetPool.teamIds.length;
-        }
-
-        if (
-          sourceContainerId === targetContainerId &&
-          sourceTeamIndex >= 0 &&
-          sourceTeamIndex < targetIndex
-        ) {
-          targetIndex -= 1;
-        }
-
-        targetPool.teamIds.splice(targetIndex, 0, draggedTeam);
-      }
-
-      if (sourceContainerId === targetContainerId && sourcePoolBefore) {
-        const beforeIds = sourcePoolBefore.teamIds.map((team) => team._id);
-        const afterIds = (nextPools.find((pool) => pool._id === sourceContainerId) || sourcePoolBefore).teamIds.map(
-          (team) => team._id
+      for (const pool of poolsToSearch) {
+        const found = (Array.isArray(pool?.teamIds) ? pool.teamIds : []).find(
+          (team) =>
+            String(
+              typeof team === 'string' ? team : team?._id ? team._id : ''
+            ) === normalizedTeamId
         );
-        if (beforeIds.join('|') === afterIds.join('|')) {
-          return null;
+        if (found) {
+          if (typeof found === 'object') {
+            return found;
+          }
+          return teams.find((team) => String(team?._id) === normalizedTeamId) || null;
         }
       }
 
-      const poolIdsToPersist = [sourceContainerId, targetContainerId].filter(
-        (poolId, index, all) =>
-          poolId !== TEAM_BANK_CONTAINER_ID && all.indexOf(poolId) === index
-      );
-
-      return {
-        nextPools,
-        poolIdsToPersist,
-      };
+      return teams.find((team) => String(team?._id) === normalizedTeamId) || null;
     },
-    [pools, resolveContainerId, teamBank]
+    [pools, teams]
   );
+
+  const buildPoolsSignature = useCallback((poolsToSign) => {
+    if (!Array.isArray(poolsToSign)) {
+      return '';
+    }
+
+    return poolsToSign
+      .map((pool) => {
+        const poolId = pool?._id ? String(pool._id) : '';
+        const teamIds = (Array.isArray(pool?.teamIds) ? pool.teamIds : [])
+          .map((team) =>
+            String(typeof team === 'string' ? team : team?._id ? team._id : '')
+          )
+          .filter(Boolean)
+          .join(',');
+
+        return `${poolId}:${teamIds}`;
+      })
+      .join('|');
+  }, []);
+
+  const setDragPreviewPoolsIfChanged = useCallback(
+    (nextPools) => {
+      const nextSignature = buildPoolsSignature(nextPools);
+      if (nextSignature === dragPreviewSignatureRef.current) {
+        return;
+      }
+
+      dragPreviewSignatureRef.current = nextSignature;
+      setDragPreviewPools(nextPools);
+    },
+    [buildPoolsSignature]
+  );
+
+  const resetDragState = useCallback(() => {
+    setActiveDrag(null);
+    setDragPreviewPools(null);
+    dragOriginPoolsRef.current = null;
+    dragPreviewSignatureRef.current = '';
+    lastValidTeamOverIdRef.current = '';
+  }, []);
+
+  const resolveSwapTargetPoolId = useCallback((overId) => {
+    const byTarget = parsePoolSwapTargetPoolId(overId);
+    if (byTarget) {
+      return byTarget;
+    }
+    return parsePoolSwapDragPoolId(overId);
+  }, []);
 
   const persistPoolChanges = useCallback(
-    async (nextPools, poolIdsToPersist) => {
-      for (const poolId of poolIdsToPersist) {
-        const pool = nextPools.find((entry) => entry._id === poolId);
-        if (!pool) {
-          continue;
-        }
+    async ({ previousPools, nextPools, poolIdsToPersist }) => {
+      const plan = buildTwoPassPoolPatchPlan({
+        previousPools,
+        nextPools,
+        poolIdsToPersist,
+      });
 
-        await fetchJson(`${API_URL}/api/pools/${poolId}`, {
-          method: 'PATCH',
-          headers: jsonHeaders(token),
-          body: JSON.stringify({
-            teamIds: pool.teamIds.map((team) => team._id),
-          }),
-        });
+      const runPass = async (updates) => {
+        for (const update of updates) {
+          await fetchJson(`${API_URL}/api/pools/${update.poolId}`, {
+            method: 'PATCH',
+            headers: jsonHeaders(token),
+            body: JSON.stringify({
+              teamIds: update.teamIds,
+            }),
+          });
+        }
+      };
+
+      if (plan.passOne.length > 0) {
+        await runPass(plan.passOne);
+      }
+
+      if (plan.passTwo.length > 0) {
+        await runPass(plan.passTwo);
       }
     },
     [fetchJson, token]
   );
 
-  const handleTeamDragEnd = useCallback(
-    async (event) => {
-      const { active, over } = event;
-
-      if (!active?.id || !over?.id || savingPools) {
+  const handleCourtAssignmentsChange = useCallback(
+    async (nextPools) => {
+      if (!token || !id || savingCourtAssignments || matches.length > 0 || !Array.isArray(nextPools)) {
         return;
       }
 
-      const moveResult = moveTeam(active.id, over.id);
+      const previousPools = pools;
+      setPools(nextPools);
+      setSavingCourtAssignments(true);
+      suppressRealtimePoolUpdatesRef.current = true;
+      setError('');
+      setMessage('');
+
+      try {
+        const updatedPools = await fetchJson(`${API_URL}/api/tournaments/${id}/pools/courts`, {
+          method: 'PUT',
+          headers: jsonHeaders(token),
+          body: JSON.stringify({
+            phase: 'phase1',
+            assignments: nextPools.map((pool) => ({
+              poolId: pool._id,
+              homeCourt: pool.homeCourt,
+            })),
+          }),
+        });
+
+        setPools(normalizePools(updatedPools));
+        setMessage('Court assignments saved.');
+      } catch (saveError) {
+        setPools(previousPools);
+        setError(saveError.message || 'Unable to save court assignments');
+
+        loadPools()
+          .then((latestPools) => {
+            setPools(latestPools);
+          })
+          .catch(() => {});
+      } finally {
+        suppressRealtimePoolUpdatesRef.current = false;
+        setSavingCourtAssignments(false);
+      }
+    },
+    [fetchJson, id, loadPools, matches.length, pools, savingCourtAssignments, token]
+  );
+
+  const handleDragStart = useCallback(
+    (event) => {
+      if (
+        !event?.active?.id ||
+        savingPools ||
+        savingCourtAssignments ||
+        initLoading ||
+        autofillLoading ||
+        generateLoading
+      ) {
+        return;
+      }
+
+      const activeId = String(event.active.id);
+      const originPools = clonePoolsForDnd(pools);
+      dragOriginPoolsRef.current = originPools;
+      dragPreviewSignatureRef.current = buildPoolsSignature(originPools);
+      lastValidTeamOverIdRef.current = '';
+      setError('');
+
+      const sourcePoolId = parsePoolSwapDragPoolId(activeId);
+      if (sourcePoolId) {
+        const sourcePool = originPools.find((pool) => String(pool._id) === sourcePoolId);
+        setActiveDrag({
+          type: 'pool-swap',
+          id: activeId,
+          poolId: sourcePoolId,
+          poolName: sourcePool?.name || '',
+        });
+        setDragPreviewPools(originPools);
+        return;
+      }
+
+      const activeTeam = findTeamById(activeId, originPools);
+      if (!activeTeam) {
+        resetDragState();
+        return;
+      }
+
+      setActiveDrag({
+        type: 'team',
+        id: activeId,
+        team: activeTeam,
+      });
+      setDragPreviewPools(originPools);
+    },
+    [
+      autofillLoading,
+      buildPoolsSignature,
+      findTeamById,
+      generateLoading,
+      initLoading,
+      pools,
+      resetDragState,
+      savingCourtAssignments,
+      savingPools,
+    ]
+  );
+
+  const handleDragOver = useCallback(
+    (event) => {
+      if (!activeDrag) {
+        return;
+      }
+
+      const originPools = dragOriginPoolsRef.current || clonePoolsForDnd(pools);
+      if (!event?.over?.id) {
+        setDragPreviewPoolsIfChanged(originPools);
+        return;
+      }
+
+      const rawOverId = String(event.over.id);
+
+      if (activeDrag.type === 'team') {
+        const effectiveOverId =
+          rawOverId === activeDrag.id && lastValidTeamOverIdRef.current
+            ? lastValidTeamOverIdRef.current
+            : rawOverId;
+
+        const preview = computeTeamDragPreview({
+          pools: originPools,
+          teams,
+          activeTeamId: activeDrag.id,
+          overId: effectiveOverId,
+        });
+        if (preview?.nextPools) {
+          if (effectiveOverId !== activeDrag.id) {
+            lastValidTeamOverIdRef.current = effectiveOverId;
+          }
+          setDragPreviewPoolsIfChanged(preview.nextPools);
+        }
+        return;
+      }
+
+      const targetPoolId = resolveSwapTargetPoolId(rawOverId);
+      if (!targetPoolId) {
+        setDragPreviewPoolsIfChanged(originPools);
+        return;
+      }
+
+      const preview = computePoolSwapPreview({
+        pools: originPools,
+        sourcePoolId: activeDrag.poolId,
+        targetPoolId,
+        requireFull: true,
+      });
+      if (preview?.nextPools) {
+        setDragPreviewPoolsIfChanged(preview.nextPools);
+      }
+    },
+    [activeDrag, pools, resolveSwapTargetPoolId, setDragPreviewPoolsIfChanged, teams]
+  );
+
+  const handleDragCancel = useCallback(() => {
+    resetDragState();
+  }, [resetDragState]);
+
+  const handleDragEnd = useCallback(
+    async (event) => {
+      if (!event?.active?.id || savingPools || savingCourtAssignments) {
+        resetDragState();
+        return;
+      }
+
+      const activeId = String(event.active.id);
+      const rawOverId = event?.over?.id ? String(event.over.id) : '';
+      const originPools = dragOriginPoolsRef.current || clonePoolsForDnd(pools);
+      let moveResult = null;
+      let overId = rawOverId;
+
+      if (activeDrag?.type === 'team') {
+        if (!overId || overId === activeId) {
+          overId = lastValidTeamOverIdRef.current || overId;
+        }
+      }
+
+      if (overId) {
+        if (activeDrag?.type === 'pool-swap') {
+          const targetPoolId = resolveSwapTargetPoolId(overId);
+          if (targetPoolId) {
+            moveResult = computePoolSwapPreview({
+              pools: originPools,
+              sourcePoolId: activeDrag.poolId,
+              targetPoolId,
+              requireFull: true,
+            });
+          }
+        } else {
+          moveResult = computeTeamDragPreview({
+            pools: originPools,
+            teams,
+            activeTeamId: activeId,
+            overId,
+          });
+        }
+      }
+
+      resetDragState();
+
+      if (!overId) {
+        return;
+      }
+
       if (!moveResult) {
         return;
       }
@@ -504,25 +817,56 @@ function TournamentPhase1Admin() {
         return;
       }
 
-      const previousPools = pools;
-      setPools(moveResult.nextPools);
+      const changedPoolIds = collectChangedPoolIds(originPools, moveResult.nextPools);
+      const poolIdsToPersist = (moveResult.poolIdsToPersist || []).filter((poolId) =>
+        changedPoolIds.includes(poolId)
+      );
+
+      if (poolIdsToPersist.length === 0) {
+        return;
+      }
+
+      const previousPools = clonePoolsForDnd(pools);
+      const nextPools = moveResult.nextPools;
+      setPools(nextPools);
       setSavingPools(true);
+      suppressRealtimePoolUpdatesRef.current = true;
       setError('');
       setMessage('');
 
       try {
-        await persistPoolChanges(moveResult.nextPools, moveResult.poolIdsToPersist);
+        await persistPoolChanges({
+          previousPools: originPools,
+          nextPools,
+          poolIdsToPersist,
+        });
         const refreshedPools = await loadPools();
         setPools(refreshedPools);
         setMessage('Pool assignments saved.');
       } catch (saveError) {
         setPools(previousPools);
         setError(saveError.message || 'Unable to save pool changes');
+        loadPools()
+          .then((latestPools) => {
+            setPools(latestPools);
+          })
+          .catch(() => {});
       } finally {
+        suppressRealtimePoolUpdatesRef.current = false;
         setSavingPools(false);
       }
     },
-    [loadPools, moveTeam, persistPoolChanges, pools, savingPools]
+    [
+      activeDrag,
+      loadPools,
+      persistPoolChanges,
+      pools,
+      resetDragState,
+      resolveSwapTargetPoolId,
+      savingCourtAssignments,
+      savingPools,
+      teams,
+    ]
   );
 
   const handleInitializePools = useCallback(async () => {
@@ -577,7 +921,7 @@ function TournamentPhase1Admin() {
   );
 
   const handleAutoFillPoolsClick = useCallback(async () => {
-    if (!token || !id || autofillLoading || savingPools || initLoading) {
+    if (!token || !id || autofillLoading || savingPools || savingCourtAssignments || initLoading) {
       return;
     }
 
@@ -611,7 +955,7 @@ function TournamentPhase1Admin() {
     } finally {
       setAutofillLoading(false);
     }
-  }, [autofillLoading, handleAutofillPools, id, initLoading, savingPools, token]);
+  }, [autofillLoading, handleAutofillPools, id, initLoading, savingCourtAssignments, savingPools, token]);
 
   const generatePhase1 = useCallback(
     async (force = false) => {
@@ -642,7 +986,7 @@ function TournamentPhase1Admin() {
   );
 
   const handleGenerateMatches = useCallback(async () => {
-    if (!token || !id || generateLoading) {
+    if (!token || !id || generateLoading || savingCourtAssignments) {
       return;
     }
 
@@ -676,7 +1020,7 @@ function TournamentPhase1Admin() {
     } finally {
       setGenerateLoading(false);
     }
-  }, [generateLoading, generatePhase1, id, token]);
+  }, [generateLoading, generatePhase1, id, savingCourtAssignments, token]);
 
   const handleFinalizeMatch = useCallback(
     async (matchId) => {
@@ -730,7 +1074,18 @@ function TournamentPhase1Admin() {
     [fetchJson, matchActionId, refreshMatchesAndStandings, token]
   );
 
-  const canGenerate = pools.length === 5 && poolIssues.length === 0 && !savingPools;
+  const canGenerate =
+    pools.length === 5 &&
+    poolIssues.length === 0 &&
+    courtIssues.length === 0 &&
+    !savingPools &&
+    !savingCourtAssignments &&
+    !activeDrag;
+
+  const getPoolTeams = (pool) =>
+    (Array.isArray(pool?.teamIds) ? pool.teamIds : []).filter(
+      (team) => team && typeof team === 'object' && team._id
+    );
 
   if (initializing || loading) {
     return (
@@ -778,7 +1133,13 @@ function TournamentPhase1Admin() {
               className="secondary-button"
               type="button"
               onClick={handleInitializePools}
-              disabled={initLoading || savingPools || generateLoading || autofillLoading}
+              disabled={
+                initLoading ||
+                savingPools ||
+                savingCourtAssignments ||
+                generateLoading ||
+                autofillLoading
+              }
             >
               {initLoading ? 'Creating...' : 'Create Pool Play 1 Pools'}
             </button>
@@ -786,7 +1147,13 @@ function TournamentPhase1Admin() {
               className="secondary-button"
               type="button"
               onClick={handleAutoFillPoolsClick}
-              disabled={autofillLoading || initLoading || savingPools || generateLoading}
+              disabled={
+                autofillLoading ||
+                initLoading ||
+                savingPools ||
+                savingCourtAssignments ||
+                generateLoading
+              }
             >
               {autofillLoading ? 'Auto-filling...' : 'Auto-fill pools from team order'}
             </button>
@@ -794,26 +1161,59 @@ function TournamentPhase1Admin() {
               className="primary-button"
               type="button"
               onClick={handleGenerateMatches}
-              disabled={!canGenerate || generateLoading}
+              disabled={!canGenerate || generateLoading || savingCourtAssignments}
             >
               {generateLoading ? 'Generating...' : 'Generate Pool Play 1 Matches'}
             </button>
           </div>
         </div>
 
-        {savingPools && <p className="subtle">Saving pool changes...</p>}
+        {(savingPools || savingCourtAssignments) && (
+          <p className="subtle">
+            {savingCourtAssignments ? 'Saving court assignments...' : 'Saving pool changes...'}
+          </p>
+        )}
         {poolIssues.length > 0 && (
           <p className="error">
             Each pool must have exactly 3 teams before generating matches. {poolIssues.join('; ')}.
           </p>
         )}
+        {courtIssues.length > 0 && (
+          <p className="error">
+            Court assignments need attention. {courtIssues.join('; ')}.
+          </p>
+        )}
+        {matches.length > 0 && (
+          <p className="subtle">
+            Court assignments locked after match generation. Use force-regenerate to change.
+          </p>
+        )}
         {error && <p className="error">{error}</p>}
         {message && <p className="subtle phase1-success">{message}</p>}
+
+        <section className="phase1-court-assignments">
+          <h2 className="secondary-title">Court Assignments</h2>
+          <CourtAssignmentsBoard
+            pools={pools}
+            disabled={
+              matches.length > 0 ||
+              savingCourtAssignments ||
+              savingPools ||
+              initLoading ||
+              autofillLoading ||
+              generateLoading
+            }
+            onAssignmentsChange={handleCourtAssignmentsChange}
+          />
+        </section>
 
         <DndContext
           sensors={dragSensors}
           collisionDetection={closestCenter}
-          onDragEnd={handleTeamDragEnd}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragCancel={handleDragCancel}
+          onDragEnd={handleDragEnd}
         >
           <div className="phase1-pool-board">
             <section className="phase1-pool-column phase1-team-bank-column">
@@ -833,7 +1233,14 @@ function TournamentPhase1Admin() {
                     <DraggableTeamCard
                       key={team._id}
                       team={team}
-                      disabled={savingPools || initLoading || autofillLoading || generateLoading}
+                      disabled={
+                        savingPools ||
+                        savingCourtAssignments ||
+                        initLoading ||
+                        autofillLoading ||
+                        generateLoading ||
+                        activeDrag?.type === 'pool-swap'
+                      }
                     />
                   ))}
                   {teamBank.length === 0 && <p className="subtle">No teams in bank.</p>}
@@ -842,38 +1249,70 @@ function TournamentPhase1Admin() {
             </section>
 
             <div className="phase1-pool-grid">
-              {pools.map((pool) => (
-                <section
-                  key={pool._id}
-                  className={`phase1-pool-column ${
-                    pool.teamIds.length === 3 ? '' : 'phase1-pool-column--invalid'
-                  }`}
-                >
-                  <header className="phase1-pool-header">
-                    <h2>Pool {pool.name}</h2>
-                    <p>{pool.homeCourt ? mapCourtLabel(pool.homeCourt) : 'No home court'}</p>
-                    <p className="phase1-pool-count">{pool.teamIds.length}/3</p>
-                  </header>
+              {displayedPools.map((pool) => {
+                const poolTeams = getPoolTeams(pool);
 
-                  <SortableContext
-                    items={pool.teamIds.map((team) => team._id)}
-                    strategy={verticalListSortingStrategy}
+                return (
+                  <section
+                    key={pool._id}
+                    className={`phase1-pool-column ${
+                      poolTeams.length === 3 ? '' : 'phase1-pool-column--invalid'
+                    }`}
                   >
-                    <TeamDropContainer containerId={pool._id} className="phase1-drop-list">
-                      {pool.teamIds.map((team) => (
-                        <DraggableTeamCard
-                          key={team._id}
-                          team={team}
-                          disabled={savingPools || initLoading || autofillLoading || generateLoading}
+                    <PoolHeaderDropTarget poolId={pool._id} activeSwapPoolId={activeSwapPoolId}>
+                      <div className="phase1-pool-header-top">
+                        <h2>Pool {pool.name}</h2>
+                        <PoolSwapHandle
+                          poolId={pool._id}
+                          disabled={
+                            savingPools ||
+                            savingCourtAssignments ||
+                            initLoading ||
+                            autofillLoading ||
+                            generateLoading
+                          }
                         />
-                      ))}
-                      {pool.teamIds.length === 0 && <p className="subtle">Drop teams here.</p>}
-                    </TeamDropContainer>
-                  </SortableContext>
-                </section>
-              ))}
+                      </div>
+                      <p>{pool.homeCourt ? mapCourtLabel(pool.homeCourt) : 'No home court'}</p>
+                      <p className="phase1-pool-count">{poolTeams.length}/3</p>
+                    </PoolHeaderDropTarget>
+
+                    <SortableContext
+                      items={poolTeams.map((team) => team._id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <TeamDropContainer containerId={pool._id} className="phase1-drop-list">
+                        {poolTeams.map((team) => (
+                          <DraggableTeamCard
+                            key={team._id}
+                            team={team}
+                            disabled={
+                              savingPools ||
+                              savingCourtAssignments ||
+                              initLoading ||
+                              autofillLoading ||
+                              generateLoading ||
+                              activeDrag?.type === 'pool-swap'
+                            }
+                          />
+                        ))}
+                        {poolTeams.length === 0 && <p className="subtle">Drop teams here.</p>}
+                      </TeamDropContainer>
+                    </SortableContext>
+                  </section>
+                );
+              })}
             </div>
           </div>
+          <DragOverlay>
+            {activeDrag?.type === 'team' ? <TeamCardPreview team={activeDrag.team} /> : null}
+            {activeDrag?.type === 'pool-swap' ? (
+              <article className="phase1-pool-swap-overlay">
+                <strong>Pool {activeDrag.poolName || '?'}</strong>
+                <span>Swap 3 Teams</span>
+              </article>
+            ) : null}
+          </DragOverlay>
         </DndContext>
 
         {matches.length > 0 && (
@@ -910,7 +1349,9 @@ function TournamentPhase1Admin() {
                               <div className="phase1-match-cell">
                                 <p>
                                   <strong>Pool {match.poolName}</strong>
-                                  {`: ${formatShortTeamLabel(match.teamA)} vs ${formatShortTeamLabel(match.teamB)}`}
+                                  {`: ${formatShortTeamLabel(match.teamA)} vs ${formatShortTeamLabel(
+                                    match.teamB
+                                  )}`}
                                 </p>
                                 <p>Ref: {refLabel}</p>
                                 {liveSummariesByMatchId[match._id] && (

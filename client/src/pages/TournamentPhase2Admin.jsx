@@ -4,6 +4,7 @@ import { useParams } from 'react-router-dom';
 import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
+import CourtAssignmentsBoard from '../components/CourtAssignmentsBoard.jsx';
 import {
   formatRoundBlockStartTime,
   formatSetRecord,
@@ -94,6 +95,7 @@ function TournamentPhase2Admin() {
 
   const [loading, setLoading] = useState(true);
   const [savingPools, setSavingPools] = useState(false);
+  const [savingCourtAssignments, setSavingCourtAssignments] = useState(false);
   const [poolsGenerateLoading, setPoolsGenerateLoading] = useState(false);
   const [generateLoading, setGenerateLoading] = useState(false);
   const [standingsLoading, setStandingsLoading] = useState(false);
@@ -262,6 +264,40 @@ function TournamentPhase2Admin() {
     [pools]
   );
 
+  const courtIssues = useMemo(() => {
+    const issues = [];
+    const missingCourts = pools
+      .filter((pool) => !pool.homeCourt)
+      .map((pool) => `Pool ${pool.name} needs a court`);
+
+    if (missingCourts.length > 0) {
+      issues.push(...missingCourts);
+    }
+
+    const poolsByCourt = new Map();
+
+    pools.forEach((pool) => {
+      if (!pool.homeCourt) {
+        return;
+      }
+
+      if (!poolsByCourt.has(pool.homeCourt)) {
+        poolsByCourt.set(pool.homeCourt, [pool.name]);
+        return;
+      }
+
+      poolsByCourt.get(pool.homeCourt).push(pool.name);
+    });
+
+    poolsByCourt.forEach((poolNames, courtCode) => {
+      if (poolNames.length > 1) {
+        issues.push(`${mapCourtLabel(courtCode)} is assigned to pools ${poolNames.join(', ')}`);
+      }
+    });
+
+    return issues;
+  }, [pools]);
+
   const scheduleLookup = useMemo(() => buildPhase2ScheduleLookup(matches), [matches]);
 
   const moveTeam = useCallback(
@@ -337,9 +373,52 @@ function TournamentPhase2Admin() {
     [fetchJson, token]
   );
 
+  const handleCourtAssignmentsChange = useCallback(
+    async (nextPools) => {
+      if (!token || !id || savingCourtAssignments || matches.length > 0 || !Array.isArray(nextPools)) {
+        return;
+      }
+
+      const previousPools = pools;
+      setPools(nextPools);
+      setSavingCourtAssignments(true);
+      setError('');
+      setMessage('');
+
+      try {
+        const updatedPools = await fetchJson(`${API_URL}/api/tournaments/${id}/pools/courts`, {
+          method: 'PUT',
+          headers: jsonHeaders(token),
+          body: JSON.stringify({
+            phase: 'phase2',
+            assignments: nextPools.map((pool) => ({
+              poolId: pool._id,
+              homeCourt: pool.homeCourt,
+            })),
+          }),
+        });
+
+        setPools(normalizePools(updatedPools));
+        setMessage('Court assignments saved.');
+      } catch (saveError) {
+        setPools(previousPools);
+        setError(saveError.message || 'Unable to save court assignments');
+
+        loadPools()
+          .then((latestPools) => {
+            setPools(latestPools);
+          })
+          .catch(() => {});
+      } finally {
+        setSavingCourtAssignments(false);
+      }
+    },
+    [fetchJson, id, loadPools, matches.length, pools, savingCourtAssignments, token]
+  );
+
   const handleDrop = useCallback(
     async (targetPoolId, targetIndex) => {
-      if (!dragState || savingPools) {
+      if (!dragState || savingPools || savingCourtAssignments) {
         return;
       }
 
@@ -375,7 +454,7 @@ function TournamentPhase2Admin() {
         setSavingPools(false);
       }
     },
-    [dragState, loadPools, moveTeam, persistPoolChanges, pools, savingPools]
+    [dragState, loadPools, moveTeam, persistPoolChanges, pools, savingCourtAssignments, savingPools]
   );
 
   const generatePhase2Pools = useCallback(
@@ -416,7 +495,7 @@ function TournamentPhase2Admin() {
   );
 
   const handleGeneratePhase2Pools = useCallback(async () => {
-    if (!token || !id || poolsGenerateLoading) {
+    if (!token || !id || poolsGenerateLoading || savingCourtAssignments) {
       return;
     }
 
@@ -450,7 +529,7 @@ function TournamentPhase2Admin() {
     } finally {
       setPoolsGenerateLoading(false);
     }
-  }, [generatePhase2Pools, id, poolsGenerateLoading, token]);
+  }, [generatePhase2Pools, id, poolsGenerateLoading, savingCourtAssignments, token]);
 
   const generatePhase2Matches = useCallback(
     async (force = false) => {
@@ -481,7 +560,7 @@ function TournamentPhase2Admin() {
   );
 
   const handleGenerateMatches = useCallback(async () => {
-    if (!token || !id || generateLoading) {
+    if (!token || !id || generateLoading || savingCourtAssignments) {
       return;
     }
 
@@ -517,7 +596,7 @@ function TournamentPhase2Admin() {
     } finally {
       setGenerateLoading(false);
     }
-  }, [generateLoading, generatePhase2Matches, id, refreshMatchesAndStandings, token]);
+  }, [generateLoading, generatePhase2Matches, id, refreshMatchesAndStandings, savingCourtAssignments, token]);
 
   const handleFinalizeMatch = useCallback(
     async (matchId) => {
@@ -572,7 +651,11 @@ function TournamentPhase2Admin() {
   );
 
   const canGenerateMatches =
-    pools.length === 5 && invalidPools.length === 0 && !savingPools;
+    pools.length === 5 &&
+    invalidPools.length === 0 &&
+    courtIssues.length === 0 &&
+    !savingPools &&
+    !savingCourtAssignments;
 
   const activeStandings =
     activeStandingsTab === 'cumulative'
@@ -622,7 +705,7 @@ function TournamentPhase2Admin() {
               className="secondary-button"
               type="button"
               onClick={handleGeneratePhase2Pools}
-              disabled={poolsGenerateLoading || savingPools || generateLoading}
+              disabled={poolsGenerateLoading || savingPools || savingCourtAssignments || generateLoading}
             >
               {poolsGenerateLoading
                 ? 'Generating Pools...'
@@ -632,22 +715,51 @@ function TournamentPhase2Admin() {
               className="primary-button"
               type="button"
               onClick={handleGenerateMatches}
-              disabled={!canGenerateMatches || generateLoading}
+              disabled={!canGenerateMatches || generateLoading || savingCourtAssignments}
             >
               {generateLoading ? 'Generating Matches...' : 'Generate Pool Play 2 Matches'}
             </button>
           </div>
         </div>
 
-        {savingPools && <p className="subtle">Saving pool changes...</p>}
+        {(savingPools || savingCourtAssignments) && (
+          <p className="subtle">
+            {savingCourtAssignments ? 'Saving court assignments...' : 'Saving pool changes...'}
+          </p>
+        )}
         {invalidPools.length > 0 && (
           <p className="error">
             Each pool must have exactly 3 teams before generating matches. Invalid pools:{' '}
             {invalidPools.map((pool) => pool.name).join(', ')}.
           </p>
         )}
+        {courtIssues.length > 0 && (
+          <p className="error">
+            Court assignments need attention. {courtIssues.join('; ')}.
+          </p>
+        )}
+        {matches.length > 0 && (
+          <p className="subtle">
+            Court assignments locked after match generation. Use force-regenerate to change.
+          </p>
+        )}
         {error && <p className="error">{error}</p>}
         {message && <p className="subtle phase1-success">{message}</p>}
+
+        <section className="phase1-court-assignments">
+          <h2 className="secondary-title">Court Assignments</h2>
+          <CourtAssignmentsBoard
+            pools={pools}
+            disabled={
+              matches.length > 0 ||
+              savingCourtAssignments ||
+              savingPools ||
+              poolsGenerateLoading ||
+              generateLoading
+            }
+            onAssignmentsChange={handleCourtAssignmentsChange}
+          />
+        </section>
 
         <div className="phase1-pool-grid">
           {pools.map((pool) => {
@@ -701,13 +813,17 @@ function TournamentPhase2Admin() {
                           className={`phase1-team-card ${
                             dragState?.teamId === pool.teamIds[slotIndex]._id ? 'is-dragging' : ''
                           }`}
-                          draggable
-                          onDragStart={() =>
+                          draggable={!savingCourtAssignments}
+                          onDragStart={() => {
+                            if (savingCourtAssignments) {
+                              return;
+                            }
+
                             setDragState({
                               poolId: pool._id,
                               teamId: pool.teamIds[slotIndex]._id,
-                            })
-                          }
+                            });
+                          }}
                           onDragEnd={() => {
                             setDragState(null);
                             setDropTarget(null);

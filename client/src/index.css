@@ -88,7 +88,7 @@ a:hover {
 
 /* ===== Layout ===== */
 .container {
-  max-width: 960px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 3rem 1.5rem;
 }
@@ -2212,6 +2212,13 @@ button:disabled {
   gap: 0.2rem;
 }
 
+.phase1-pool-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 .phase1-pool-header h2,
 .phase1-pool-header h3 {
   margin: 0;
@@ -2222,6 +2229,30 @@ button:disabled {
   margin: 0;
   color: #475569;
   font-size: 0.9rem;
+}
+
+.phase1-pool-header--swap-target {
+  border-radius: 10px;
+  padding: 0.3rem;
+  margin: -0.3rem;
+  background: rgba(191, 219, 254, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.55);
+}
+
+.phase1-pool-swap-handle {
+  border: 1px dashed rgba(14, 116, 144, 0.65);
+  border-radius: 999px;
+  background: rgba(224, 242, 254, 0.9);
+  color: #0f766e;
+  padding: 0.18rem 0.52rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+
+.phase1-pool-swap-handle.is-dragging {
+  opacity: 0.45;
 }
 
 .phase1-pool-count {
@@ -2298,12 +2329,14 @@ button:disabled {
   justify-content: space-between;
   gap: 0.45rem;
   cursor: grab;
+  min-width: 0;
 }
 
 .phase1-team-card-main {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 0.45rem;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -2318,6 +2351,9 @@ button:disabled {
 
 .phase1-team-card strong {
   font-size: 0.92rem;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2339,10 +2375,42 @@ button:disabled {
   font-weight: 700;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .phase1-team-card.is-dragging {
-  opacity: 0.5;
+  opacity: 0.9;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
+}
+
+.phase1-team-card--overlay {
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.22);
+  border-color: rgba(37, 99, 235, 0.42);
+  opacity: 1;
+}
+
+.phase1-team-card--overlay strong {
+  color: #0f172a;
+}
+
+.phase1-pool-swap-overlay {
+  border-radius: 12px;
+  border: 1px solid rgba(14, 116, 144, 0.35);
+  background: rgba(224, 242, 254, 0.95);
+  padding: 0.55rem 0.75rem;
+  display: grid;
+  gap: 0.15rem;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.2);
+}
+
+.phase1-pool-swap-overlay strong {
+  font-size: 0.88rem;
+  color: #0f172a;
+}
+
+.phase1-pool-swap-overlay span {
+  font-size: 0.76rem;
+  color: #0f766e;
 }
 
 .phase1-public-team-list {
@@ -2509,6 +2577,165 @@ button:disabled {
   background: #e2e8f0;
   color: #0f172a;
   font-size: 0.78rem;
+}
+
+.phase1-court-assignments {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.court-assign-board {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.court-assign-column {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.court-assign-pool-list,
+.court-assign-slot-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.court-assign-pool-card,
+.court-assign-slot {
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.65rem 0.75rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.court-assign-pool-card {
+  cursor: grab;
+}
+
+.court-assign-pool-card.is-dragging {
+  opacity: 0.82;
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.18);
+}
+
+.court-assign-pool-card--overlay {
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.2);
+}
+
+.court-assign-pool-title,
+.court-assign-slot-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.court-assign-pool-meta,
+.court-assign-slot-meta {
+  margin: 0;
+  color: #475569;
+  font-size: 0.82rem;
+}
+
+.court-assign-slot.is-over {
+  border-color: rgba(37, 99, 235, 0.75);
+  background: rgba(219, 234, 254, 0.55);
+}
+
+.court-assign-slot.is-occupied {
+  background: rgba(248, 250, 252, 0.95);
+}
+
+.court-schedule-page {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.court-schedule-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.55rem;
+}
+
+.court-schedule-court-button {
+  width: 100%;
+}
+
+.court-schedule-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.court-schedule-row {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0.7rem;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.court-schedule-time {
+  font-size: 1.25rem;
+  font-weight: 800;
+  line-height: 1.1;
+  color: #0f172a;
+}
+
+.court-schedule-body {
+  display: grid;
+  gap: 0.32rem;
+}
+
+.court-schedule-teams {
+  margin: 0;
+  font-size: 0.96rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.court-schedule-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  color: #475569;
+}
+
+.court-schedule-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.14rem 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.court-schedule-status--live {
+  background: rgba(220, 38, 38, 0.16);
+  border: 1px solid rgba(220, 38, 38, 0.42);
+  color: #b91c1c;
+}
+
+.court-schedule-status--final {
+  background: rgba(100, 116, 139, 0.2);
+  border: 1px solid rgba(100, 116, 139, 0.38);
+  color: #334155;
+}
+
+.court-schedule-status--scheduled {
+  background: rgba(37, 99, 235, 0.14);
+  border: 1px solid rgba(37, 99, 235, 0.32);
+  color: #1d4ed8;
 }
 
 .playoff-ref-editor {
@@ -2753,6 +2980,10 @@ button:disabled {
   .phase1-pool-board {
     grid-template-columns: 1fr;
   }
+
+  .court-assign-board {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -2956,6 +3187,15 @@ button:disabled {
 
   .tournament-set-actions {
     grid-template-columns: 1fr;
+  }
+
+  .court-schedule-row {
+    grid-template-columns: 1fr;
+    gap: 0.55rem;
+  }
+
+  .court-schedule-time {
+    font-size: 1.1rem;
   }
 }
 

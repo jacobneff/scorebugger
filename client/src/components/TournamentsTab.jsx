@@ -112,7 +112,7 @@ function SortableTeamCard({ team, index, disabled, onUpdate, onRemove }) {
 
       <div className="tournament-team-card-fields">
         <label className="input-label" htmlFor={`team-short-${team.rowId}`}>
-          Short name
+          Team name
         </label>
         <input
           id={`team-short-${team.rowId}`}
@@ -425,7 +425,7 @@ function TournamentsTab({
     const shortName = normalizeText(newTeamShortName);
     const logoUrl = normalizeLogoUrl(newTeamLogoUrl);
     if (!shortName) {
-      setTeamsError("Short name is required to add a team.");
+      setTeamsError("Team name is required to add a team.");
       return;
     }
 
@@ -607,7 +607,7 @@ function TournamentsTab({
       const shortName = normalizeText(row?.shortName);
 
       if (!shortName) {
-        setTeamsError(`Team ${index + 1} must include a short name.`);
+        setTeamsError(`Team ${index + 1} must include a team name.`);
         return;
       }
     }
@@ -853,7 +853,7 @@ function TournamentsTab({
           <div className="tournament-team-add-row">
             <div className="tournament-team-card-fields">
               <label className="input-label" htmlFor="team-add-shortname">
-                New short name
+                New team name
               </label>
               <input
                 id="team-add-shortname"
@@ -861,7 +861,7 @@ function TournamentsTab({
                 value={newTeamShortName}
                 disabled={teamEditDisabled || teamCreateBusy}
                 onChange={(event) => setNewTeamShortName(event.target.value)}
-                placeholder="ALP"
+                placeholder="ODU"
               />
             </div>
             <div className="tournament-team-card-fields">

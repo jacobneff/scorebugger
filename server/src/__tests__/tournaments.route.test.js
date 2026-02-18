@@ -7,6 +7,7 @@ const { MongoMemoryServer } = require('mongodb-memory-server');
 const tournamentRoutes = require('../routes/tournaments');
 const tournamentTeamRoutes = require('../routes/tournamentTeams');
 const User = require('../models/User');
+const Match = require('../models/Match');
 const Tournament = require('../models/Tournament');
 const TournamentTeam = require('../models/TournamentTeam');
 
@@ -254,5 +255,120 @@ describe('tournament routes', () => {
       .sort({ orderIndex: 1 })
       .lean();
     expect(persisted.map((team) => String(team._id))).toEqual(desiredOrder);
+  });
+
+  test('public court schedule endpoint filters by court and sorts by roundBlock', async () => {
+    const tournament = await Tournament.create({
+      name: 'Court Schedule Test',
+      date: new Date('2026-08-12T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'COURT1',
+      createdByUserId: user._id,
+    });
+
+    const [alpha, bravo, charlie] = await TournamentTeam.insertMany(
+      [
+        { tournamentId: tournament._id, name: 'Alpha', shortName: 'ALP', orderIndex: 1 },
+        { tournamentId: tournament._id, name: 'Bravo', shortName: 'BRV', orderIndex: 2 },
+        { tournamentId: tournament._id, name: 'Charlie', shortName: 'CHR', orderIndex: 3 },
+      ],
+      { ordered: true }
+    );
+
+    await Match.insertMany(
+      [
+        {
+          tournamentId: tournament._id,
+          phase: 'phase2',
+          poolId: null,
+          roundBlock: 5,
+          facility: 'SRC',
+          court: 'SRC-1',
+          teamAId: bravo._id,
+          teamBId: charlie._id,
+          refTeamIds: [alpha._id],
+          status: 'scheduled',
+        },
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          poolId: null,
+          roundBlock: 1,
+          facility: 'SRC',
+          court: 'SRC-1',
+          teamAId: alpha._id,
+          teamBId: bravo._id,
+          refTeamIds: [charlie._id],
+          status: 'final',
+          result: {
+            winnerTeamId: alpha._id,
+            loserTeamId: bravo._id,
+            setsWonA: 2,
+            setsWonB: 0,
+            setsPlayed: 2,
+            pointsForA: 50,
+            pointsAgainstA: 30,
+            pointsForB: 30,
+            pointsAgainstB: 50,
+            setScores: [
+              { setNo: 1, a: 25, b: 15 },
+              { setNo: 2, a: 25, b: 15 },
+            ],
+          },
+        },
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          poolId: null,
+          roundBlock: 1,
+          facility: 'VC',
+          court: 'VC-1',
+          teamAId: alpha._id,
+          teamBId: charlie._id,
+          refTeamIds: [bravo._id],
+          status: 'scheduled',
+        },
+      ],
+      { ordered: true }
+    );
+
+    const courts = await request(app).get('/api/tournaments/code/COURT1/courts');
+
+    expect(courts.statusCode).toBe(200);
+    expect(Array.isArray(courts.body.courts)).toBe(true);
+    expect(courts.body.courts).toHaveLength(5);
+    expect(courts.body.courts.find((court) => court.code === 'SRC-1')).toEqual(
+      expect.objectContaining({
+        code: 'SRC-1',
+        label: 'SRC Court 1',
+        facility: 'SRC',
+      })
+    );
+
+    const schedule = await request(app).get('/api/tournaments/code/COURT1/courts/SRC-1/schedule');
+
+    expect(schedule.statusCode).toBe(200);
+    expect(schedule.body.court).toEqual(
+      expect.objectContaining({
+        code: 'SRC-1',
+        label: 'SRC Court 1',
+      })
+    );
+    expect(schedule.body.matches).toHaveLength(2);
+    expect(schedule.body.matches.map((match) => match.roundBlock)).toEqual([1, 5]);
+    expect(schedule.body.matches.every((match) => ['phase1', 'phase2'].includes(match.phase))).toBe(true);
+    expect(schedule.body.matches[0]).toEqual(
+      expect.objectContaining({
+        phase: 'phase1',
+        phaseLabel: 'Pool Play 1',
+        teamA: 'ALP',
+        teamB: 'BRV',
+        refs: ['CHR'],
+        score: expect.objectContaining({
+          setsA: 2,
+          setsB: 0,
+        }),
+      })
+    );
   });
 });

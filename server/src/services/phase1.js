@@ -1,5 +1,7 @@
 const PHASE1_POOL_NAMES = ['A', 'B', 'C', 'D', 'E'];
 
+const PHASE1_COURT_ORDER = ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1', 'VC-2'];
+
 const PHASE1_POOL_HOME_COURTS = {
   A: 'SRC-1',
   B: 'SRC-2',
@@ -8,7 +10,13 @@ const PHASE1_POOL_HOME_COURTS = {
   E: 'VC-2',
 };
 
-const PHASE1_COURT_ORDER = ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1', 'VC-2'];
+const COURT_DISPLAY_LABELS = Object.freeze({
+  'SRC-1': 'SRC Court 1',
+  'SRC-2': 'SRC Court 2',
+  'SRC-3': 'SRC Court 3',
+  'VC-1': 'Volleyball Center 1',
+  'VC-2': 'Volleyball Center 2',
+});
 
 const PHASE1_MATCH_ORDER = [
   {
@@ -65,20 +73,36 @@ function normalizeScoringConfig(rawScoring) {
   };
 }
 
+function normalizeCourtCode(value) {
+  return typeof value === 'string' ? value.trim().toUpperCase() : '';
+}
+
+function isValidHomeCourt(value) {
+  const normalized = normalizeCourtCode(value);
+  return PHASE1_COURT_ORDER.includes(normalized);
+}
+
 function getFacilityFromCourt(court) {
-  if (typeof court !== 'string') {
+  const normalized = normalizeCourtCode(court);
+
+  if (!normalized) {
     return null;
   }
 
-  if (court.startsWith('SRC-')) {
+  if (normalized.startsWith('SRC-')) {
     return 'SRC';
   }
 
-  if (court.startsWith('VC-')) {
+  if (normalized.startsWith('VC-')) {
     return 'VC';
   }
 
   return null;
+}
+
+function mapCourtDisplayLabel(courtCode) {
+  const normalized = normalizeCourtCode(courtCode);
+  return COURT_DISPLAY_LABELS[normalized] || courtCode;
 }
 
 function sortPoolsByPhase1Name(a, b) {
@@ -125,6 +149,7 @@ function buildSerpentineAssignments(teams) {
 }
 
 module.exports = {
+  COURT_DISPLAY_LABELS,
   PHASE1_COURT_ORDER,
   PHASE1_MATCH_ORDER,
   PHASE1_POOL_HOME_COURTS,
@@ -132,6 +157,9 @@ module.exports = {
   SCORING_DEFAULTS,
   buildSerpentineAssignments,
   getFacilityFromCourt,
+  isValidHomeCourt,
+  mapCourtDisplayLabel,
+  normalizeCourtCode,
   normalizeScoringConfig,
   sortPoolsByPhase1Name,
 };

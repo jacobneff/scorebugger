@@ -210,6 +210,6 @@ describe("Home tournaments tab", () => {
       await screen.findByText(/Team edits are locked because this tournament is in/i)
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save team fields" })).toBeDisabled();
-    expect(await screen.findByLabelText("New short name")).toBeDisabled();
+    expect(await screen.findByLabelText("New team name")).toBeDisabled();
   });
 });

@@ -1,7 +1,7 @@
 const Match = require('../models/Match');
 const Pool = require('../models/Pool');
 const Tournament = require('../models/Tournament');
-const { PHASE1_POOL_NAMES } = require('./phase1');
+const { PHASE1_POOL_NAMES, isValidHomeCourt } = require('./phase1');
 const { computeStandingsBundle } = require('./tournamentEngine/standings');
 
 const PHASE2_POOL_NAMES = ['F', 'G', 'H', 'I', 'J'];
@@ -231,16 +231,20 @@ const buildInitialPhase2State = (placementsByPool) =>
     })
   );
 
-const buildPhase2PoolPayloadsFromState = (state, warningsByPool) =>
+const buildPhase2PoolPayloadsFromState = (state, warningsByPool, homeCourtByPoolName = {}) =>
   PHASE2_POOL_NAMES.map((poolName) => {
     const orderedEntries = [...(state[poolName] || [])].sort(
       (entryA, entryB) => (entryA.slotIndex ?? 0) - (entryB.slotIndex ?? 0)
     );
+    const preferredHomeCourt = homeCourtByPoolName[poolName];
 
     return {
       name: poolName,
       teamIds: orderedEntries.map((entry) => entry.teamId),
-      homeCourt: PHASE2_POOL_HOME_COURTS[poolName] || null,
+      homeCourt:
+        preferredHomeCourt && isValidHomeCourt(preferredHomeCourt)
+          ? preferredHomeCourt
+          : PHASE2_POOL_HOME_COURTS[poolName] || null,
       rematchWarnings: Array.isArray(warningsByPool?.[poolName]) ? warningsByPool[poolName] : [],
     };
   });
@@ -550,10 +554,28 @@ async function buildPhase2PoolsFromPhase1Results(tournamentId) {
     return placementResult;
   }
 
-  const playedPairs = await loadFinalizedPhase1PlayedPairs(tournamentId);
+  const [playedPairs, existingPhase2Pools] = await Promise.all([
+    loadFinalizedPhase1PlayedPairs(tournamentId),
+    Pool.find({
+      tournamentId,
+      phase: 'phase2',
+      name: { $in: PHASE2_POOL_NAMES },
+    })
+      .select('name homeCourt')
+      .lean(),
+  ]);
   const initialState = buildInitialPhase2State(placementResult.placements);
   const resolved = resolvePhase2Rematches(initialState, playedPairs);
-  const pools = buildPhase2PoolPayloadsFromState(resolved.state, resolved.warningsByPool);
+  const existingHomeCourtByPoolName = Object.fromEntries(
+    (Array.isArray(existingPhase2Pools) ? existingPhase2Pools : [])
+      .filter((pool) => pool?.name && pool?.homeCourt && isValidHomeCourt(pool.homeCourt))
+      .map((pool) => [pool.name, pool.homeCourt])
+  );
+  const pools = buildPhase2PoolPayloadsFromState(
+    resolved.state,
+    resolved.warningsByPool,
+    existingHomeCourtByPoolName
+  );
 
   return {
     ok: true,

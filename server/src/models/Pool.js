@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 
+const ALLOWED_HOME_COURTS = ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1', 'VC-2'];
+
 const PoolRematchWarningSchema = new mongoose.Schema(
   {
     teamIdA: {
@@ -52,6 +54,11 @@ const PoolSchema = new mongoose.Schema(
       type: String,
       default: null,
       trim: true,
+      set: (value) => (typeof value === 'string' ? value.trim().toUpperCase() : value),
+      validate: {
+        validator: (value) => value === null || value === undefined || ALLOWED_HOME_COURTS.includes(value),
+        message: 'homeCourt must be one of SRC-1, SRC-2, SRC-3, VC-1, or VC-2.',
+      },
     },
     rematchWarnings: {
       type: [PoolRematchWarningSchema],

@@ -548,6 +548,70 @@ describe('tournament routes', () => {
     );
   });
 
+  test('team create accepts label-only location and patch clears existing coordinates', async () => {
+    const tournament = await Tournament.create({
+      name: 'Location Team Test',
+      date: new Date('2026-08-10T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'LOCTST',
+      createdByUserId: user._id,
+    });
+
+    const created = await request(app)
+      .post(`/api/tournaments/${tournament._id}/teams`)
+      .set(authHeader())
+      .send({
+        shortName: 'ODU',
+        location: {
+          label: 'Norfolk, VA',
+        },
+      });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.body.location).toEqual({
+      label: 'Norfolk, VA',
+      latitude: null,
+      longitude: null,
+    });
+
+    await TournamentTeam.updateOne(
+      { _id: created.body._id },
+      {
+        $set: {
+          location: {
+            label: 'Old Coordinates',
+            latitude: 36.8863,
+            longitude: -76.3057,
+          },
+        },
+      }
+    );
+
+    const patched = await request(app)
+      .patch(`/api/tournament-teams/${created.body._id}`)
+      .set(authHeader())
+      .send({
+        location: {
+          label: 'Virginia Beach, VA',
+        },
+      });
+
+    expect(patched.statusCode).toBe(200);
+    expect(patched.body.location).toEqual({
+      label: 'Virginia Beach, VA',
+      latitude: null,
+      longitude: null,
+    });
+  });
+
+  test('team location-search endpoint is not available', async () => {
+    const response = await request(app)
+      .get('/api/tournament-teams/location-search?q=Norfolk')
+      .set(authHeader());
+
+    expect(response.statusCode).toBe(404);
+  });
+
   test('bulk team reorder enforces permutation and persists orderIndex', async () => {
     const tournament = await Tournament.create({
       name: 'Reorder Test',

@@ -17,13 +17,17 @@ const PLAYOFF_BRACKET_LABELS = {
   silver: 'Silver',
   bronze: 'Bronze',
 };
-
-const authHeaders = (token) => ({
-  Authorization: `Bearer ${token}`,
+const PLAYOFF_REF_REFERENCE_LABELS = Object.freeze({
+  'gold:R2:1vW45': 'Loser of Gold 2v3',
+  'silver:R2:1vW45': 'Loser of Silver 2v3',
+  'bronze:R1:2v3': 'Loser of Gold 4v5',
+  'bronze:R2:1vW45': 'Loser of Silver 4v5',
+  'gold:R3:final': 'Loser of Gold 1 vs W(4/5)',
+  'silver:R3:final': 'Loser of Silver 1 vs W(4/5)',
+  'bronze:R3:final': 'Closest loser to university from Bronze 2v3 / Bronze 1 vs W(4/5)',
 });
 
-const jsonHeaders = (token) => ({
-  'Content-Type': 'application/json',
+const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
 });
 
@@ -96,6 +100,8 @@ const formatBracketMatchSummary = (match, seedByTeamId) => {
 };
 const formatLiveSummary = (summary) =>
   `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
+const getPlayoffRefReferenceLabel = (match) =>
+  PLAYOFF_REF_REFERENCE_LABELS[match?.bracketMatchKey] || '';
 
 function TournamentPlayoffsAdmin() {
   const { id } = useParams();
@@ -112,8 +118,6 @@ function TournamentPlayoffsAdmin() {
   const [refreshing, setRefreshing] = useState(false);
   const [generateLoading, setGenerateLoading] = useState(false);
   const [matchActionId, setMatchActionId] = useState('');
-  const [savingRefMatchId, setSavingRefMatchId] = useState('');
-  const [refSelections, setRefSelections] = useState({});
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
@@ -351,36 +355,6 @@ function TournamentPlayoffsAdmin() {
     [fetchJson, matchActionId, refreshPlayoffs, token]
   );
 
-  const handleSaveRefs = useCallback(
-    async (matchId) => {
-      if (!token || !matchId || savingRefMatchId) {
-        return;
-      }
-
-      const selectedRefId = refSelections[matchId] || '';
-      setSavingRefMatchId(matchId);
-      setError('');
-      setMessage('');
-
-      try {
-        await fetchJson(`${API_URL}/api/matches/${matchId}/refs`, {
-          method: 'PATCH',
-          headers: jsonHeaders(token),
-          body: JSON.stringify({
-            refTeamIds: selectedRefId ? [selectedRefId] : [],
-          }),
-        });
-        await refreshPlayoffs();
-        setMessage('Ref assignment updated.');
-      } catch (saveError) {
-        setError(saveError.message || 'Unable to save refs');
-      } finally {
-        setSavingRefMatchId('');
-      }
-    },
-    [fetchJson, refSelections, refreshPlayoffs, savingRefMatchId, token]
-  );
-
   const matchesById = useMemo(
     () => Object.fromEntries(playoffs.matches.map((match) => [match._id, match])),
     [playoffs.matches]
@@ -475,9 +449,7 @@ function TournamentPlayoffsAdmin() {
                           status: match?.status,
                         });
                         const matchStatusMeta = getMatchStatusMeta(match?.status);
-                        const currentRefId = match?.refTeamIds?.[0] || '';
-                        const selectedRefId = refSelections[slot.matchId] ?? currentRefId;
-                        const canEditRefs = Boolean(match) && Number(match.roundBlock) > 7;
+                        const refReferenceLabel = getPlayoffRefReferenceLabel(match);
                         const canFinalize = Boolean(match?.teamAId && match?.teamBId);
                         const liveSummary = match ? liveSummariesByMatchId[match._id] : null;
 
@@ -492,32 +464,14 @@ function TournamentPlayoffsAdmin() {
                             <td>
                               {!slot.matchId ? (
                                 <span className="subtle">-</span>
-                              ) : canEditRefs ? (
-                                <div className="playoff-ref-editor">
-                                  <select
-                                    value={selectedRefId}
-                                    onChange={(event) =>
-                                      setRefSelections((previous) => ({
-                                        ...previous,
-                                        [slot.matchId]: event.target.value,
-                                      }))
-                                    }
-                                  >
-                                    <option value="">TBD</option>
-                                    {teams.map((team) => (
-                                      <option key={team._id} value={team._id}>
-                                        {formatRefTeamLabel(team)}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <button
-                                    className="secondary-button phase1-inline-button"
-                                    type="button"
-                                    onClick={() => handleSaveRefs(slot.matchId)}
-                                    disabled={Boolean(savingRefMatchId)}
-                                  >
-                                    {savingRefMatchId === slot.matchId ? 'Saving...' : 'Save'}
-                                  </button>
+                              ) : refReferenceLabel ? (
+                                <div className="playoff-ref-reference">
+                                  <p>{refReferenceLabel}</p>
+                                  <p className="subtle">
+                                    {slot.refs.length > 0
+                                      ? `Assigned: ${slot.refs.join(', ')}`
+                                      : 'Awaiting prior result'}
+                                  </p>
                                 </div>
                               ) : slot.refs.length > 0 ? (
                                 slot.refs.join(', ')

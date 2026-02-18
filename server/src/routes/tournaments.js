@@ -97,6 +97,7 @@ const TOURNAMENT_DETAILS_DEFAULTS = Object.freeze({
   parkingInfo: '',
   mapImageUrls: [],
 });
+const TEAM_LOCATION_LABEL_MAX_LENGTH = 160;
 
 const phase2PoolNameIndex = PHASE2_POOL_NAMES.reduce((lookup, poolName, index) => {
   lookup[poolName] = index;
@@ -582,6 +583,96 @@ function normalizeTournamentDetailsPatch(rawBody) {
   return { updates, error: null };
 }
 
+function parseTeamLocationCoordinate(value, { min, max, label }) {
+  if (value === null || value === undefined || value === '') {
+    return { value: null, error: null };
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return { value: null, error: `${label} must be a number` };
+  }
+
+  if (parsed < min || parsed > max) {
+    return { value: null, error: `${label} must be between ${min} and ${max}` };
+  }
+
+  return { value: parsed, error: null };
+}
+
+function normalizeTeamLocationPayload(rawLocation, fieldPrefix = 'location') {
+  if (rawLocation === undefined) {
+    return { location: undefined, error: null };
+  }
+
+  if (rawLocation === null) {
+    return {
+      location: {
+        label: '',
+        latitude: null,
+        longitude: null,
+      },
+      error: null,
+    };
+  }
+
+  if (!rawLocation || typeof rawLocation !== 'object' || Array.isArray(rawLocation)) {
+    return { location: null, error: `${fieldPrefix} must be an object or null` };
+  }
+
+  let label = '';
+  if (rawLocation.label !== undefined) {
+    if (rawLocation.label !== null && typeof rawLocation.label !== 'string') {
+      return { location: null, error: `${fieldPrefix}.label must be a string or null` };
+    }
+
+    label = typeof rawLocation.label === 'string' ? rawLocation.label.trim() : '';
+    if (label.length > TEAM_LOCATION_LABEL_MAX_LENGTH) {
+      return {
+        location: null,
+        error: `${fieldPrefix}.label must be ${TEAM_LOCATION_LABEL_MAX_LENGTH} characters or fewer`,
+      };
+    }
+  }
+
+  const latitudeResult = parseTeamLocationCoordinate(rawLocation.latitude, {
+    min: -90,
+    max: 90,
+    label: `${fieldPrefix}.latitude`,
+  });
+  if (latitudeResult.error) {
+    return { location: null, error: latitudeResult.error };
+  }
+
+  const longitudeResult = parseTeamLocationCoordinate(rawLocation.longitude, {
+    min: -180,
+    max: 180,
+    label: `${fieldPrefix}.longitude`,
+  });
+  if (longitudeResult.error) {
+    return { location: null, error: longitudeResult.error };
+  }
+
+  const hasLatitude = Number.isFinite(latitudeResult.value);
+  const hasLongitude = Number.isFinite(longitudeResult.value);
+
+  if (hasLatitude !== hasLongitude) {
+    return {
+      location: null,
+      error: `${fieldPrefix}.latitude and ${fieldPrefix}.longitude must both be provided together`,
+    };
+  }
+
+  return {
+    location: {
+      label,
+      latitude: hasLatitude ? latitudeResult.value : null,
+      longitude: hasLongitude ? longitudeResult.value : null,
+    },
+    error: null,
+  };
+}
+
 function validateTeamPayload(rawTeam, index) {
   if (!rawTeam || typeof rawTeam !== 'object') {
     return `Invalid team payload at index ${index}`;
@@ -611,6 +702,11 @@ function validateTeamPayload(rawTeam, index) {
     }
   }
 
+  const normalizedLocation = normalizeTeamLocationPayload(rawTeam.location, `location at index ${index}`);
+  if (normalizedLocation.error) {
+    return normalizedLocation.error;
+  }
+
   return null;
 }
 
@@ -633,6 +729,13 @@ function buildTeamInsertPayload(rawTeam, tournamentId, orderIndex = null, public
 
   if (rawTeam.seed !== undefined) {
     team.seed = rawTeam.seed === null ? null : Number(rawTeam.seed);
+  }
+
+  if (rawTeam.location !== undefined) {
+    const normalizedLocation = normalizeTeamLocationPayload(rawTeam.location);
+    if (normalizedLocation.location !== undefined) {
+      team.location = normalizedLocation.location;
+    }
   }
 
   if (isValidTeamPublicCode(publicTeamCode)) {
@@ -708,11 +811,18 @@ function serializeTeam(team) {
     return null;
   }
 
+  const location = normalizeTeamLocationPayload(team.location).location;
+
   return {
     id: toIdString(team._id),
     name: team.name ?? '',
     shortName: team.shortName ?? '',
     logoUrl: team.logoUrl ?? null,
+    location: location || {
+      label: '',
+      latitude: null,
+      longitude: null,
+    },
     orderIndex: normalizeTeamOrderIndex(team.orderIndex),
     seed: team.seed ?? null,
   };
@@ -727,6 +837,12 @@ function serializePool(pool) {
               name: team.name ?? '',
               shortName: team.shortName ?? '',
               logoUrl: team.logoUrl ?? null,
+              location:
+                normalizeTeamLocationPayload(team.location).location || {
+                  label: '',
+                  latitude: null,
+                  longitude: null,
+                },
               orderIndex: normalizeTeamOrderIndex(team.orderIndex),
               seed: team.seed ?? null,
             }

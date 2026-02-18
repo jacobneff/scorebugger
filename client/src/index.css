@@ -1210,7 +1210,7 @@ textarea:focus {
 
 .tournament-team-add-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 0.65rem;
   align-items: end;
 }
@@ -1257,6 +1257,29 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 0.65rem;
   align-items: end;
+}
+
+.tournament-team-card-fields-row--location {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.tournament-team-card-fields-row--search {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.tournament-team-location-results {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.tournament-team-location-result {
+  text-align: left;
+  justify-content: flex-start;
+}
+
+.tournament-team-add-row .tournament-team-location-results,
+.tournament-team-add-row .error {
+  grid-column: 1 / -1;
 }
 
 .tournament-team-drag-handle {
@@ -3518,6 +3541,15 @@ textarea:focus {
   border: 1px solid rgba(148, 163, 184, 0.5);
   padding: 0.35rem 0.45rem;
   background: #ffffff;
+}
+
+.playoff-ref-reference {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.playoff-ref-reference p {
+  margin: 0;
 }
 
 .playoff-bracket-grid {

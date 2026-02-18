@@ -13,10 +13,97 @@ const router = express.Router();
 
 const isObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
+const TEAM_LOCATION_LABEL_MAX_LENGTH = 160;
 const DUPLICATE_KEY_ERROR_CODE = 11000;
 const isDuplicateTeamPublicCodeError = (error) =>
   error?.code === DUPLICATE_KEY_ERROR_CODE &&
   (error?.keyPattern?.publicTeamCode || error?.keyValue?.publicTeamCode);
+
+function parseCoordinate(value, { min, max, label }) {
+  if (value === null || value === undefined || value === '') {
+    return { value: null, error: null };
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return { value: null, error: `${label} must be a valid number` };
+  }
+
+  if (parsed < min || parsed > max) {
+    return { value: null, error: `${label} must be between ${min} and ${max}` };
+  }
+
+  return { value: parsed, error: null };
+}
+
+function normalizeTeamLocationInput(location) {
+  if (location === null) {
+    return {
+      value: {
+        label: '',
+        latitude: null,
+        longitude: null,
+      },
+      error: null,
+    };
+  }
+
+  if (!location || typeof location !== 'object' || Array.isArray(location)) {
+    return { value: null, error: 'location must be an object or null' };
+  }
+
+  let label = '';
+  if (location.label !== undefined) {
+    if (location.label !== null && typeof location.label !== 'string') {
+      return { value: null, error: 'location.label must be a string or null' };
+    }
+    label = typeof location.label === 'string' ? location.label.trim() : '';
+    if (label.length > TEAM_LOCATION_LABEL_MAX_LENGTH) {
+      return {
+        value: null,
+        error: `location.label must be ${TEAM_LOCATION_LABEL_MAX_LENGTH} characters or fewer`,
+      };
+    }
+  }
+
+  const latitudeResult = parseCoordinate(location.latitude, {
+    min: -90,
+    max: 90,
+    label: 'location.latitude',
+  });
+  if (latitudeResult.error) {
+    return { value: null, error: latitudeResult.error };
+  }
+
+  const longitudeResult = parseCoordinate(location.longitude, {
+    min: -180,
+    max: 180,
+    label: 'location.longitude',
+  });
+  if (longitudeResult.error) {
+    return { value: null, error: longitudeResult.error };
+  }
+
+  const hasLatitude = Number.isFinite(latitudeResult.value);
+  const hasLongitude = Number.isFinite(longitudeResult.value);
+
+  if (hasLatitude !== hasLongitude) {
+    return {
+      value: null,
+      error: 'location.latitude and location.longitude must both be provided together',
+    };
+  }
+
+  return {
+    value: {
+      label,
+      latitude: hasLatitude ? latitudeResult.value : null,
+      longitude: hasLongitude ? longitudeResult.value : null,
+    },
+    error: null,
+  };
+}
 
 async function findOwnedTeam(teamId, userId) {
   const team = await TournamentTeam.findById(teamId);
@@ -95,6 +182,16 @@ router.patch('/:teamId', requireAuth, async (req, res, next) => {
       } else {
         updates.seed = null;
       }
+    }
+
+    if (req.body?.location !== undefined) {
+      const normalizedLocation = normalizeTeamLocationInput(req.body.location);
+
+      if (normalizedLocation.error) {
+        return res.status(400).json({ message: normalizedLocation.error });
+      }
+
+      updates.location = normalizedLocation.value;
     }
 
     if (Object.keys(updates).length === 0) {

@@ -1097,7 +1097,7 @@ function TournamentPhase1Admin() {
             <TournamentSchedulingTabs tournamentId={id} activeTab="phase1" />
           </div>
           <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/?tab=tournaments&tournamentId=${id}`}>
+            <a className="secondary-button" href={`/tournaments/${id}/teams`}>
               Manage Teams
             </a>
             <button

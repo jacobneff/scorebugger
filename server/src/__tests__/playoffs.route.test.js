@@ -228,6 +228,126 @@ describe('playoff generation + progression routes', () => {
     expect(storedGoldR2.teamBId.toString()).toBe(goldR145.teamAId);
   });
 
+  test('cross-bracket ref sources are assigned from required predecessor losers', async () => {
+    const tournament = await createOwnedTournament();
+    await seedTeamsAndPhase2Override(tournament._id);
+    const generate = await generatePlayoffs(tournament._id);
+
+    const byKey = Object.fromEntries(
+      generate.body.matches.map((match) => [match.bracketMatchKey, match])
+    );
+    const goldR145 = byKey['gold:R1:4v5'];
+    const silverR145 = byKey['silver:R1:4v5'];
+    const bronzeR123 = byKey['bronze:R1:2v3'];
+    const bronzeR2 = byKey['bronze:R2:1vW45'];
+
+    const initialBronzeR123 = await Match.findById(bronzeR123._id).lean();
+    const initialBronzeR2 = await Match.findById(bronzeR2._id).lean();
+    expect(initialBronzeR123.refTeamIds).toEqual([]);
+    expect(initialBronzeR2.refTeamIds).toEqual([]);
+
+    await setScoreboardSets(goldR145.scoreboardId, true);
+    const finalizeGold = await request(app)
+      .post(`/api/matches/${goldR145._id}/finalize`)
+      .set(authHeader());
+    expect(finalizeGold.statusCode).toBe(200);
+
+    const [storedGoldR145, storedBronzeR123] = await Promise.all([
+      Match.findById(goldR145._id).lean(),
+      Match.findById(bronzeR123._id).lean(),
+    ]);
+    expect(storedBronzeR123.refTeamIds.map((teamId) => teamId.toString())).toEqual([
+      storedGoldR145.result.loserTeamId.toString(),
+    ]);
+
+    await setScoreboardSets(silverR145.scoreboardId, false);
+    const finalizeSilver = await request(app)
+      .post(`/api/matches/${silverR145._id}/finalize`)
+      .set(authHeader());
+    expect(finalizeSilver.statusCode).toBe(200);
+
+    const [storedSilverR145, storedBronzeR2] = await Promise.all([
+      Match.findById(silverR145._id).lean(),
+      Match.findById(bronzeR2._id).lean(),
+    ]);
+    expect(storedBronzeR2.refTeamIds.map((teamId) => teamId.toString())).toEqual([
+      storedSilverR145.result.loserTeamId.toString(),
+    ]);
+  });
+
+  test('bronze final ref picks the loser closest to the university when both candidates are known', async () => {
+    const tournament = await createOwnedTournament();
+    const teams = await seedTeamsAndPhase2Override(tournament._id);
+    await TournamentTeam.updateOne(
+      { _id: teams[10]._id },
+      {
+        $set: {
+          location: {
+            label: 'Near Campus',
+            latitude: 36.8863,
+            longitude: -76.3057,
+          },
+        },
+      }
+    );
+    await TournamentTeam.updateOne(
+      { _id: teams[11]._id },
+      {
+        $set: {
+          location: {
+            label: 'Far Away',
+            latitude: 34.0522,
+            longitude: -118.2437,
+          },
+        },
+      }
+    );
+
+    const generate = await generatePlayoffs(tournament._id);
+    const byKey = Object.fromEntries(
+      generate.body.matches.map((match) => [match.bracketMatchKey, match])
+    );
+
+    const bronzeR145 = byKey['bronze:R1:4v5'];
+    const bronzeR123 = byKey['bronze:R1:2v3'];
+    const bronzeR2 = byKey['bronze:R2:1vW45'];
+    const bronzeFinal = byKey['bronze:R3:final'];
+
+    await setScoreboardSets(bronzeR145.scoreboardId, true);
+    const finalizeBronzeR145 = await request(app)
+      .post(`/api/matches/${bronzeR145._id}/finalize`)
+      .set(authHeader());
+    expect(finalizeBronzeR145.statusCode).toBe(200);
+
+    await setScoreboardSets(bronzeR123.scoreboardId, false);
+    const finalizeBronzeR123 = await request(app)
+      .post(`/api/matches/${bronzeR123._id}/finalize`)
+      .set(authHeader());
+    expect(finalizeBronzeR123.statusCode).toBe(200);
+
+    await setScoreboardSets(bronzeR2.scoreboardId, false);
+    const finalizeBronzeR2 = await request(app)
+      .post(`/api/matches/${bronzeR2._id}/finalize`)
+      .set(authHeader());
+    expect(finalizeBronzeR2.statusCode).toBe(200);
+
+    const [storedBronzeR123, storedBronzeR2, storedBronzeFinal] = await Promise.all([
+      Match.findById(bronzeR123._id).lean(),
+      Match.findById(bronzeR2._id).lean(),
+      Match.findById(bronzeFinal._id).lean(),
+    ]);
+
+    const candidateLosers = [
+      storedBronzeR123.result?.loserTeamId?.toString(),
+      storedBronzeR2.result?.loserTeamId?.toString(),
+    ].filter(Boolean);
+    expect(candidateLosers).toContain(teams[10]._id.toString());
+    expect(candidateLosers).toContain(teams[11]._id.toString());
+    expect(storedBronzeFinal.refTeamIds.map((teamId) => teamId.toString())).toEqual([
+      teams[10]._id.toString(),
+    ]);
+  });
+
   test('unfinalizing an upstream playoff match invalidates downstream finalized matches', async () => {
     const tournament = await createOwnedTournament();
     await seedTeamsAndPhase2Override(tournament._id);

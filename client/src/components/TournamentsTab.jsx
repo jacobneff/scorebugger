@@ -157,6 +157,49 @@ const normalizeLogoUrl = (value) => {
   return trimmed ? trimmed : null;
 };
 
+const normalizeTeamLocationRecord = (location) => {
+  const source = location && typeof location === "object" ? location : {};
+  const toNullableCoordinate = (value) => {
+    if (value === null || value === undefined || value === "") {
+      return null;
+    }
+
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  return {
+    label: typeof source.label === "string" ? source.label : "",
+    latitude: toNullableCoordinate(source.latitude),
+    longitude: toNullableCoordinate(source.longitude),
+  };
+};
+
+const buildTeamLocationPayload = ({ label }) => {
+  const normalizedLabel = normalizeText(label);
+
+  return {
+    location: {
+      label: normalizedLabel,
+      latitude: null,
+      longitude: null,
+    },
+    hasAnyInput: Boolean(normalizedLabel),
+    error: "",
+  };
+};
+
+const areTeamLocationsEqual = (left, right) => {
+  const normalizedLeft = normalizeTeamLocationRecord(left);
+  const normalizedRight = normalizeTeamLocationRecord(right);
+
+  return (
+    normalizedLeft.label === normalizedRight.label &&
+    normalizedLeft.latitude === normalizedRight.latitude &&
+    normalizedLeft.longitude === normalizedRight.longitude
+  );
+};
+
 const toAbsoluteUrl = (value) => {
   const raw = typeof value === "string" ? value.trim() : "";
   if (!raw) {
@@ -223,7 +266,15 @@ const reorderRows = (rows, activeId, overId) => {
   return arrayMove(rows, sourceIndex, targetIndex);
 };
 
-function SortableTeamCard({ team, index, disabled, onUpdate, onRemove }) {
+function SortableTeamCard({
+  team,
+  index,
+  rosterDisabled,
+  nameDisabled,
+  assetsDisabled,
+  onUpdate,
+  onRemove,
+}) {
   const {
     attributes,
     listeners,
@@ -233,7 +284,7 @@ function SortableTeamCard({ team, index, disabled, onUpdate, onRemove }) {
     isDragging,
   } = useSortable({
     id: team.rowId,
-    disabled,
+    disabled: rosterDisabled,
   });
 
   const style = {
@@ -253,7 +304,7 @@ function SortableTeamCard({ team, index, disabled, onUpdate, onRemove }) {
           type="button"
           className="tournament-team-drag-handle"
           aria-label={`Drag team ${index + 1}`}
-          disabled={disabled}
+          disabled={rosterDisabled}
           {...attributes}
           {...listeners}
         >
@@ -270,7 +321,7 @@ function SortableTeamCard({ team, index, disabled, onUpdate, onRemove }) {
             id={`team-name-${team.rowId}`}
             type="text"
             value={team.name}
-            disabled={disabled}
+            disabled={nameDisabled}
             onChange={(event) => onUpdate(team.rowId, "name", event.target.value)}
           />
         </div>
@@ -283,7 +334,7 @@ function SortableTeamCard({ team, index, disabled, onUpdate, onRemove }) {
             id={`team-logo-${team.rowId}`}
             type="text"
             value={team.logoUrl}
-            disabled={disabled}
+            disabled={assetsDisabled}
             onChange={(event) => onUpdate(team.rowId, "logoUrl", event.target.value)}
           />
         </div>
@@ -291,11 +342,27 @@ function SortableTeamCard({ team, index, disabled, onUpdate, onRemove }) {
         <button
           type="button"
           className="ghost-button tournament-team-remove"
-          disabled={disabled}
+          disabled={rosterDisabled}
           onClick={() => onRemove(team.rowId)}
         >
           Remove
         </button>
+      </div>
+
+      <div className="tournament-team-card-fields-row tournament-team-card-fields-row--location">
+        <div className="tournament-team-card-fields">
+          <label className="input-label" htmlFor={`team-location-label-${team.rowId}`}>
+            Location label (optional)
+          </label>
+          <input
+            id={`team-location-label-${team.rowId}`}
+            type="text"
+            value={team.locationLabel || ""}
+            disabled={assetsDisabled}
+            onChange={(event) => onUpdate(team.rowId, "locationLabel", event.target.value)}
+            placeholder="Norfolk, VA"
+          />
+        </div>
       </div>
 
       {normalizeLogoUrl(team.logoUrl) && (
@@ -313,6 +380,7 @@ function TournamentsTab({
   initialTournamentId = "",
   onTournamentIdChange,
   onShowToast,
+  mode = "hub",
 }) {
   const navigate = useNavigate();
   const rowCounterRef = useRef(0);
@@ -336,6 +404,7 @@ function TournamentsTab({
   const [teamRows, setTeamRows] = useState([]);
   const [newTeamName, setNewTeamName] = useState("");
   const [newTeamLogoUrl, setNewTeamLogoUrl] = useState("");
+  const [newTeamLocationLabel, setNewTeamLocationLabel] = useState("");
   const [teamsLoading, setTeamsLoading] = useState(false);
   const [teamsSaving, setTeamsSaving] = useState(false);
   const [teamCreateBusy, setTeamCreateBusy] = useState(false);
@@ -348,6 +417,11 @@ function TournamentsTab({
   const [teamLinkActionTeamId, setTeamLinkActionTeamId] = useState("");
   const [copiedTeamLinkTeamId, setCopiedTeamLinkTeamId] = useState("");
   const [deletingTournamentId, setDeletingTournamentId] = useState("");
+  const normalizedMode =
+    mode === "details" || mode === "teams" ? mode : "hub";
+  const showCreateCard = normalizedMode === "hub";
+  const showDetailsSection = normalizedMode === "details";
+  const showTeamsSection = normalizedMode === "teams";
 
   const makeRowId = useCallback(() => {
     rowCounterRef.current += 1;
@@ -355,14 +429,18 @@ function TournamentsTab({
   }, []);
 
   const toDraftRow = useCallback(
-    (team = {}) => ({
-      rowId: makeRowId(),
-      _id: team?._id ? String(team._id) : "",
-      name: team?.name || team?.shortName || "",
-      shortName: team?.shortName || team?.name || "",
-      logoUrl: typeof team?.logoUrl === "string" ? team.logoUrl : "",
-      orderIndex: Number.isFinite(Number(team?.orderIndex)) ? Number(team.orderIndex) : null,
-    }),
+    (team = {}) => {
+      const location = normalizeTeamLocationRecord(team?.location);
+      return {
+        rowId: makeRowId(),
+        _id: team?._id ? String(team._id) : "",
+        name: team?.name || team?.shortName || "",
+        shortName: team?.shortName || team?.name || "",
+        logoUrl: typeof team?.logoUrl === "string" ? team.logoUrl : "",
+        locationLabel: location.label,
+        orderIndex: Number.isFinite(Number(team?.orderIndex)) ? Number(team.orderIndex) : null,
+      };
+    },
     [makeRowId]
   );
 
@@ -522,6 +600,7 @@ function TournamentsTab({
               name: team?.name || team?.shortName || "",
               shortName: team?.shortName || team?.name || "",
               logoUrl: typeof team?.logoUrl === "string" ? team.logoUrl : "",
+              location: normalizeTeamLocationRecord(team?.location),
               orderIndex: Number.isFinite(Number(team?.orderIndex))
                 ? Number(team.orderIndex)
                 : null,
@@ -600,12 +679,27 @@ function TournamentsTab({
     setDetailsMessage("");
     setNewTeamName("");
     setNewTeamLogoUrl("");
+    setNewTeamLocationLabel("");
     setCopiedTeamLinkTeamId("");
     setTeamLinkActionTeamId("");
-    loadSelectedTournament(selectedTournamentId);
-  }, [loadSelectedTournament, selectedTournamentId]);
+    if (normalizedMode === "hub") {
+      setSelectedTournament(null);
+      setDetailsDraft(createDetailsDraft());
+      setTeamsInitial([]);
+      setTeamRows([]);
+      setTeamLinks([]);
+      setTeamLinksError("");
+      setTeamLinksLoading(false);
+      setTeamsLoading(false);
+      return;
+    }
 
-  const canEditTeams = selectedTournament?.status === "setup";
+    loadSelectedTournament(selectedTournamentId);
+  }, [loadSelectedTournament, normalizedMode, selectedTournamentId]);
+
+  const canEditTeamRoster = selectedTournament?.status === "setup";
+  const canEditTeamNames = selectedTournament?.status === "setup";
+  const canEditTeamAssets = Boolean(selectedTournament);
   const currentTeamCount = teamRows.length;
 
   const teamWarnings = useMemo(() => {
@@ -747,7 +841,16 @@ function TournamentsTab({
   ]);
 
   const updateTeamRow = (rowId, field, value) => {
-    if (!canEditTeams || teamsSaving || teamOrderSaving) {
+    if (teamsSaving || teamOrderSaving) {
+      return;
+    }
+
+    const isNameField = field === "name" || field === "shortName";
+    if (isNameField && !canEditTeamNames) {
+      return;
+    }
+
+    if (!isNameField && !canEditTeamAssets) {
       return;
     }
 
@@ -765,14 +868,21 @@ function TournamentsTab({
   };
 
   const handleAddTeam = async () => {
-    if (!token || !selectedTournamentId || !canEditTeams || teamsSaving || teamCreateBusy) {
+    if (!token || !selectedTournamentId || !canEditTeamRoster || teamsSaving || teamCreateBusy) {
       return;
     }
 
     const name = normalizeText(newTeamName);
     const logoUrl = normalizeLogoUrl(newTeamLogoUrl);
+    const locationResult = buildTeamLocationPayload({
+      label: newTeamLocationLabel,
+    });
     if (!name) {
       setTeamsError("Team name is required to add a team.");
+      return;
+    }
+    if (locationResult.error) {
+      setTeamsError(locationResult.error);
       return;
     }
 
@@ -788,6 +898,9 @@ function TournamentsTab({
       if (logoUrl !== null) {
         payload.logoUrl = logoUrl;
       }
+      if (locationResult.hasAnyInput) {
+        payload.location = locationResult.location;
+      }
 
       await fetchJson(`${API_URL}/api/tournaments/${selectedTournamentId}/teams`, {
         method: "POST",
@@ -797,6 +910,7 @@ function TournamentsTab({
       await loadSelectedTournament(selectedTournamentId);
       setNewTeamName("");
       setNewTeamLogoUrl("");
+      setNewTeamLocationLabel("");
       setTeamsMessage("Team added.");
       onShowToast?.("success", "Team added");
     } catch (error) {
@@ -809,7 +923,7 @@ function TournamentsTab({
   };
 
   const removeTeamRow = async (rowId) => {
-    if (!token || !canEditTeams || teamsSaving || teamOrderSaving) {
+    if (!token || !canEditTeamRoster || teamsSaving || teamOrderSaving) {
       return;
     }
 
@@ -922,7 +1036,7 @@ function TournamentsTab({
 
   const handleTeamDragEnd = useCallback(
     async (event) => {
-      if (!canEditTeams || teamsSaving || teamOrderSaving) {
+      if (!canEditTeamRoster || teamsSaving || teamOrderSaving) {
         return;
       }
 
@@ -953,7 +1067,7 @@ function TournamentsTab({
         setTeamOrderSaving(false);
       }
     },
-    [canEditTeams, persistTeamOrder, teamOrderSaving, teamRows, teamsSaving]
+    [canEditTeamRoster, persistTeamOrder, teamOrderSaving, teamRows, teamsSaving]
   );
 
   const handleCreateTournament = async (event) => {
@@ -1008,18 +1122,30 @@ function TournamentsTab({
   };
 
   const handleSaveTeams = async () => {
-    if (!token || !selectedTournamentId || !canEditTeams || teamsSaving || teamOrderSaving) {
+    if (!token || !selectedTournamentId || teamsSaving || teamOrderSaving) {
       return;
     }
+
+    const nextLocationByRowId = new Map();
 
     for (let index = 0; index < teamRows.length; index += 1) {
       const row = teamRows[index];
       const name = normalizeText(row?.name || row?.shortName);
+      const nextLocation = buildTeamLocationPayload({
+        label: row?.locationLabel,
+      });
 
       if (!name) {
         setTeamsError(`Team ${index + 1} must include a team name.`);
         return;
       }
+
+      if (nextLocation.error) {
+        setTeamsError(`Team ${index + 1}: ${nextLocation.error}`);
+        return;
+      }
+
+      nextLocationByRowId.set(row.rowId, nextLocation.location);
     }
 
     const initialById = new Map(
@@ -1039,14 +1165,20 @@ function TournamentsTab({
         const previousShortName = normalizeText(previous?.shortName || previous?.name);
         const nextLogoUrl = normalizeLogoUrl(row.logoUrl);
         const previousLogoUrl = normalizeLogoUrl(previous?.logoUrl);
+        const nextLocation = nextLocationByRowId.get(row.rowId);
+        const previousLocation = normalizeTeamLocationRecord(previous?.location);
 
-        if (nextName !== previousName || nextName !== previousShortName) {
+        if (canEditTeamNames && (nextName !== previousName || nextName !== previousShortName)) {
           payload.name = nextName;
           payload.shortName = nextName;
         }
 
         if (nextLogoUrl !== previousLogoUrl) {
           payload.logoUrl = nextLogoUrl;
+        }
+
+        if (!areTeamLocationsEqual(nextLocation, previousLocation)) {
+          payload.location = nextLocation;
         }
 
         return {
@@ -1143,7 +1275,9 @@ function TournamentsTab({
     ]
   );
 
-  const teamEditDisabled = !canEditTeams || teamsSaving || teamOrderSaving;
+  const teamRosterEditDisabled = !canEditTeamRoster || teamsSaving || teamOrderSaving;
+  const teamNameEditDisabled = !canEditTeamNames || teamsSaving || teamOrderSaving;
+  const teamAssetEditDisabled = !canEditTeamAssets || teamsSaving || teamOrderSaving;
 
   if (!user || !token) {
     return (
@@ -1160,40 +1294,42 @@ function TournamentsTab({
   return (
     <div className="tournaments-panel">
       <div className="tournaments-layout">
-        <section className="tournaments-card tournaments-create-card">
-          <h2 className="secondary-title">Create Tournament</h2>
-          <p className="subtle">Start a new tournament and jump directly into Scheduling.</p>
-          <form className="tournaments-form" onSubmit={handleCreateTournament}>
-            <label className="input-label" htmlFor="tournament-name">
-              Tournament name
-            </label>
-            <input
-              id="tournament-name"
-              type="text"
-              placeholder="Spring Classic"
-              required
-              value={createName}
-              onChange={(event) => setCreateName(event.target.value)}
-            />
+        {showCreateCard && (
+          <section className="tournaments-card tournaments-create-card">
+            <h2 className="secondary-title">Create Tournament</h2>
+            <p className="subtle">Start a new tournament and jump directly into Scheduling.</p>
+            <form className="tournaments-form" onSubmit={handleCreateTournament}>
+              <label className="input-label" htmlFor="tournament-name">
+                Tournament name
+              </label>
+              <input
+                id="tournament-name"
+                type="text"
+                placeholder="Spring Classic"
+                required
+                value={createName}
+                onChange={(event) => setCreateName(event.target.value)}
+              />
 
-            <label className="input-label" htmlFor="tournament-date">
-              Tournament date
-            </label>
-            <TournamentDatePicker
-              id="tournament-date"
-              value={createDate}
-              required
-              disabled={createBusy}
-              onChange={setCreateDate}
-            />
+              <label className="input-label" htmlFor="tournament-date">
+                Tournament date
+              </label>
+              <TournamentDatePicker
+                id="tournament-date"
+                value={createDate}
+                required
+                disabled={createBusy}
+                onChange={setCreateDate}
+              />
 
-            {createError && <p className="error">{createError}</p>}
+              {createError && <p className="error">{createError}</p>}
 
-            <button className="primary-button" type="submit" disabled={createBusy}>
-              {createBusy ? "Creating..." : "Create tournament"}
-            </button>
-          </form>
-        </section>
+              <button className="primary-button" type="submit" disabled={createBusy}>
+                {createBusy ? "Creating..." : "Create tournament"}
+              </button>
+            </form>
+          </section>
+        )}
 
         <section className="tournaments-card tournaments-list-card">
           <div className="tournaments-list-header">
@@ -1242,6 +1378,12 @@ function TournamentsTab({
                     </button>
 
                     <div className="tournament-list-actions">
+                      <a className="secondary-button" href={`/tournaments/${id}/details`}>
+                        Details
+                      </a>
+                      <a className="secondary-button" href={`/tournaments/${id}/teams`}>
+                        Team Setup
+                      </a>
                       <a className="secondary-button" href={`/tournaments/${id}/phase1`}>
                         Scheduling
                       </a>
@@ -1273,6 +1415,7 @@ function TournamentsTab({
         </section>
       </div>
 
+      {showDetailsSection && (
       <section className="tournaments-card tournaments-details-card">
         <div className="tournaments-team-header">
           <div>
@@ -1403,7 +1546,9 @@ function TournamentsTab({
           </>
         )}
       </section>
+      )}
 
+      {showTeamsSection && (
       <section className="tournaments-card tournaments-team-card">
         <div className="tournaments-team-header">
           <div>
@@ -1422,17 +1567,18 @@ function TournamentsTab({
               type="button"
               className="ghost-button"
               onClick={handleSaveTeams}
-              disabled={!selectedTournament || !canEditTeams || teamsSaving || teamOrderSaving}
+              disabled={!selectedTournament || teamsSaving || teamOrderSaving}
             >
               {teamsSaving ? "Saving..." : "Save team fields"}
             </button>
           </div>
         </div>
 
-        {selectedTournament && !canEditTeams && (
+        {selectedTournament && !canEditTeamNames && (
           <p className="subtle tournaments-lock-message">
-            Team edits are locked because this tournament is in{" "}
-            <strong>{formatStatusLabel(selectedTournament?.status)}</strong> status.
+            Team names are locked because this tournament is in{" "}
+            <strong>{formatStatusLabel(selectedTournament?.status)}</strong> status. Logos and
+            locations stay editable.
           </p>
         )}
 
@@ -1514,7 +1660,7 @@ function TournamentsTab({
                 id="team-add-name"
                 type="text"
                 value={newTeamName}
-                disabled={teamEditDisabled || teamCreateBusy}
+                disabled={teamRosterEditDisabled || teamCreateBusy}
                 onChange={(event) => setNewTeamName(event.target.value)}
                 placeholder="ODU"
               />
@@ -1527,16 +1673,29 @@ function TournamentsTab({
                 id="team-add-logo"
                 type="text"
                 value={newTeamLogoUrl}
-                disabled={teamEditDisabled || teamCreateBusy}
+                disabled={teamRosterEditDisabled || teamCreateBusy}
                 onChange={(event) => setNewTeamLogoUrl(event.target.value)}
                 placeholder="https://..."
+              />
+            </div>
+            <div className="tournament-team-card-fields">
+              <label className="input-label" htmlFor="team-add-location-label">
+                Location label (optional)
+              </label>
+              <input
+                id="team-add-location-label"
+                type="text"
+                value={newTeamLocationLabel}
+                disabled={teamRosterEditDisabled || teamCreateBusy}
+                onChange={(event) => setNewTeamLocationLabel(event.target.value)}
+                placeholder="Norfolk, VA"
               />
             </div>
             <button
               type="button"
               className="primary-button"
               onClick={handleAddTeam}
-              disabled={!selectedTournament || teamEditDisabled || teamCreateBusy}
+              disabled={!selectedTournament || teamRosterEditDisabled || teamCreateBusy}
             >
               {teamCreateBusy ? "Adding..." : "Add Team"}
             </button>
@@ -1563,7 +1722,9 @@ function TournamentsTab({
                     key={team.rowId}
                     team={team}
                     index={index}
-                    disabled={teamEditDisabled}
+                    rosterDisabled={teamRosterEditDisabled}
+                    nameDisabled={teamNameEditDisabled}
+                    assetsDisabled={teamAssetEditDisabled}
                     onUpdate={updateTeamRow}
                     onRemove={removeTeamRow}
                   />
@@ -1573,6 +1734,7 @@ function TournamentsTab({
           </DndContext>
         )}
       </section>
+      )}
     </div>
   );
 }

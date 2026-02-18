@@ -1318,6 +1318,7 @@ function Home() {
               initialTournamentId={selectedTournamentId}
               onTournamentIdChange={setSelectedTournamentId}
               onShowToast={showToast}
+              mode="hub"
             />
           </div>
         )

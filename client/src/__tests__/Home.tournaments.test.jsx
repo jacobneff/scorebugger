@@ -161,7 +161,7 @@ describe("Home tournaments tab", () => {
     });
   });
 
-  it("shows read-only team setup when tournament status is not setup", async () => {
+  it("shows details and team setup links in Tournament Hub rows", async () => {
     mockUseAuth.mockReturnValue(createSignedInAuth());
     const user = userEvent.setup();
 
@@ -185,31 +185,23 @@ describe("Home tournaments tab", () => {
         return jsonResponse([tournamentSummary]);
       }
 
-      if (requestUrl.endsWith("/api/tournaments/tour-locked")) {
-        return jsonResponse(tournamentSummary);
-      }
-
-      if (requestUrl.endsWith("/api/tournaments/tour-locked/teams")) {
-        return jsonResponse([
-          {
-            _id: "team-1",
-            name: "Rockets",
-            shortName: "RCK",
-            seed: 1,
-          },
-        ]);
-      }
-
       return jsonResponse([]);
     });
 
     renderHome();
     await user.click(screen.getByRole("button", { name: /Tournaments/i }));
 
-    expect(
-      await screen.findByText(/Team edits are locked because this tournament is in/i)
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save team fields" })).toBeDisabled();
-    expect(await screen.findByLabelText("New team name")).toBeDisabled();
+    expect(await screen.findByText("Your Tournaments")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Tournament Details" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Team Setup" })).not.toBeInTheDocument();
+
+    expect(screen.getByRole("link", { name: "Details" })).toHaveAttribute(
+      "href",
+      "/tournaments/tour-locked/details"
+    );
+    expect(screen.getByRole("link", { name: "Team Setup" })).toHaveAttribute(
+      "href",
+      "/tournaments/tour-locked/teams"
+    );
   });
 });

@@ -1,7 +1,7 @@
 const Match = require('../models/Match');
 const Scoreboard = require('../models/Scoreboard');
 const Tournament = require('../models/Tournament');
-const { recomputePlayoffBracketProgression } = require('./playoffs');
+const { PLAYOFF_BRACKETS, recomputePlayoffBracketProgression } = require('./playoffs');
 const { computeMatchSnapshot } = require('./tournamentEngine/standings');
 const {
   TOURNAMENT_EVENT_TYPES,
@@ -133,12 +133,16 @@ async function emitAffectedMatchStatusUpdates(io, tournamentCode, matchIds) {
 }
 
 function normalizeAffectedMatchIds(playoffProgression) {
+  const progressions = Array.isArray(playoffProgression)
+    ? playoffProgression
+    : playoffProgression
+      ? [playoffProgression]
+      : [];
+
   return [
     ...new Set(
-      [
-        ...(playoffProgression?.updatedMatchIds || []),
-        ...(playoffProgression?.clearedMatchIds || []),
-      ]
+      progressions
+        .flatMap((entry) => [...(entry?.updatedMatchIds || []), ...(entry?.clearedMatchIds || [])])
         .map(toIdString)
         .filter(Boolean)
     ),
@@ -177,9 +181,10 @@ async function finalizeMatchAndEmit({ match, userId, io, tournamentCode }) {
   let playoffProgression = null;
 
   if (match.phase === 'playoffs' && match.bracket) {
-    playoffProgression = await recomputePlayoffBracketProgression(
-      match.tournamentId,
-      match.bracket
+    playoffProgression = await Promise.all(
+      PLAYOFF_BRACKETS.map((bracket) =>
+        recomputePlayoffBracketProgression(match.tournamentId, bracket)
+      )
     );
   }
 
@@ -221,9 +226,10 @@ async function unfinalizeMatchAndEmit({ match, io, tournamentCode }) {
   let playoffProgression = null;
 
   if (match.phase === 'playoffs' && match.bracket) {
-    playoffProgression = await recomputePlayoffBracketProgression(
-      match.tournamentId,
-      match.bracket
+    playoffProgression = await Promise.all(
+      PLAYOFF_BRACKETS.map((bracket) =>
+        recomputePlayoffBracketProgression(match.tournamentId, bracket)
+      )
     );
   }
 

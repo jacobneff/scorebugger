@@ -32,6 +32,14 @@ const PLAYOFF_ROUND_BLOCK_COURTS = {
   8: ['VC-1', 'VC-2', 'SRC-1', 'SRC-2', 'SRC-3'],
   9: ['VC-1', 'VC-2', 'SRC-1', 'SRC-2', 'SRC-3'],
 };
+const EARTH_RADIUS_KM = 6371;
+const UNIVERSITY_REFERENCE_COORDINATES = Object.freeze({
+  // Default host-campus coordinates (ODU area). Can be promoted to tournament config later.
+  latitude: 36.8864,
+  longitude: -76.3058,
+});
+const BRONZE_FINAL_MATCH_KEY = 'bronze:R3:final';
+const BRONZE_FINAL_REF_SOURCE_KEYS = ['bronze:R1:2v3', 'bronze:R2:1vW45'];
 
 const PLAYOFF_MATCH_TEMPLATES = [
   {
@@ -197,8 +205,8 @@ const PLAYOFF_MATCH_TEMPLATES = [
 const DEFAULT_REF_SOURCE_BY_MATCH_KEY = {
   'gold:R2:1vW45': { sourceMatchKey: 'gold:R1:2v3', slot: 'loser' },
   'silver:R2:1vW45': { sourceMatchKey: 'silver:R1:2v3', slot: 'loser' },
-  'bronze:R1:2v3': { sourceMatchKey: 'bronze:R1:4v5', slot: 'loser' },
-  'bronze:R2:1vW45': { sourceMatchKey: 'bronze:R1:2v3', slot: 'loser' },
+  'bronze:R1:2v3': { sourceMatchKey: 'gold:R1:4v5', slot: 'loser' },
+  'bronze:R2:1vW45': { sourceMatchKey: 'silver:R1:4v5', slot: 'loser' },
   'gold:R3:final': { sourceMatchKey: 'gold:R2:1vW45', slot: 'loser' },
   'silver:R3:final': { sourceMatchKey: 'silver:R2:1vW45', slot: 'loser' },
   'bronze:R3:final': { sourceMatchKey: 'bronze:R2:1vW45', slot: 'loser' },
@@ -244,6 +252,56 @@ const toIdString = (value) => {
 const sameId = (left, right) => toIdString(left) === toIdString(right);
 
 const resolveTeamName = (team) => team?.shortName || team?.name || 'TBD';
+
+const normalizeCoordinate = (value, min, max) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    return null;
+  }
+
+  return parsed;
+};
+
+const toRadians = (degrees) => (degrees * Math.PI) / 180;
+
+const calculateDistanceKm = (origin, destination) => {
+  if (!origin || !destination) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const lat1 = toRadians(origin.latitude);
+  const lat2 = toRadians(destination.latitude);
+  const deltaLatitude = toRadians(destination.latitude - origin.latitude);
+  const deltaLongitude = toRadians(destination.longitude - origin.longitude);
+
+  const a =
+    Math.sin(deltaLatitude / 2) * Math.sin(deltaLatitude / 2) +
+    Math.cos(lat1) *
+      Math.cos(lat2) *
+      Math.sin(deltaLongitude / 2) *
+      Math.sin(deltaLongitude / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return EARTH_RADIUS_KM * c;
+};
+
+function resolveTeamCoordinates(team) {
+  if (!team || typeof team !== 'object') {
+    return null;
+  }
+
+  const latitude = normalizeCoordinate(team?.location?.latitude, -90, 90);
+  const longitude = normalizeCoordinate(team?.location?.longitude, -180, 180);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return null;
+  }
+
+  return {
+    latitude,
+    longitude,
+  };
+}
 
 const buildSeedLookup = (entries) => {
   const lookup = new Map();
@@ -487,7 +545,9 @@ function createPlayoffMatchPlan(bracketSeeds) {
 }
 
 async function loadTournamentTeamLookup(tournamentId) {
-  const teams = await TournamentTeam.find({ tournamentId }).select('_id name shortName').lean();
+  const teams = await TournamentTeam.find({ tournamentId })
+    .select('_id name shortName location')
+    .lean();
   return new Map(teams.map((team) => [toIdString(team._id), team]));
 }
 
@@ -563,8 +623,7 @@ async function syncScoreboardParticipants(match, teamsById, { resetState = false
   }
 }
 
-function resolveSuggestedRefTeamId(match, matchesByKey) {
-  const refRule = DEFAULT_REF_SOURCE_BY_MATCH_KEY[match?.bracketMatchKey];
+function resolveTeamIdFromRefRule(refRule, matchesByKey) {
   if (!refRule) {
     return null;
   }
@@ -585,6 +644,67 @@ function resolveSuggestedRefTeamId(match, matchesByKey) {
   return null;
 }
 
+function resolveBronzeFinalRefTeamId(matchesByKey, teamsById) {
+  const candidateTeamIds = BRONZE_FINAL_REF_SOURCE_KEYS.map((sourceMatchKey) =>
+    resolveTeamIdFromRefRule(
+      {
+        sourceMatchKey,
+        slot: 'loser',
+      },
+      matchesByKey
+    )
+  )
+    .map((teamId) => toIdString(teamId))
+    .filter(Boolean);
+  const uniqueCandidateTeamIds = [...new Set(candidateTeamIds)];
+
+  if (uniqueCandidateTeamIds.length === 0) {
+    return null;
+  }
+
+  if (uniqueCandidateTeamIds.length === 1) {
+    return uniqueCandidateTeamIds[0];
+  }
+
+  const rankedCandidates = uniqueCandidateTeamIds
+    .map((teamId) => {
+      const team = teamsById.get(teamId);
+      const coordinates = resolveTeamCoordinates(team);
+      const distanceToUniversity = calculateDistanceKm(coordinates, UNIVERSITY_REFERENCE_COORDINATES);
+
+      return {
+        teamId,
+        distanceToUniversity,
+      };
+    })
+    .filter((entry) => Number.isFinite(entry.distanceToUniversity))
+    .sort((left, right) => {
+      if (left.distanceToUniversity !== right.distanceToUniversity) {
+        return left.distanceToUniversity - right.distanceToUniversity;
+      }
+
+      return String(left.teamId).localeCompare(String(right.teamId));
+    });
+
+  if (rankedCandidates.length === 0) {
+    return null;
+  }
+
+  return rankedCandidates[0].teamId;
+}
+
+function resolveSuggestedRefTeamId(match, matchesByKey, teamsById) {
+  if (match?.bracketMatchKey === BRONZE_FINAL_MATCH_KEY) {
+    const bronzeFinalRefTeamId = resolveBronzeFinalRefTeamId(matchesByKey, teamsById);
+    if (bronzeFinalRefTeamId) {
+      return bronzeFinalRefTeamId;
+    }
+  }
+
+  const refRule = DEFAULT_REF_SOURCE_BY_MATCH_KEY[match?.bracketMatchKey];
+  return resolveTeamIdFromRefRule(refRule, matchesByKey);
+}
+
 async function recomputePlayoffBracketProgression(tournamentId, bracket) {
   const normalizedBracket = normalizeBracket(bracket);
 
@@ -595,14 +715,15 @@ async function recomputePlayoffBracketProgression(tournamentId, bracket) {
     };
   }
 
-  const matches = await Match.find({
+  const allMatches = await Match.find({
     tournamentId,
     phase: 'playoffs',
-    bracket: normalizedBracket,
   }).sort({
     roundBlock: 1,
     createdAt: 1,
   });
+
+  const matches = allMatches.filter((match) => normalizeBracket(match?.bracket) === normalizedBracket);
 
   if (matches.length === 0) {
     return {
@@ -611,12 +732,13 @@ async function recomputePlayoffBracketProgression(tournamentId, bracket) {
     };
   }
 
-  const matchesById = new Map(matches.map((match) => [toIdString(match._id), match]));
+  const matchesById = new Map(allMatches.map((match) => [toIdString(match._id), match]));
   const matchesByKey = new Map(
-    matches
+    allMatches
       .filter((match) => typeof match.bracketMatchKey === 'string' && match.bracketMatchKey.trim())
       .map((match) => [match.bracketMatchKey, match])
   );
+  const teamsById = await loadTournamentTeamLookup(tournamentId);
 
   const ordered = [...matches].sort((left, right) => {
     const roundCompare = (ROUND_ORDER[left.bracketRound] || 99) - (ROUND_ORDER[right.bracketRound] || 99);
@@ -666,16 +788,24 @@ async function recomputePlayoffBracketProgression(tournamentId, bracket) {
       matchesNeedingSave.set(toIdString(match._id), match);
     }
 
-    if (Number(match.roundBlock) > 7 && (!Array.isArray(match.refTeamIds) || match.refTeamIds.length === 0)) {
-      const suggestedRefTeamId = resolveSuggestedRefTeamId(match, matchesByKey);
+    const hasManagedRefRule = Boolean(DEFAULT_REF_SOURCE_BY_MATCH_KEY[match?.bracketMatchKey]);
+    if (Number(match.roundBlock) > 7 && hasManagedRefRule) {
+      const suggestedRefTeamId = toIdString(resolveSuggestedRefTeamId(match, matchesByKey, teamsById));
+      const currentRefTeamIds = Array.isArray(match.refTeamIds)
+        ? match.refTeamIds.map((teamId) => toIdString(teamId)).filter(Boolean)
+        : [];
+
       if (suggestedRefTeamId) {
-        match.refTeamIds = [suggestedRefTeamId];
+        if (currentRefTeamIds.length !== 1 || currentRefTeamIds[0] !== suggestedRefTeamId) {
+          match.refTeamIds = [suggestedRefTeamId];
+          matchesNeedingSave.set(toIdString(match._id), match);
+        }
+      } else if (currentRefTeamIds.length > 0) {
+        match.refTeamIds = [];
         matchesNeedingSave.set(toIdString(match._id), match);
       }
     }
   });
-
-  const teamsById = await loadTournamentTeamLookup(tournamentId);
 
   for (const match of matchesWithParticipantChange.values()) {
     await syncScoreboardParticipants(match, teamsById, { resetState: true });

@@ -23,6 +23,26 @@ const TournamentTeamSchema = new mongoose.Schema(
       default: null,
       trim: true,
     },
+    location: {
+      label: {
+        type: String,
+        default: '',
+        trim: true,
+        maxlength: 160,
+      },
+      latitude: {
+        type: Number,
+        default: null,
+        min: -90,
+        max: 90,
+      },
+      longitude: {
+        type: Number,
+        default: null,
+        min: -180,
+        max: 180,
+      },
+    },
     orderIndex: {
       type: Number,
       default: null,

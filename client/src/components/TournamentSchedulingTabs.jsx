@@ -41,6 +41,12 @@ function TournamentSchedulingTabs({ tournamentId, activeTab }) {
       </nav>
 
       <div className="tournament-scheduling-links">
+        <a className="tournament-scheduling-link" href={`/tournaments/${id}/details`}>
+          Tournament Details
+        </a>
+        <a className="tournament-scheduling-link" href={`/tournaments/${id}/teams`}>
+          Team Setup
+        </a>
         <a className="tournament-scheduling-link" href={`/?tab=tournaments&tournamentId=${id}`}>
           Tournament Hub
         </a>

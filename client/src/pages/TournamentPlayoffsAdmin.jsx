@@ -4,7 +4,7 @@ import { useParams } from 'react-router-dom';
 import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
-import { formatTeamLabel } from '../utils/phase1.js';
+import { formatRoundBlockStartTime, formatTeamLabel, mapCourtLabel } from '../utils/phase1.js';
 import {
   buildTournamentMatchControlHref,
   getMatchStatusMeta,
@@ -377,7 +377,7 @@ function TournamentPlayoffsAdmin() {
           </div>
           <div className="phase1-admin-actions">
             <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-              Back To Phase 2
+              Back To Pool Play 2
             </a>
             <button
               className="primary-button"
@@ -401,7 +401,7 @@ function TournamentPlayoffsAdmin() {
             <h2 className="secondary-title">Ops Schedule</h2>
             {playoffs.opsSchedule.map((roundBlock) => (
               <article key={roundBlock.roundBlock} className="phase1-standings-card">
-                <h3>{roundBlock.label}</h3>
+                <h3>{`${formatRoundBlockStartTime(roundBlock.roundBlock, tournament)} - ${roundBlock.label}`}</h3>
                 <div className="phase1-table-wrap">
                   <table className="phase1-schedule-table">
                     <thead>
@@ -435,7 +435,7 @@ function TournamentPlayoffsAdmin() {
                         return (
                           <tr key={`${roundBlock.roundBlock}-${slot.court}`}>
                             <td>{slot.facility}</td>
-                            <td>{slot.court}</td>
+                            <td>{mapCourtLabel(slot.court)}</td>
                             <td>{slot.matchLabel}</td>
                             <td>
                               {slot.matchId ? `${slot.teams.a} vs ${slot.teams.b}` : <span className="subtle">-</span>}
@@ -573,7 +573,7 @@ function TournamentPlayoffsAdmin() {
                             <div key={match._id} className="playoff-round-match">
                               <p>{formatBracketMatchSummary(match)}</p>
                               <p className="subtle">
-                                {match.court} • {bracketStatusMeta.label}
+                                {mapCourtLabel(match.court)} • {bracketStatusMeta.label}
                               </p>
                               {liveSummariesByMatchId[match._id] && (
                                 <p className="subtle">

@@ -5,10 +5,13 @@ import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
+  formatRoundBlockStartTime,
+  formatSetRecord,
   PHASE2_COURT_ORDER,
   PHASE2_ROUND_BLOCKS,
   buildPhase2ScheduleLookup,
   formatTeamLabel,
+  mapCourtLabel,
   sortPhase2Pools,
 } from '../utils/phase1.js';
 import {
@@ -46,8 +49,6 @@ const normalizePools = (pools) =>
           .filter((warning) => warning.teamIdA && warning.teamIdB)
       : [],
   }));
-
-const formatSetPct = (value) => `${(Math.max(0, Number(value) || 0) * 100).toFixed(1)}%`;
 
 const formatPointDiff = (value) => {
   const parsed = Number(value) || 0;
@@ -168,7 +169,7 @@ function TournamentPhase2Admin() {
         cumulative: cumulativeStandings,
       });
     } catch (loadError) {
-      setError(loadError.message || 'Unable to load Phase 2 data');
+      setError(loadError.message || 'Unable to load Pool Play 2 data');
     } finally {
       setLoading(false);
     }
@@ -366,7 +367,7 @@ function TournamentPhase2Admin() {
         await persistPoolChanges(nextPools, dragState.poolId, targetPoolId);
         const refreshedPools = await loadPools();
         setPools(refreshedPools);
-        setMessage('Phase 2 pool assignments saved.');
+        setMessage('Pool Play 2 pool assignments saved.');
       } catch (saveError) {
         setPools(previousPools);
         setError(saveError.message || 'Unable to save pool changes');
@@ -392,7 +393,7 @@ function TournamentPhase2Admin() {
       if (response.status === 409 && !force) {
         return {
           requiresForce: true,
-          message: payload?.message || 'Phase 2 pools already exist.',
+          message: payload?.message || 'Pool Play 2 pools already exist.',
         };
       }
 
@@ -401,7 +402,7 @@ function TournamentPhase2Admin() {
           Array.isArray(payload?.missing) && payload.missing.length > 0
             ? `\n${payload.missing.join('\n')}`
             : '';
-        throw new Error(`${payload?.message || 'Unable to generate Phase 2 pools'}${details}`);
+        throw new Error(`${payload?.message || 'Unable to generate Pool Play 2 pools'}${details}`);
       }
 
       const generatedPools = Array.isArray(payload?.pools) ? payload.pools : payload;
@@ -428,7 +429,7 @@ function TournamentPhase2Admin() {
 
       if (firstAttempt.requiresForce) {
         const shouldForce = window.confirm(
-          `${firstAttempt.message}\n\nThis can overwrite existing Phase 2 pools. Continue?`
+          `${firstAttempt.message}\n\nThis can overwrite existing Pool Play 2 pools. Continue?`
         );
 
         if (!shouldForce) {
@@ -438,14 +439,14 @@ function TournamentPhase2Admin() {
 
         const forcedAttempt = await generatePhase2Pools(true);
         setPools(forcedAttempt.pools);
-        setMessage('Phase 2 pools regenerated from Phase 1 results.');
+        setMessage('Pool Play 2 pools regenerated from Pool Play 1 results.');
         return;
       }
 
       setPools(firstAttempt.pools);
-      setMessage('Phase 2 pools generated from Phase 1 results.');
+      setMessage('Pool Play 2 pools generated from Pool Play 1 results.');
     } catch (generateError) {
-      setError(generateError.message || 'Unable to generate Phase 2 pools');
+      setError(generateError.message || 'Unable to generate Pool Play 2 pools');
     } finally {
       setPoolsGenerateLoading(false);
     }
@@ -463,12 +464,12 @@ function TournamentPhase2Admin() {
       if (response.status === 409 && !force) {
         return {
           requiresForce: true,
-          message: payload?.message || 'Phase 2 matches already exist.',
+          message: payload?.message || 'Pool Play 2 matches already exist.',
         };
       }
 
       if (!response.ok || !Array.isArray(payload)) {
-        throw new Error(payload?.message || 'Unable to generate Phase 2 matches');
+        throw new Error(payload?.message || 'Unable to generate Pool Play 2 matches');
       }
 
       return {
@@ -493,7 +494,7 @@ function TournamentPhase2Admin() {
 
       if (firstAttempt.requiresForce) {
         const shouldForce = window.confirm(
-          `${firstAttempt.message}\n\nThis will delete and regenerate all Phase 2 matches and scoreboards. Continue?`
+          `${firstAttempt.message}\n\nThis will delete and regenerate all Pool Play 2 matches and scoreboards. Continue?`
         );
 
         if (!shouldForce) {
@@ -503,16 +504,16 @@ function TournamentPhase2Admin() {
 
         const forcedAttempt = await generatePhase2Matches(true);
         setMatches(forcedAttempt.matches);
-        setMessage('Phase 2 matches regenerated.');
+        setMessage('Pool Play 2 matches regenerated.');
         await refreshMatchesAndStandings();
         return;
       }
 
       setMatches(firstAttempt.matches);
-      setMessage('Phase 2 matches generated.');
+      setMessage('Pool Play 2 matches generated.');
       await refreshMatchesAndStandings();
     } catch (generateError) {
-      setError(generateError.message || 'Unable to generate Phase 2 matches');
+      setError(generateError.message || 'Unable to generate Pool Play 2 matches');
     } finally {
       setGenerateLoading(false);
     }
@@ -582,7 +583,7 @@ function TournamentPhase2Admin() {
     return (
       <main className="container">
         <section className="card phase1-admin-card">
-          <p className="subtle">Loading Phase 2 setup...</p>
+          <p className="subtle">Loading Pool Play 2 setup...</p>
         </section>
       </main>
     );
@@ -592,8 +593,8 @@ function TournamentPhase2Admin() {
     return (
       <main className="container">
         <section className="card phase1-admin-card">
-          <h1 className="title">Phase 2 Setup</h1>
-          <p className="subtle">Sign in to manage Phase 2 pools and schedule.</p>
+          <h1 className="title">Pool Play 2 Setup</h1>
+          <p className="subtle">Sign in to manage Pool Play 2 pools and schedule.</p>
           <a className="primary-button" href="/?mode=signin">
             Sign In
           </a>
@@ -607,9 +608,9 @@ function TournamentPhase2Admin() {
       <section className="card phase1-admin-card">
         <div className="phase1-admin-header">
           <div>
-            <h1 className="title">Phase 2 Setup</h1>
+            <h1 className="title">Pool Play 2 Setup</h1>
             <p className="subtitle">
-              {tournament?.name || 'Tournament'} • Build pools F-J from Phase 1 placements, then
+              {tournament?.name || 'Tournament'} • Build pools F-J from Pool Play 1 placements, then
               generate fixed rounds 4-6.
             </p>
           </div>
@@ -625,7 +626,7 @@ function TournamentPhase2Admin() {
             >
               {poolsGenerateLoading
                 ? 'Generating Pools...'
-                : 'Generate Phase 2 Pools from Phase 1 Results'}
+                : 'Generate Pool Play 2 Pools from Pool Play 1 Results'}
             </button>
             <button
               className="primary-button"
@@ -633,7 +634,7 @@ function TournamentPhase2Admin() {
               onClick={handleGenerateMatches}
               disabled={!canGenerateMatches || generateLoading}
             >
-              {generateLoading ? 'Generating Matches...' : 'Generate Phase 2 Matches'}
+              {generateLoading ? 'Generating Matches...' : 'Generate Pool Play 2 Matches'}
             </button>
           </div>
         </div>
@@ -661,7 +662,7 @@ function TournamentPhase2Admin() {
               >
                 <header className="phase1-pool-header">
                   <h2>Pool {pool.name}</h2>
-                  <p>{pool.homeCourt || 'No home court'}</p>
+                  <p>{pool.homeCourt ? mapCourtLabel(pool.homeCourt) : 'No home court'}</p>
                 </header>
 
                 {rematchLabels.length > 0 && (
@@ -726,21 +727,21 @@ function TournamentPhase2Admin() {
 
         {matches.length > 0 && (
           <section className="phase1-schedule">
-            <h2 className="secondary-title">Phase 2 Schedule</h2>
+            <h2 className="secondary-title">Pool Play 2 Schedule</h2>
             <div className="phase1-table-wrap">
               <table className="phase1-schedule-table">
                 <thead>
                   <tr>
-                    <th>Round</th>
+                    <th>Time</th>
                     {PHASE2_COURT_ORDER.map((court) => (
-                      <th key={court}>{court}</th>
+                      <th key={court}>{mapCourtLabel(court)}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {PHASE2_ROUND_BLOCKS.map((roundBlock) => (
                     <tr key={roundBlock}>
-                      <th>Round {roundBlock}</th>
+                      <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
                       {PHASE2_COURT_ORDER.map((court) => {
                         const match = scheduleLookup[`${roundBlock}-${court}`];
                         const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
@@ -839,7 +840,7 @@ function TournamentPhase2Admin() {
               type="button"
               onClick={() => setActiveStandingsTab('phase2')}
             >
-              Phase 2
+              Pool Play 2
             </button>
             <button
               className={
@@ -864,7 +865,7 @@ function TournamentPhase2Admin() {
                           <th>#</th>
                           <th>Team</th>
                           <th>W-L</th>
-                          <th>Set %</th>
+                          <th>Sets</th>
                           <th>Pt Diff</th>
                         </tr>
                       </thead>
@@ -876,7 +877,7 @@ function TournamentPhase2Admin() {
                             <td>
                               {team.matchesWon}-{team.matchesLost}
                             </td>
-                            <td>{formatSetPct(team.setPct)}</td>
+                            <td>{formatSetRecord(team)}</td>
                             <td>{formatPointDiff(team.pointDiff)}</td>
                           </tr>
                         ))}
@@ -889,7 +890,7 @@ function TournamentPhase2Admin() {
           )}
 
           <article className="phase1-standings-card phase1-standings-card--overall">
-            <h3>{activeStandingsTab === 'phase2' ? 'Phase 2 Overall' : 'Cumulative Overall'}</h3>
+            <h3>{activeStandingsTab === 'phase2' ? 'Pool Play 2 Overall' : 'Cumulative Overall'}</h3>
             <div className="phase1-table-wrap">
               <table className="phase1-standings-table">
                 <thead>
@@ -897,7 +898,7 @@ function TournamentPhase2Admin() {
                     <th>Rank</th>
                     <th>Team</th>
                     <th>W-L</th>
-                    <th>Set %</th>
+                    <th>Sets</th>
                     <th>Pt Diff</th>
                   </tr>
                 </thead>
@@ -909,7 +910,7 @@ function TournamentPhase2Admin() {
                       <td>
                         {team.matchesWon}-{team.matchesLost}
                       </td>
-                      <td>{formatSetPct(team.setPct)}</td>
+                      <td>{formatSetRecord(team)}</td>
                       <td>{formatPointDiff(team.pointDiff)}</td>
                     </tr>
                   ))}

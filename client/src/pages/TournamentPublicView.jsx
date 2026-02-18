@@ -4,10 +4,13 @@ import { useParams } from 'react-router-dom';
 import { API_URL } from '../config/env.js';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
+  formatRoundBlockStartTime,
+  formatSetRecord,
   PHASE1_COURT_ORDER,
   PHASE1_ROUND_BLOCKS,
   buildPhase1ScheduleLookup,
   formatTeamLabel,
+  mapCourtLabel,
   sortPhase1Pools,
 } from '../utils/phase1.js';
 
@@ -36,8 +39,6 @@ const normalizePlayoffPayload = (payload) => ({
   brackets: payload?.brackets && typeof payload.brackets === 'object' ? payload.brackets : {},
   opsSchedule: Array.isArray(payload?.opsSchedule) ? payload.opsSchedule : [],
 });
-
-const formatSetPct = (value) => `${(Math.max(0, Number(value) || 0) * 100).toFixed(1)}%`;
 
 const formatPointDiff = (value) => {
   const parsed = Number(value) || 0;
@@ -132,10 +133,10 @@ function TournamentPublicView() {
           throw new Error(matchPayload?.message || 'Unable to load matches');
         }
         if (!phase1StandingsResponse.ok) {
-          throw new Error(phase1StandingsPayload?.message || 'Unable to load Phase 1 standings');
+          throw new Error(phase1StandingsPayload?.message || 'Unable to load Pool Play 1 standings');
         }
         if (!phase2StandingsResponse.ok) {
-          throw new Error(phase2StandingsPayload?.message || 'Unable to load Phase 2 standings');
+          throw new Error(phase2StandingsPayload?.message || 'Unable to load Pool Play 2 standings');
         }
         if (!cumulativeStandingsResponse.ok) {
           throw new Error(cumulativeStandingsPayload?.message || 'Unable to load cumulative standings');
@@ -279,7 +280,7 @@ function TournamentPublicView() {
                   <article key={pool._id} className="phase1-pool-column">
                     <header className="phase1-pool-header">
                       <h3>Pool {pool.name}</h3>
-                      <p>{pool.homeCourt || 'No home court'}</p>
+                      <p>{pool.homeCourt ? mapCourtLabel(pool.homeCourt) : 'No home court'}</p>
                     </header>
                     <ul className="phase1-public-team-list">
                       {pool.teamIds.map((team) => (
@@ -296,21 +297,21 @@ function TournamentPublicView() {
             </section>
 
             <section className="phase1-schedule">
-              <h2 className="secondary-title">Phase 1 Schedule</h2>
+              <h2 className="secondary-title">Pool Play 1 Schedule</h2>
               <div className="phase1-table-wrap">
                 <table className="phase1-schedule-table">
                   <thead>
                     <tr>
-                      <th>Round</th>
+                      <th>Time</th>
                       {PHASE1_COURT_ORDER.map((court) => (
-                        <th key={court}>{court}</th>
+                        <th key={court}>{mapCourtLabel(court)}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {PHASE1_ROUND_BLOCKS.map((roundBlock) => (
                       <tr key={roundBlock}>
-                        <th>Round {roundBlock}</th>
+                        <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
                         {PHASE1_COURT_ORDER.map((court) => {
                           const match = scheduleLookup[`${roundBlock}-${court}`];
                           const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
@@ -360,14 +361,14 @@ function TournamentPublicView() {
                   type="button"
                   onClick={() => setActiveStandingsTab('phase1')}
                 >
-                  Phase 1
+                  Pool Play 1
                 </button>
                 <button
                   className={activeStandingsTab === 'phase2' ? 'primary-button' : 'secondary-button'}
                   type="button"
                   onClick={() => setActiveStandingsTab('phase2')}
                 >
-                  Phase 2
+                  Pool Play 2
                 </button>
                 <button
                   className={activeStandingsTab === 'cumulative' ? 'primary-button' : 'secondary-button'}
@@ -390,7 +391,7 @@ function TournamentPublicView() {
                               <th>#</th>
                               <th>Team</th>
                               <th>W-L</th>
-                              <th>Set %</th>
+                              <th>Sets</th>
                               <th>Pt Diff</th>
                             </tr>
                           </thead>
@@ -402,7 +403,7 @@ function TournamentPublicView() {
                                 <td>
                                   {team.matchesWon}-{team.matchesLost}
                                 </td>
-                                <td>{formatSetPct(team.setPct)}</td>
+                                <td>{formatSetRecord(team)}</td>
                                 <td>{formatPointDiff(team.pointDiff)}</td>
                               </tr>
                             ))}
@@ -417,9 +418,9 @@ function TournamentPublicView() {
               <article className="phase1-standings-card phase1-standings-card--overall">
                 <h3>
                   {activeStandingsTab === 'phase1'
-                    ? 'Phase 1 Overall'
+                    ? 'Pool Play 1 Overall'
                     : activeStandingsTab === 'phase2'
-                      ? 'Phase 2 Overall'
+                      ? 'Pool Play 2 Overall'
                       : 'Cumulative Overall'}
                 </h3>
                 <div className="phase1-table-wrap">
@@ -429,7 +430,7 @@ function TournamentPublicView() {
                         <th>Seed</th>
                         <th>Team</th>
                         <th>W-L</th>
-                        <th>Set %</th>
+                        <th>Sets</th>
                         <th>Pt Diff</th>
                       </tr>
                     </thead>
@@ -441,7 +442,7 @@ function TournamentPublicView() {
                           <td>
                             {team.matchesWon}-{team.matchesLost}
                           </td>
-                          <td>{formatSetPct(team.setPct)}</td>
+                          <td>{formatSetRecord(team)}</td>
                           <td>{formatPointDiff(team.pointDiff)}</td>
                         </tr>
                       ))}
@@ -460,7 +461,7 @@ function TournamentPublicView() {
               ) : (
                 playoffs.opsSchedule.map((roundBlock) => (
                   <article key={roundBlock.roundBlock} className="phase1-standings-card">
-                    <h3>{roundBlock.label}</h3>
+                    <h3>{`${formatRoundBlockStartTime(roundBlock.roundBlock, tournament)} - ${roundBlock.label}`}</h3>
                     <div className="phase1-table-wrap">
                       <table className="phase1-schedule-table">
                         <thead>
@@ -482,7 +483,7 @@ function TournamentPublicView() {
                             return (
                               <tr key={`${roundBlock.roundBlock}-${slot.court}`}>
                                 <td>{slot.facility}</td>
-                                <td>{slot.court}</td>
+                                <td>{mapCourtLabel(slot.court)}</td>
                                 <td>{slot.matchLabel}</td>
                                 <td>{slot.matchId ? `${slot.teams.a} vs ${slot.teams.b}` : 'Empty'}</td>
                                 <td>{slot.refs.length > 0 ? slot.refs.join(', ') : 'TBD'}</td>
@@ -540,7 +541,7 @@ function TournamentPublicView() {
                                   {match.teamB ? formatTeamLabel(match.teamB) : 'TBD'}
                                 </p>
                                 <p className="subtle">
-                                  {match.court} • {match.status === 'final' ? 'Final' : 'Scheduled'}
+                                  {mapCourtLabel(match.court)} • {match.status === 'final' ? 'Final' : 'Scheduled'}
                                 </p>
                                 {liveSummariesByMatchId[match._id] && (
                                   <p className="subtle">

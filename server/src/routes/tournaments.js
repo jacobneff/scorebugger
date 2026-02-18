@@ -56,6 +56,11 @@ const TOURNAMENT_STATUS_ORDER = {
   playoffs: 3,
   complete: 4,
 };
+const TOURNAMENT_SCHEDULE_DEFAULTS = Object.freeze({
+  dayStartTime: '09:00',
+  matchDurationMinutes: 60,
+  lunchDurationMinutes: 45,
+});
 
 const phase2PoolNameIndex = PHASE2_POOL_NAMES.reduce((lookup, poolName, index) => {
   lookup[poolName] = index;
@@ -69,6 +74,51 @@ const isDuplicatePublicCodeError = (error) =>
   (error?.keyPattern?.publicCode || error?.keyValue?.publicCode);
 
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
+
+const normalizeScheduleString = (value, fallback = null) =>
+  isNonEmptyString(value) ? value.trim() : fallback;
+
+const normalizeScheduleMinutes = (value, fallback) => {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.round(parsed);
+  }
+  return fallback;
+};
+
+function normalizeTournamentSchedule(schedule) {
+  return {
+    dayStartTime: normalizeScheduleString(
+      schedule?.dayStartTime,
+      TOURNAMENT_SCHEDULE_DEFAULTS.dayStartTime
+    ),
+    matchDurationMinutes: normalizeScheduleMinutes(
+      schedule?.matchDurationMinutes,
+      TOURNAMENT_SCHEDULE_DEFAULTS.matchDurationMinutes
+    ),
+    lunchStartTime: normalizeScheduleString(schedule?.lunchStartTime, null),
+    lunchDurationMinutes: normalizeScheduleMinutes(
+      schedule?.lunchDurationMinutes,
+      TOURNAMENT_SCHEDULE_DEFAULTS.lunchDurationMinutes
+    ),
+  };
+}
+
+function attachTournamentScheduleDefaults(tournament) {
+  if (!tournament || typeof tournament !== 'object') {
+    return tournament;
+  }
+
+  return {
+    ...tournament,
+    settings: {
+      ...(tournament.settings && typeof tournament.settings === 'object'
+        ? tournament.settings
+        : {}),
+      schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+    },
+  };
+}
 
 const parseTournamentDate = (value) => {
   if (!value) {
@@ -455,7 +505,9 @@ async function ensureTournamentStatusAtLeast(tournamentId, nextStatus) {
 }
 
 async function findTournamentForPublicCode(publicCode) {
-  return Tournament.findOne({ publicCode }).select('_id name date timezone status facilities publicCode').lean();
+  return Tournament.findOne({ publicCode })
+    .select('_id name date timezone status facilities publicCode settings.schedule')
+    .lean();
 }
 
 function emitTournamentEventFromRequest(req, tournamentCode, type, data) {
@@ -735,6 +787,9 @@ router.get('/code/:publicCode', async (req, res, next) => {
         timezone: tournament.timezone,
         status: tournament.status,
         facilities: tournament.facilities,
+        settings: {
+          schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+        },
         publicCode: tournament.publicCode,
       },
       teams: teams.map((team) => ({
@@ -838,7 +893,7 @@ router.get('/code/:publicCode/playoffs', async (req, res, next) => {
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id name status publicCode')
+      .select('_id name timezone status publicCode settings.schedule')
       .lean();
 
     if (!tournament) {
@@ -856,7 +911,11 @@ router.get('/code/:publicCode/playoffs', async (req, res, next) => {
       tournament: {
         id: tournament._id.toString(),
         name: tournament.name,
+        timezone: tournament.timezone,
         status: tournament.status,
+        settings: {
+          schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+        },
         publicCode: tournament.publicCode,
       },
       ...payload,
@@ -2105,7 +2164,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     ]);
 
     return res.json({
-      ...tournament,
+      ...attachTournamentScheduleDefaults(tournament),
       teamsCount,
       poolsCount,
       matchesCount,

@@ -2096,7 +2096,7 @@ button:disabled {
   font-weight: 500;
 }
 
-/* ===== Tournament Phase 1 ===== */
+/* ===== Tournament Pool Play ===== */
 .phase1-admin-card,
 .phase1-public-card {
   display: grid;

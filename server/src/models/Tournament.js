@@ -11,6 +11,12 @@ const SCORING_DEFAULTS = {
   caps: [27, 27, 17],
 };
 
+const SCHEDULE_DEFAULTS = {
+  dayStartTime: '09:00',
+  matchDurationMinutes: 60,
+  lunchDurationMinutes: 45,
+};
+
 const StandingsPhaseOverridesSchema = new mongoose.Schema(
   {
     poolOrderOverrides: {
@@ -91,6 +97,26 @@ const TournamentSchema = new mongoose.Schema(
         caps: {
           type: [Number],
           default: () => [...SCORING_DEFAULTS.caps],
+        },
+      },
+      schedule: {
+        dayStartTime: {
+          type: String,
+          default: SCHEDULE_DEFAULTS.dayStartTime,
+          trim: true,
+        },
+        matchDurationMinutes: {
+          type: Number,
+          default: SCHEDULE_DEFAULTS.matchDurationMinutes,
+        },
+        lunchStartTime: {
+          type: String,
+          default: undefined,
+          trim: true,
+        },
+        lunchDurationMinutes: {
+          type: Number,
+          default: SCHEDULE_DEFAULTS.lunchDurationMinutes,
         },
       },
     },

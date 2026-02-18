@@ -5,10 +5,13 @@ import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
+  formatRoundBlockStartTime,
+  formatSetRecord,
   PHASE1_COURT_ORDER,
   PHASE1_ROUND_BLOCKS,
   buildPhase1ScheduleLookup,
   formatTeamLabel,
+  mapCourtLabel,
   sortPhase1Pools,
 } from '../utils/phase1.js';
 import {
@@ -38,8 +41,6 @@ const normalizePools = (pools) =>
         }))
       : [],
   }));
-
-const formatSetPct = (value) => `${(Math.max(0, Number(value) || 0) * 100).toFixed(1)}%`;
 
 const formatPointDiff = (value) => {
   const parsed = Number(value) || 0;
@@ -350,7 +351,7 @@ function TournamentPhase1Admin() {
         headers: authHeaders(token),
       });
       setPools(normalizePools(poolData));
-      setMessage('Phase 1 pools initialized.');
+      setMessage('Pool Play 1 pools initialized.');
     } catch (initError) {
       setError(initError.message || 'Unable to initialize pools');
     } finally {
@@ -370,12 +371,12 @@ function TournamentPhase1Admin() {
       if (response.status === 409 && !force) {
         return {
           requiresForce: true,
-          message: payload?.message || 'Phase 1 matches already exist.',
+          message: payload?.message || 'Pool Play 1 matches already exist.',
         };
       }
 
       if (!response.ok || !Array.isArray(payload)) {
-        throw new Error(payload?.message || 'Unable to generate Phase 1 matches');
+        throw new Error(payload?.message || 'Unable to generate Pool Play 1 matches');
       }
 
       return {
@@ -400,7 +401,7 @@ function TournamentPhase1Admin() {
 
       if (firstAttempt.requiresForce) {
         const shouldForce = window.confirm(
-          `${firstAttempt.message}\n\nThis will delete and regenerate all Phase 1 matches and scoreboards. Continue?`
+          `${firstAttempt.message}\n\nThis will delete and regenerate all Pool Play 1 matches and scoreboards. Continue?`
         );
 
         if (!shouldForce) {
@@ -410,12 +411,12 @@ function TournamentPhase1Admin() {
 
         const forcedAttempt = await generatePhase1(true);
         setMatches(forcedAttempt.matches);
-        setMessage('Phase 1 matches regenerated.');
+        setMessage('Pool Play 1 matches regenerated.');
         return;
       }
 
       setMatches(firstAttempt.matches);
-      setMessage('Phase 1 matches generated.');
+      setMessage('Pool Play 1 matches generated.');
     } catch (generateError) {
       setError(generateError.message || 'Unable to generate matches');
     } finally {
@@ -481,7 +482,7 @@ function TournamentPhase1Admin() {
     return (
       <main className="container">
         <section className="card phase1-admin-card">
-          <p className="subtle">Loading Phase 1 setup...</p>
+          <p className="subtle">Loading Pool Play 1 setup...</p>
         </section>
       </main>
     );
@@ -491,8 +492,8 @@ function TournamentPhase1Admin() {
     return (
       <main className="container">
         <section className="card phase1-admin-card">
-          <h1 className="title">Phase 1 Setup</h1>
-          <p className="subtle">Sign in to manage tournament pools and generate Phase 1 matches.</p>
+          <h1 className="title">Pool Play 1 Setup</h1>
+          <p className="subtle">Sign in to manage tournament pools and generate Pool Play 1 matches.</p>
           <a className="primary-button" href="/?mode=signin">
             Sign In
           </a>
@@ -506,10 +507,10 @@ function TournamentPhase1Admin() {
       <section className="card phase1-admin-card">
         <div className="phase1-admin-header">
           <div>
-            <h1 className="title">Phase 1 Setup</h1>
+            <h1 className="title">Pool Play 1 Setup</h1>
             <p className="subtitle">
               {tournament?.name || 'Tournament'} • Drag teams to adjust pools, then generate the
-              fixed Phase 1 schedule.
+              fixed Pool Play 1 schedule.
             </p>
           </div>
           <div className="phase1-admin-actions">
@@ -517,7 +518,7 @@ function TournamentPhase1Admin() {
               Manage Teams
             </a>
             <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-              Open Phase 2 Setup
+              Open Pool Play 2 Setup
             </a>
             <button
               className="secondary-button"
@@ -525,7 +526,7 @@ function TournamentPhase1Admin() {
               onClick={handleInitializePools}
               disabled={initLoading || savingPools || generateLoading}
             >
-              {initLoading ? 'Initializing...' : 'Initialize Phase 1 Pools'}
+              {initLoading ? 'Initializing...' : 'Initialize Pool Play 1 Pools'}
             </button>
             <button
               className="primary-button"
@@ -533,7 +534,7 @@ function TournamentPhase1Admin() {
               onClick={handleGenerateMatches}
               disabled={!canGenerate || generateLoading}
             >
-              {generateLoading ? 'Generating...' : 'Generate Phase 1 Matches'}
+              {generateLoading ? 'Generating...' : 'Generate Pool Play 1 Matches'}
             </button>
           </div>
         </div>
@@ -558,7 +559,7 @@ function TournamentPhase1Admin() {
             >
               <header className="phase1-pool-header">
                 <h2>Pool {pool.name}</h2>
-                <p>{pool.homeCourt || 'No home court'}</p>
+                <p>{pool.homeCourt ? mapCourtLabel(pool.homeCourt) : 'No home court'}</p>
               </header>
 
               <div className="phase1-drop-list">
@@ -612,21 +613,21 @@ function TournamentPhase1Admin() {
 
         {matches.length > 0 && (
           <section className="phase1-schedule">
-            <h2 className="secondary-title">Phase 1 Schedule</h2>
+            <h2 className="secondary-title">Pool Play 1 Schedule</h2>
             <div className="phase1-table-wrap">
               <table className="phase1-schedule-table">
                 <thead>
                   <tr>
-                    <th>Round</th>
+                    <th>Time</th>
                     {PHASE1_COURT_ORDER.map((court) => (
-                      <th key={court}>{court}</th>
+                      <th key={court}>{mapCourtLabel(court)}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {PHASE1_ROUND_BLOCKS.map((roundBlock) => (
                     <tr key={roundBlock}>
-                      <th>Round {roundBlock}</th>
+                      <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
                       {PHASE1_COURT_ORDER.map((court) => {
                         const match = scheduleLookup[`${roundBlock}-${court}`];
                         const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
@@ -715,7 +716,7 @@ function TournamentPhase1Admin() {
         )}
 
         <section className="phase1-standings">
-          <h2 className="secondary-title">Phase 1 Standings</h2>
+          <h2 className="secondary-title">Pool Play 1 Standings</h2>
           <p className="subtle">Only finalized matches count toward standings.</p>
           {standingsLoading && <p className="subtle">Refreshing standings...</p>}
 
@@ -730,7 +731,7 @@ function TournamentPhase1Admin() {
                         <th>#</th>
                         <th>Team</th>
                         <th>W-L</th>
-                        <th>Set %</th>
+                        <th>Sets</th>
                         <th>Pt Diff</th>
                       </tr>
                     </thead>
@@ -742,7 +743,7 @@ function TournamentPhase1Admin() {
                           <td>
                             {team.matchesWon}-{team.matchesLost}
                           </td>
-                          <td>{formatSetPct(team.setPct)}</td>
+                          <td>{formatSetRecord(team)}</td>
                           <td>{formatPointDiff(team.pointDiff)}</td>
                         </tr>
                       ))}
@@ -762,7 +763,7 @@ function TournamentPhase1Admin() {
                     <th>Seed</th>
                     <th>Team</th>
                     <th>W-L</th>
-                    <th>Set %</th>
+                    <th>Sets</th>
                     <th>Pt Diff</th>
                   </tr>
                 </thead>
@@ -774,7 +775,7 @@ function TournamentPhase1Admin() {
                       <td>
                         {team.matchesWon}-{team.matchesLost}
                       </td>
-                      <td>{formatSetPct(team.setPct)}</td>
+                      <td>{formatSetRecord(team)}</td>
                       <td>{formatPointDiff(team.pointDiff)}</td>
                     </tr>
                   ))}

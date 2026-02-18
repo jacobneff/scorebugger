@@ -267,10 +267,10 @@ function TournamentsTab({
 
     const warnings = [];
     if (currentTeamCount < 15) {
-      warnings.push("Phase 1 full schedule requires 15 teams.");
+      warnings.push("Pool Play 1 full schedule requires 15 teams.");
     }
     if (currentTeamCount > 15) {
-      warnings.push("Phase 1 seed initialization currently uses the first 15 teams.");
+      warnings.push("Pool Play 1 seed initialization currently uses the first 15 teams.");
     }
     return warnings;
   }, [currentTeamCount, selectedTournament]);
@@ -462,7 +462,7 @@ function TournamentsTab({
       <div className="tournaments-layout">
         <section className="tournaments-card tournaments-create-card">
           <h2 className="secondary-title">Create Tournament</h2>
-          <p className="subtle">Start a new tournament and jump directly into Phase 1 setup.</p>
+          <p className="subtle">Start a new tournament and jump directly into Pool Play 1 setup.</p>
           <form className="tournaments-form" onSubmit={handleCreateTournament}>
             <label className="input-label" htmlFor="tournament-name">
               Tournament name
@@ -543,10 +543,10 @@ function TournamentsTab({
 
                     <div className="tournament-list-actions">
                       <a className="secondary-button" href={`/tournaments/${id}/phase1`}>
-                        Phase 1
+                        Pool Play 1
                       </a>
                       <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-                        Phase 2
+                        Pool Play 2
                       </a>
                       <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
                         Playoffs

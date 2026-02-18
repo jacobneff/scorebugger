@@ -113,6 +113,14 @@ describe('tournament routes', () => {
     expect(response.body.tournament.name).toBe('Public Tournament');
     expect(response.body.tournament).not.toHaveProperty('createdByUserId');
     expect(response.body).not.toHaveProperty('createdByUserId');
+    expect(response.body.tournament.settings).toEqual({
+      schedule: {
+        dayStartTime: '09:00',
+        matchDurationMinutes: 60,
+        lunchStartTime: null,
+        lunchDurationMinutes: 45,
+      },
+    });
     expect(response.body.teams).toHaveLength(1);
     expect(response.body.teams[0]).toEqual(
       expect.objectContaining({
@@ -123,5 +131,40 @@ describe('tournament routes', () => {
       })
     );
     expect(response.body.teams[0]).not.toHaveProperty('tournamentId');
+  });
+
+  test('admin tournament details include fallback schedule defaults for older docs', async () => {
+    const tournament = await Tournament.create({
+      name: 'Legacy Schedule Tournament',
+      date: new Date('2026-07-10T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'LEGACY',
+      createdByUserId: user._id,
+    });
+
+    await Tournament.updateOne(
+      { _id: tournament._id },
+      {
+        $unset: {
+          'settings.schedule': 1,
+        },
+      }
+    );
+
+    const response = await request(app)
+      .get(`/api/tournaments/${tournament._id}`)
+      .set(authHeader());
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.settings).toEqual(
+      expect.objectContaining({
+        schedule: {
+          dayStartTime: '09:00',
+          matchDurationMinutes: 60,
+          lunchStartTime: null,
+          lunchDurationMinutes: 45,
+        },
+      })
+    );
   });
 });

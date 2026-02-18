@@ -95,7 +95,7 @@ describe("Home tournaments tab", () => {
     expect(screen.queryByRole("button", { name: "Create tournament" })).not.toBeInTheDocument();
   });
 
-  it("creates a tournament and navigates to Phase 1", async () => {
+  it("creates a tournament and navigates to Pool Play 1", async () => {
     mockUseAuth.mockReturnValue(createSignedInAuth());
     const user = userEvent.setup();
 

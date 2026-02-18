@@ -28,6 +28,7 @@ const tournamentRoutes = require('./routes/tournaments');
 const tournamentTeamRoutes = require('./routes/tournamentTeams');
 const poolRoutes = require('./routes/pools');
 const matchRoutes = require('./routes/matches');
+const adminRoutes = require('./routes/admin');
 const {
   emitScoreboardSummaryEvent,
   getTournamentRoom,
@@ -74,6 +75,7 @@ async function bootstrap() {
   app.use('/api/tournament-teams', tournamentTeamRoutes);
   app.use('/api/pools', poolRoutes);
   app.use('/api/matches', matchRoutes);
+  app.use('/api/admin', adminRoutes);
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });

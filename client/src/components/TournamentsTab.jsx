@@ -1017,6 +1017,9 @@ function TournamentsTab({
                       <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
                         Playoffs
                       </a>
+                      <a className="secondary-button" href={`/tournaments/${id}/quick-scores`}>
+                        Quick Scores
+                      </a>
                       <a
                         className="secondary-button"
                         href={`/t/${tournament?.publicCode || ""}`}

@@ -2629,6 +2629,33 @@ button:disabled {
   min-width: 0;
 }
 
+.phase2-team-card-main {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.phase2-team-card-text {
+  min-width: 0;
+  display: grid;
+  gap: 0.05rem;
+}
+
+.phase2-team-card-text strong {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.phase2-team-seed {
+  margin: 0;
+  font-size: 0.74rem;
+  color: #475569;
+  white-space: nowrap;
+}
+
 .phase1-team-card-logo {
   width: 22px;
   height: 22px;
@@ -2842,6 +2869,98 @@ button:disabled {
 .phase1-standings-card h3 {
   margin: 0;
   font-size: 1rem;
+}
+
+.quick-scores-card {
+  display: grid;
+  gap: 1rem;
+  text-align: left;
+}
+
+.quick-scores-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.quick-scores-filter-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.quick-scores-filter-field select {
+  min-height: 2.4rem;
+}
+
+.quick-scores-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.quick-scores-row {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.quick-scores-row-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.quick-scores-row-title,
+.quick-scores-row-subtitle {
+  margin: 0;
+}
+
+.quick-scores-row-title {
+  font-size: 0.9rem;
+}
+
+.quick-scores-row-subtitle {
+  font-size: 1rem;
+}
+
+.quick-scores-row-meta {
+  display: grid;
+  justify-items: end;
+  gap: 0.3rem;
+}
+
+.quick-scores-row-actions {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.quick-scores-input {
+  min-height: 2.4rem;
+}
+
+.quick-scores-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.quick-scores-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(37, 99, 235, 0.38);
+  background: rgba(219, 234, 254, 0.72);
+  color: #1d4ed8;
+  font-size: 0.74rem;
+  font-weight: 600;
 }
 
 .phase1-standings-card--overall {
@@ -3492,6 +3611,18 @@ button:disabled {
   }
 
   .tournament-set-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .quick-scores-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .quick-scores-row-meta {
+    justify-items: start;
+  }
+
+  .quick-scores-row-actions {
     grid-template-columns: 1fr;
   }
 

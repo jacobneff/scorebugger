@@ -225,6 +225,17 @@ const formatPointDiff = (value) => {
 };
 const formatLiveSummary = (summary) =>
   `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
+const formatResultSetScores = (result) => {
+  if (!Array.isArray(result?.setScores) || result.setScores.length === 0) {
+    return '';
+  }
+
+  return result.setScores
+    .slice()
+    .sort((left, right) => (left?.setNo ?? 0) - (right?.setNo ?? 0))
+    .map((set) => `${set?.a ?? 0}-${set?.b ?? 0}`)
+    .join(', ');
+};
 
 function TournamentPhase1Admin() {
   const { id } = useParams();
@@ -1274,6 +1285,7 @@ function TournamentPhase1Admin() {
                         const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
                         const refLabel = formatShortTeamLabel(match?.refTeams?.[0]);
                         const matchStatusMeta = getMatchStatusMeta(match?.status);
+                        const resultSetScores = formatResultSetScores(match?.result);
                         const controlPanelHref = buildTournamentMatchControlHref({
                           matchId: match?._id,
                           scoreboardKey,
@@ -1317,8 +1329,8 @@ function TournamentPhase1Admin() {
                                   </span>
                                   {match.result && (
                                     <span className="phase1-match-result">
-                                      Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
-                                      {match.result.pointsForA}-{match.result.pointsForB}
+                                      Sets {match.result.setsWonA}-{match.result.setsWonB}
+                                      {resultSetScores ? ` • ${resultSetScores}` : ''}
                                     </span>
                                   )}
                                 </div>

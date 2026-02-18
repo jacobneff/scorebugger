@@ -19,6 +19,8 @@ describe('manual finalize + standings routes', () => {
   let user;
   let token;
   let tournamentCodeCounter = 1;
+  let ioToMock;
+  let ioEmitMock;
 
   beforeAll(async () => {
     mongo = await MongoMemoryServer.create();
@@ -41,6 +43,9 @@ describe('manual finalize + standings routes', () => {
 
     app = express();
     app.use(express.json());
+    ioEmitMock = jest.fn();
+    ioToMock = jest.fn(() => ({ emit: ioEmitMock }));
+    app.set('io', { to: ioToMock });
     app.use('/api/tournaments', tournamentRoutes);
     app.use('/api/matches', matchRoutes);
     app.use((err, _req, res, _next) => {
@@ -189,6 +194,42 @@ describe('manual finalize + standings routes', () => {
     expect(storedMatch.finalizedAt).toBeTruthy();
     expect(storedMatch.finalizedBy.toString()).toBe(user._id.toString());
     expect(storedMatch.result.setScores).toHaveLength(3);
+  });
+
+  test('finalize emits MATCH_FINALIZED to tournament room', async () => {
+    const tournament = await createOwnedTournament();
+    const [teamA, teamB] = await createTeams(tournament._id, ['Alpha', 'Bravo']);
+    const scoreboard = await createScoreboardWithSets('Alpha', 'Bravo', [
+      [25, 20],
+      [25, 18],
+    ]);
+    const match = await createMatch({
+      tournamentId: tournament._id,
+      teamAId: teamA._id,
+      teamBId: teamB._id,
+      scoreboardId: scoreboard._id,
+    });
+
+    const response = await finalizeMatch(match._id);
+
+    expect(response.statusCode).toBe(200);
+
+    const finalizedCall = ioEmitMock.mock.calls.find(
+      ([eventName, payload]) =>
+        eventName === 'tournament:event' && payload?.type === 'MATCH_FINALIZED'
+    );
+
+    expect(ioToMock).toHaveBeenCalledWith(`tournament:${tournament.publicCode}`);
+    expect(finalizedCall?.[1]).toEqual(
+      expect.objectContaining({
+        tournamentCode: tournament.publicCode,
+        type: 'MATCH_FINALIZED',
+        data: {
+          matchId: match._id.toString(),
+        },
+        ts: expect.any(Number),
+      })
+    );
   });
 
   test('standings only count finalized matches', async () => {

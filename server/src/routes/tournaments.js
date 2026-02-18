@@ -36,6 +36,11 @@ const {
   CODE_LENGTH,
   createUniqueTournamentPublicCode,
 } = require('../utils/tournamentPublicCode');
+const {
+  TOURNAMENT_EVENT_TYPES,
+  cacheTournamentMatchEntry,
+  emitTournamentEvent,
+} = require('../services/tournamentRealtime');
 
 const router = express.Router();
 
@@ -451,6 +456,11 @@ async function ensureTournamentStatusAtLeast(tournamentId, nextStatus) {
 
 async function findTournamentForPublicCode(publicCode) {
   return Tournament.findOne({ publicCode }).select('_id name date timezone status facilities publicCode').lean();
+}
+
+function emitTournamentEventFromRequest(req, tournamentCode, type, data) {
+  const io = req.app?.get('io');
+  emitTournamentEvent(io, tournamentCode, type, data);
 }
 
 function formatStandingsPayload(standings) {
@@ -1033,9 +1043,14 @@ router.post('/:id/phase1/pools/init', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const tournament = await Tournament.findOne({
+      _id: id,
+      createdByUserId: req.user.id,
+    })
+      .select('publicCode')
+      .lean();
 
-    if (!ownedTournament) {
+    if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
 
@@ -1114,6 +1129,15 @@ router.post('/:id/phase1/pools/init', requireAuth, async (req, res, next) => {
     }
 
     const pools = await loadPhase1Pools(id, { populateTeams: true });
+    emitTournamentEventFromRequest(
+      req,
+      tournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.POOLS_UPDATED,
+      {
+        phase: 'phase1',
+        poolIds: pools.map((pool) => toIdString(pool._id)).filter(Boolean),
+      }
+    );
     return res.json(pools.map(serializePool));
   } catch (error) {
     return next(error);
@@ -1129,9 +1153,14 @@ router.get('/:id/phase1/pools', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const tournament = await Tournament.findOne({
+      _id: id,
+      createdByUserId: req.user.id,
+    })
+      .select('publicCode')
+      .lean();
 
-    if (!ownedTournament) {
+    if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
 
@@ -1151,9 +1180,14 @@ router.get('/:id/phase2/pools', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const tournament = await Tournament.findOne({
+      _id: id,
+      createdByUserId: req.user.id,
+    })
+      .select('publicCode')
+      .lean();
 
-    if (!ownedTournament) {
+    if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
 
@@ -1173,9 +1207,14 @@ router.post('/:id/phase2/pools/generate', requireAuth, async (req, res, next) =>
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const tournament = await Tournament.findOne({
+      _id: id,
+      createdByUserId: req.user.id,
+    })
+      .select('publicCode')
+      .lean();
 
-    if (!ownedTournament) {
+    if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
 
@@ -1236,6 +1275,15 @@ router.post('/:id/phase2/pools/generate', requireAuth, async (req, res, next) =>
     await ensureTournamentStatusAtLeast(id, 'phase2');
 
     const pools = await loadPhase2Pools(id, { populateTeams: true });
+    emitTournamentEventFromRequest(
+      req,
+      tournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.POOLS_UPDATED,
+      {
+        phase: 'phase2',
+        poolIds: pools.map((pool) => toIdString(pool._id)).filter(Boolean),
+      }
+    );
     return res.json({
       source: generation.source,
       pools: pools.map(serializePool),
@@ -1258,7 +1306,7 @@ router.post('/:id/generate/phase1', requireAuth, async (req, res, next) => {
       _id: id,
       createdByUserId: req.user.id,
     })
-      .select('settings status')
+      .select('settings status publicCode')
       .lean();
 
     if (!tournament) {
@@ -1374,6 +1422,11 @@ router.post('/:id/generate/phase1', requireAuth, async (req, res, next) => {
             status: 'scheduled',
           });
 
+          cacheTournamentMatchEntry({
+            scoreboardId: scoreboard._id,
+            matchId: match._id,
+            tournamentCode: tournament.publicCode,
+          });
           createdMatchIds.push(match._id);
         }
       }
@@ -1394,6 +1447,15 @@ router.post('/:id/generate/phase1', requireAuth, async (req, res, next) => {
     }
 
     const matches = await loadMatchesForResponse({ _id: { $in: createdMatchIds } });
+    emitTournamentEventFromRequest(
+      req,
+      tournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.MATCHES_GENERATED,
+      {
+        phase: 'phase1',
+        matchIds: matches.map((match) => toIdString(match._id)).filter(Boolean),
+      }
+    );
     return res.status(201).json(matches);
   } catch (error) {
     return next(error);
@@ -1413,7 +1475,7 @@ router.post('/:id/generate/phase2', requireAuth, async (req, res, next) => {
       _id: id,
       createdByUserId: req.user.id,
     })
-      .select('settings status')
+      .select('settings status publicCode')
       .lean();
 
     if (!tournament) {
@@ -1529,6 +1591,11 @@ router.post('/:id/generate/phase2', requireAuth, async (req, res, next) => {
             status: 'scheduled',
           });
 
+          cacheTournamentMatchEntry({
+            scoreboardId: scoreboard._id,
+            matchId: match._id,
+            tournamentCode: tournament.publicCode,
+          });
           createdMatchIds.push(match._id);
         }
       }
@@ -1547,6 +1614,15 @@ router.post('/:id/generate/phase2', requireAuth, async (req, res, next) => {
     await ensureTournamentStatusAtLeast(id, 'phase2');
 
     const matches = await loadMatchesForResponse({ _id: { $in: createdMatchIds } });
+    emitTournamentEventFromRequest(
+      req,
+      tournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.MATCHES_GENERATED,
+      {
+        phase: 'phase2',
+        matchIds: matches.map((match) => toIdString(match._id)).filter(Boolean),
+      }
+    );
     return res.status(201).json(matches);
   } catch (error) {
     return next(error);
@@ -1566,7 +1642,7 @@ router.post('/:id/generate/playoffs', requireAuth, async (req, res, next) => {
       _id: id,
       createdByUserId: req.user.id,
     })
-      .select('settings status standingsOverrides')
+      .select('settings status standingsOverrides publicCode')
       .lean();
 
     if (!tournament) {
@@ -1683,6 +1759,11 @@ router.post('/:id/generate/playoffs', requireAuth, async (req, res, next) => {
           status: 'scheduled',
         });
 
+        cacheTournamentMatchEntry({
+          scoreboardId: scoreboard._id,
+          matchId: match._id,
+          tournamentCode: tournament.publicCode,
+        });
         createdMatchIds.push(match._id);
         createdMatchesByKey.set(plannedMatch.bracketMatchKey, match);
       }
@@ -1706,6 +1787,31 @@ router.post('/:id/generate/playoffs', requireAuth, async (req, res, next) => {
 
     const createdMatches = await loadMatchesForResponse({ _id: { $in: createdMatchIds } });
     const payload = buildPlayoffPayload(createdMatches);
+    emitTournamentEventFromRequest(
+      req,
+      tournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.MATCHES_GENERATED,
+      {
+        phase: 'playoffs',
+        matchIds: createdMatches.map((match) => toIdString(match._id)).filter(Boolean),
+      }
+    );
+    PLAYOFF_BRACKETS.forEach((bracket) => {
+      const affectedMatchIds = createdMatches
+        .filter((match) => normalizeBracket(match.bracket) === bracket)
+        .map((match) => toIdString(match._id))
+        .filter(Boolean);
+
+      emitTournamentEventFromRequest(
+        req,
+        tournament.publicCode,
+        TOURNAMENT_EVENT_TYPES.PLAYOFFS_BRACKET_UPDATED,
+        {
+          bracket,
+          affectedMatchIds,
+        }
+      );
+    });
 
     return res.status(201).json({
       source: ranking.usedPhase2OverallOverride ? 'override' : 'finalized',

@@ -37,6 +37,8 @@ describe('phase1 pool + match generation routes', () => {
   let app;
   let user;
   let token;
+  let ioToMock;
+  let ioEmitMock;
 
   beforeAll(async () => {
     mongo = await MongoMemoryServer.create();
@@ -59,6 +61,9 @@ describe('phase1 pool + match generation routes', () => {
 
     app = express();
     app.use(express.json());
+    ioEmitMock = jest.fn();
+    ioToMock = jest.fn(() => ({ emit: ioEmitMock }));
+    app.set('io', { to: ioToMock });
     app.use('/api/tournaments', tournamentRoutes);
     app.use('/api/pools', poolRoutes);
     app.use((err, _req, res, _next) => {
@@ -194,5 +199,46 @@ describe('phase1 pool + match generation routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.body.message).toMatch(/cannot appear in multiple/i);
+  });
+
+  test('pool edit emits POOLS_UPDATED to tournament room', async () => {
+    const tournament = await createOwnedTournament();
+    await seedTournamentTeams(tournament._id);
+
+    const init = await request(app)
+      .post(`/api/tournaments/${tournament._id}/phase1/pools/init`)
+      .set(authHeader());
+
+    const poolA = init.body.find((pool) => pool.name === 'A');
+    const reorderedTeamIds = [
+      poolA.teamIds[1]._id,
+      poolA.teamIds[0]._id,
+      poolA.teamIds[2]._id,
+    ];
+
+    const response = await request(app)
+      .patch(`/api/pools/${poolA._id}`)
+      .set(authHeader())
+      .send({ teamIds: reorderedTeamIds });
+
+    expect(response.statusCode).toBe(200);
+
+    const poolsUpdatedCall = ioEmitMock.mock.calls.find(
+      ([eventName, payload]) =>
+        eventName === 'tournament:event' && payload?.type === 'POOLS_UPDATED'
+    );
+
+    expect(ioToMock).toHaveBeenCalledWith(`tournament:${tournament.publicCode}`);
+    expect(poolsUpdatedCall?.[1]).toEqual(
+      expect.objectContaining({
+        tournamentCode: tournament.publicCode,
+        type: 'POOLS_UPDATED',
+        data: expect.objectContaining({
+          phase: 'phase1',
+          poolIds: expect.arrayContaining([poolA._id]),
+        }),
+        ts: expect.any(Number),
+      })
+    );
   });
 });

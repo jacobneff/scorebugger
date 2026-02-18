@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 
 import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import { formatTeamLabel } from '../utils/phase1.js';
 
 const PLAYOFF_BRACKET_ORDER = ['gold', 'silver', 'bronze'];
@@ -38,6 +39,8 @@ const formatBracketMatchSummary = (match) => {
   const teamBLabel = match.teamB ? formatTeamLabel(match.teamB) : 'TBD';
   return `${teamALabel} vs ${teamBLabel}`;
 };
+const formatLiveSummary = (summary) =>
+  `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
 
 function TournamentPlayoffsAdmin() {
   const { id } = useParams();
@@ -58,6 +61,7 @@ function TournamentPlayoffsAdmin() {
   const [refSelections, setRefSelections] = useState({});
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
 
   const fetchJson = useCallback(async (url, options = {}) => {
     const response = await fetch(url, options);
@@ -128,6 +132,48 @@ function TournamentPlayoffsAdmin() {
 
     loadData();
   }, [initializing, loadData, token]);
+
+  useEffect(() => {
+    setLiveSummariesByMatchId({});
+  }, [id]);
+
+  const handleTournamentRealtimeEvent = useCallback(
+    (event) => {
+      if (!event || typeof event !== 'object') {
+        return;
+      }
+
+      if (event.type === 'SCOREBOARD_SUMMARY') {
+        const matchId = event.data?.matchId;
+
+        if (!matchId) {
+          return;
+        }
+
+        setLiveSummariesByMatchId((previous) => ({
+          ...previous,
+          [matchId]: event.data,
+        }));
+        return;
+      }
+
+      const shouldRefresh =
+        event.type === 'PLAYOFFS_BRACKET_UPDATED' ||
+        (event.type === 'MATCHES_GENERATED' && event.data?.phase === 'playoffs') ||
+        ['MATCH_STATUS_UPDATED', 'MATCH_FINALIZED', 'MATCH_UNFINALIZED'].includes(event.type);
+
+      if (shouldRefresh) {
+        refreshPlayoffs().catch(() => {});
+      }
+    },
+    [refreshPlayoffs]
+  );
+
+  useTournamentRealtime({
+    tournamentCode: tournament?.publicCode,
+    enabled: Boolean(token && tournament?.publicCode),
+    onEvent: handleTournamentRealtimeEvent,
+  });
 
   const generatePlayoffs = useCallback(
     async (force = false) => {
@@ -374,6 +420,7 @@ function TournamentPlayoffsAdmin() {
                         const selectedRefId = refSelections[slot.matchId] ?? currentRefId;
                         const canEditRefs = Boolean(match) && Number(match.roundBlock) > 7;
                         const canFinalize = Boolean(match?.teamAId && match?.teamBId);
+                        const liveSummary = match ? liveSummariesByMatchId[match._id] : null;
 
                         return (
                           <tr key={`${roundBlock.roundBlock}-${slot.court}`}>
@@ -432,15 +479,18 @@ function TournamentPlayoffsAdmin() {
                               {!match ? (
                                 <span className="subtle">Empty</span>
                               ) : (
-                                <span
-                                  className={`phase1-status-badge ${
-                                    match.status === 'final'
-                                      ? 'phase1-status-badge--final'
-                                      : 'phase1-status-badge--scheduled'
-                                  }`}
-                                >
-                                  {match.status === 'final' ? 'Finalized' : 'Not Finalized'}
-                                </span>
+                                <>
+                                  <span
+                                    className={`phase1-status-badge ${
+                                      match.status === 'final'
+                                        ? 'phase1-status-badge--final'
+                                        : 'phase1-status-badge--scheduled'
+                                    }`}
+                                  >
+                                    {match.status === 'final' ? 'Finalized' : 'Not Finalized'}
+                                  </span>
+                                  {liveSummary && <p className="subtle">{formatLiveSummary(liveSummary)}</p>}
+                                </>
                               )}
                             </td>
                             <td>
@@ -514,6 +564,11 @@ function TournamentPlayoffsAdmin() {
                             <p className="subtle">
                               {match.court} • {match.status === 'final' ? 'Final' : 'Scheduled'}
                             </p>
+                            {liveSummariesByMatchId[match._id] && (
+                              <p className="subtle">
+                                {formatLiveSummary(liveSummariesByMatchId[match._id])}
+                              </p>
+                            )}
                             {match.result && (
                               <p className="subtle">
                                 Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}

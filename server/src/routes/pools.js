@@ -6,6 +6,10 @@ const Tournament = require('../models/Tournament');
 const TournamentTeam = require('../models/TournamentTeam');
 const { requireAuth } = require('../middleware/auth');
 const { recomputePhase2RematchWarnings } = require('../services/phase2');
+const {
+  TOURNAMENT_EVENT_TYPES,
+  emitTournamentEvent,
+} = require('../services/tournamentRealtime');
 
 const router = express.Router();
 
@@ -73,10 +77,12 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
       return res.status(404).json({ message: 'Pool not found' });
     }
 
-    const ownedTournament = await Tournament.exists({
+    const ownedTournament = await Tournament.findOne({
       _id: pool.tournamentId,
       createdByUserId: req.user.id,
-    });
+    })
+      .select('_id publicCode')
+      .lean();
 
     if (!ownedTournament) {
       return res.status(404).json({ message: 'Pool not found or unauthorized' });
@@ -130,6 +136,16 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
     const finalizedPool = await Pool.findById(updatedPool._id)
       .populate('teamIds', 'name shortName seed logoUrl')
       .lean();
+    const io = req.app?.get('io');
+    emitTournamentEvent(
+      io,
+      ownedTournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.POOLS_UPDATED,
+      {
+        phase: pool.phase,
+        poolIds: [toIdString(finalizedPool._id)].filter(Boolean),
+      }
+    );
 
     return res.json(serializePool(finalizedPool));
   } catch (error) {

@@ -8,11 +8,16 @@ const Tournament = require('../models/Tournament');
 const TournamentTeam = require('../models/TournamentTeam');
 const { computeMatchSnapshot } = require('../services/tournamentEngine/standings');
 const { recomputePlayoffBracketProgression } = require('../services/playoffs');
+const {
+  TOURNAMENT_EVENT_TYPES,
+  emitTournamentEvent,
+} = require('../services/tournamentRealtime');
 
 const router = express.Router();
 
 const isObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 const toIdString = (value) => (value ? value.toString() : null);
+const MATCH_STATUSES = ['scheduled', 'live', 'final'];
 
 const serializeResult = (result) => {
   if (!result) {
@@ -68,10 +73,52 @@ const serializeMatch = (match) => ({
   updatedAt: match?.updatedAt ?? null,
 });
 
-async function ensureOwnerAccess(tournamentId, userId) {
-  return Tournament.exists({
+async function findOwnedTournamentContext(tournamentId, userId) {
+  return Tournament.findOne({
     _id: tournamentId,
     createdByUserId: userId,
+  })
+    .select('_id publicCode')
+    .lean();
+}
+
+function emitTournamentEventFromRequest(req, tournamentCode, type, data) {
+  const io = req.app?.get('io');
+  emitTournamentEvent(io, tournamentCode, type, data);
+}
+
+function emitMatchStatusUpdated(req, tournamentCode, match) {
+  const matchId = toIdString(match?._id);
+  const status = match?.status;
+
+  if (!matchId || !MATCH_STATUSES.includes(status)) {
+    return;
+  }
+
+  emitTournamentEventFromRequest(
+    req,
+    tournamentCode,
+    TOURNAMENT_EVENT_TYPES.MATCH_STATUS_UPDATED,
+    {
+      matchId,
+      status,
+    }
+  );
+}
+
+async function emitAffectedMatchStatusUpdates(req, tournamentCode, matchIds) {
+  const uniqueIds = [...new Set((Array.isArray(matchIds) ? matchIds : []).map(toIdString).filter(Boolean))];
+
+  if (uniqueIds.length === 0) {
+    return;
+  }
+
+  const affectedMatches = await Match.find({ _id: { $in: uniqueIds } })
+    .select('_id status')
+    .lean();
+
+  affectedMatches.forEach((affectedMatch) => {
+    emitMatchStatusUpdated(req, tournamentCode, affectedMatch);
   });
 }
 
@@ -90,9 +137,9 @@ router.post('/:matchId/finalize', requireAuth, async (req, res, next) => {
       return res.status(404).json({ message: 'Match not found' });
     }
 
-    const hasAccess = await ensureOwnerAccess(match.tournamentId, req.user.id);
+    const tournamentContext = await findOwnedTournamentContext(match.tournamentId, req.user.id);
 
-    if (!hasAccess) {
+    if (!tournamentContext) {
       return res.status(404).json({ message: 'Match not found or unauthorized' });
     }
 
@@ -123,13 +170,44 @@ router.post('/:matchId/finalize', requireAuth, async (req, res, next) => {
 
     await match.save();
 
+    let playoffProgression = null;
+
     if (match.phase === 'playoffs' && match.bracket) {
-      await recomputePlayoffBracketProgression(match.tournamentId, match.bracket);
+      playoffProgression = await recomputePlayoffBracketProgression(match.tournamentId, match.bracket);
     }
 
-    const refreshedMatch = await Match.findById(match._id);
+    const refreshedMatch = await Match.findById(match._id).lean();
+    const responseMatch = serializeMatch(refreshedMatch || match.toObject());
+    emitMatchStatusUpdated(req, tournamentContext.publicCode, responseMatch);
+    emitTournamentEventFromRequest(
+      req,
+      tournamentContext.publicCode,
+      TOURNAMENT_EVENT_TYPES.MATCH_FINALIZED,
+      { matchId: responseMatch._id }
+    );
 
-    return res.json(serializeMatch((refreshedMatch || match).toObject()));
+    if (playoffProgression && match.bracket) {
+      const affectedMatchIds = [
+        ...new Set(
+          [...(playoffProgression.updatedMatchIds || []), ...(playoffProgression.clearedMatchIds || [])]
+            .map(toIdString)
+            .filter(Boolean)
+        ),
+      ];
+
+      emitTournamentEventFromRequest(
+        req,
+        tournamentContext.publicCode,
+        TOURNAMENT_EVENT_TYPES.PLAYOFFS_BRACKET_UPDATED,
+        {
+          bracket: match.bracket,
+          affectedMatchIds,
+        }
+      );
+      await emitAffectedMatchStatusUpdates(req, tournamentContext.publicCode, affectedMatchIds);
+    }
+
+    return res.json(responseMatch);
   } catch (error) {
     return next(error);
   }
@@ -150,9 +228,9 @@ router.post('/:matchId/unfinalize', requireAuth, async (req, res, next) => {
       return res.status(404).json({ message: 'Match not found' });
     }
 
-    const hasAccess = await ensureOwnerAccess(match.tournamentId, req.user.id);
+    const tournamentContext = await findOwnedTournamentContext(match.tournamentId, req.user.id);
 
-    if (!hasAccess) {
+    if (!tournamentContext) {
       return res.status(404).json({ message: 'Match not found or unauthorized' });
     }
 
@@ -163,13 +241,93 @@ router.post('/:matchId/unfinalize', requireAuth, async (req, res, next) => {
 
     await match.save();
 
+    let playoffProgression = null;
+
     if (match.phase === 'playoffs' && match.bracket) {
-      await recomputePlayoffBracketProgression(match.tournamentId, match.bracket);
+      playoffProgression = await recomputePlayoffBracketProgression(match.tournamentId, match.bracket);
     }
 
-    const refreshedMatch = await Match.findById(match._id);
+    const refreshedMatch = await Match.findById(match._id).lean();
+    const responseMatch = serializeMatch(refreshedMatch || match.toObject());
+    emitMatchStatusUpdated(req, tournamentContext.publicCode, responseMatch);
+    emitTournamentEventFromRequest(
+      req,
+      tournamentContext.publicCode,
+      TOURNAMENT_EVENT_TYPES.MATCH_UNFINALIZED,
+      { matchId: responseMatch._id }
+    );
 
-    return res.json(serializeMatch((refreshedMatch || match).toObject()));
+    if (playoffProgression && match.bracket) {
+      const affectedMatchIds = [
+        ...new Set(
+          [...(playoffProgression.updatedMatchIds || []), ...(playoffProgression.clearedMatchIds || [])]
+            .map(toIdString)
+            .filter(Boolean)
+        ),
+      ];
+
+      emitTournamentEventFromRequest(
+        req,
+        tournamentContext.publicCode,
+        TOURNAMENT_EVENT_TYPES.PLAYOFFS_BRACKET_UPDATED,
+        {
+          bracket: match.bracket,
+          affectedMatchIds,
+        }
+      );
+      await emitAffectedMatchStatusUpdates(req, tournamentContext.publicCode, affectedMatchIds);
+    }
+
+    return res.json(responseMatch);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PATCH /api/matches/:matchId/status -> owner-only status update
+router.patch('/:matchId/status', requireAuth, async (req, res, next) => {
+  try {
+    const { matchId } = req.params;
+    const nextStatus =
+      typeof req.body?.status === 'string' ? req.body.status.trim().toLowerCase() : '';
+
+    if (!isObjectId(matchId)) {
+      return res.status(400).json({ message: 'Invalid match id' });
+    }
+
+    if (!MATCH_STATUSES.includes(nextStatus)) {
+      return res.status(400).json({ message: 'Invalid status' });
+    }
+
+    const match = await Match.findById(matchId);
+
+    if (!match) {
+      return res.status(404).json({ message: 'Match not found' });
+    }
+
+    const tournamentContext = await findOwnedTournamentContext(match.tournamentId, req.user.id);
+
+    if (!tournamentContext) {
+      return res.status(404).json({ message: 'Match not found or unauthorized' });
+    }
+
+    if (nextStatus === 'final' && !match.result) {
+      return res.status(400).json({ message: 'Use finalize to set final status' });
+    }
+
+    if (nextStatus !== 'final' && match.result) {
+      return res.status(400).json({ message: 'Use unfinalize to clear a finalized result' });
+    }
+
+    if (match.status !== nextStatus) {
+      match.status = nextStatus;
+      await match.save();
+    }
+
+    const serializedMatch = serializeMatch(match.toObject());
+    emitMatchStatusUpdated(req, tournamentContext.publicCode, serializedMatch);
+
+    return res.json(serializedMatch);
   } catch (error) {
     return next(error);
   }
@@ -201,7 +359,7 @@ router.patch('/:matchId/refs', requireAuth, async (req, res, next) => {
       return res.status(404).json({ message: 'Match not found' });
     }
 
-    const hasAccess = await ensureOwnerAccess(match.tournamentId, req.user.id);
+    const hasAccess = await findOwnedTournamentContext(match.tournamentId, req.user.id);
 
     if (!hasAccess) {
       return res.status(404).json({ message: 'Match not found or unauthorized' });

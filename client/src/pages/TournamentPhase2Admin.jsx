@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 
 import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
   PHASE2_COURT_ORDER,
   PHASE2_ROUND_BLOCKS,
@@ -48,6 +49,8 @@ const formatPointDiff = (value) => {
   const parsed = Number(value) || 0;
   return parsed > 0 ? `+${parsed}` : `${parsed}`;
 };
+const formatLiveSummary = (summary) =>
+  `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
 
 const normalizeStandingsPayload = (payload) => ({
   pools: Array.isArray(payload?.pools) ? payload.pools : [],
@@ -92,6 +95,7 @@ function TournamentPhase2Admin() {
   const [matchActionId, setMatchActionId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
 
   const fetchJson = useCallback(async (url, options = {}) => {
     const response = await fetch(url, options);
@@ -197,6 +201,56 @@ function TournamentPhase2Admin() {
 
     loadData();
   }, [initializing, loadData, token]);
+
+  useEffect(() => {
+    setLiveSummariesByMatchId({});
+  }, [id]);
+
+  const handleTournamentRealtimeEvent = useCallback(
+    (event) => {
+      if (!event || typeof event !== 'object') {
+        return;
+      }
+
+      if (event.type === 'SCOREBOARD_SUMMARY') {
+        const matchId = event.data?.matchId;
+
+        if (!matchId) {
+          return;
+        }
+
+        setLiveSummariesByMatchId((previous) => ({
+          ...previous,
+          [matchId]: event.data,
+        }));
+        return;
+      }
+
+      if (event.type === 'POOLS_UPDATED' && event.data?.phase === 'phase2') {
+        loadPools()
+          .then((nextPools) => {
+            setPools(nextPools);
+          })
+          .catch(() => {});
+        return;
+      }
+
+      if (
+        event.type === 'MATCHES_GENERATED'
+          ? event.data?.phase === 'phase2'
+          : ['MATCH_STATUS_UPDATED', 'MATCH_FINALIZED', 'MATCH_UNFINALIZED'].includes(event.type)
+      ) {
+        refreshMatchesAndStandings().catch(() => {});
+      }
+    },
+    [loadPools, refreshMatchesAndStandings]
+  );
+
+  useTournamentRealtime({
+    tournamentCode: tournament?.publicCode,
+    enabled: Boolean(token && tournament?.publicCode),
+    onEvent: handleTournamentRealtimeEvent,
+  });
 
   const invalidPools = useMemo(
     () => pools.filter((pool) => pool.teamIds.length !== 3),
@@ -697,6 +751,11 @@ function TournamentPhase2Admin() {
                                   {`: ${formatTeamLabel(match.teamA)} vs ${formatTeamLabel(match.teamB)}`}
                                 </p>
                                 <p>Ref: {refLabel}</p>
+                                {liveSummariesByMatchId[match._id] && (
+                                  <p className="subtle">
+                                    {formatLiveSummary(liveSummariesByMatchId[match._id])}
+                                  </p>
+                                )}
                                 {scoreboardKey ? (
                                   <a
                                     href={`/board/${scoreboardKey}/control`}

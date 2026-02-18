@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { API_URL } from '../config/env.js';
+import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
   PHASE1_COURT_ORDER,
   PHASE1_ROUND_BLOCKS,
@@ -44,6 +45,13 @@ const formatPointDiff = (value) => {
 };
 
 const formatTeamName = (team) => team?.shortName || team?.name || 'TBD';
+const formatLiveSummary = (summary) => {
+  if (!summary) {
+    return '';
+  }
+
+  return `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
+};
 
 function TournamentPublicView() {
   const { publicCode } = useParams();
@@ -64,12 +72,14 @@ function TournamentPublicView() {
   const [activeViewTab, setActiveViewTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
 
-  useEffect(() => {
-    let cancelled = false;
-    let pollTimer = null;
+  const loadPublicData = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!publicCode) {
+        return;
+      }
 
-    async function loadPublicData({ silent = false } = {}) {
       if (!silent) {
         setLoading(true);
       }
@@ -134,10 +144,6 @@ function TournamentPublicView() {
           throw new Error(playoffsPayload?.message || 'Unable to load playoffs');
         }
 
-        if (cancelled) {
-          return;
-        }
-
         setTournament(tournamentPayload.tournament);
         setPools(normalizePools(poolPayload));
         setMatches(Array.isArray(matchPayload) ? matchPayload : []);
@@ -161,33 +167,56 @@ function TournamentPublicView() {
           },
         });
       } catch (loadError) {
-        if (!cancelled) {
-          setError(loadError.message || 'Unable to load public tournament view');
-        }
+        setError(loadError.message || 'Unable to load public tournament view');
       } finally {
-        if (!cancelled && !silent) {
+        if (!silent) {
           setLoading(false);
         }
       }
-    }
+    },
+    [publicCode]
+  );
 
-    if (publicCode) {
-      loadPublicData();
-      pollTimer = setInterval(() => {
-        loadPublicData({ silent: true });
-      }, 15000);
-    } else {
+  useEffect(() => {
+    if (!publicCode) {
       setLoading(false);
       setError('Missing tournament code');
+      return;
     }
 
-    return () => {
-      cancelled = true;
-      if (pollTimer) {
-        clearInterval(pollTimer);
+    setLiveSummariesByMatchId({});
+    loadPublicData();
+  }, [loadPublicData, publicCode]);
+
+  const handleTournamentEvent = useCallback(
+    (event) => {
+      if (!event || typeof event !== 'object') {
+        return;
       }
-    };
-  }, [publicCode]);
+
+      if (event.type === 'SCOREBOARD_SUMMARY') {
+        const matchId = event.data?.matchId;
+
+        if (!matchId) {
+          return;
+        }
+
+        setLiveSummariesByMatchId((previous) => ({
+          ...previous,
+          [matchId]: event.data,
+        }));
+        return;
+      }
+
+      loadPublicData({ silent: true });
+    },
+    [loadPublicData]
+  );
+
+  useTournamentRealtime({
+    tournamentCode: tournament?.publicCode || publicCode,
+    onEvent: handleTournamentEvent,
+  });
 
   const scheduleLookup = useMemo(() => buildPhase1ScheduleLookup(matches), [matches]);
   const activeStandings =
@@ -285,6 +314,7 @@ function TournamentPublicView() {
                         {PHASE1_COURT_ORDER.map((court) => {
                           const match = scheduleLookup[`${roundBlock}-${court}`];
                           const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
+                          const liveSummary = match ? liveSummariesByMatchId[match._id] : null;
 
                           return (
                             <td key={`${roundBlock}-${court}`}>
@@ -295,6 +325,7 @@ function TournamentPublicView() {
                                     {`: ${formatTeamLabel(match.teamA)} vs ${formatTeamLabel(match.teamB)}`}
                                   </p>
                                   <p>Ref: {formatTeamLabel(match.refTeams?.[0])}</p>
+                                  {liveSummary && <p className="subtle">{formatLiveSummary(liveSummary)}</p>}
                                   {scoreboardKey ? (
                                     <a
                                       href={`/board/${scoreboardKey}/display`}
@@ -447,6 +478,7 @@ function TournamentPublicView() {
                           {roundBlock.slots.map((slot) => {
                             const match = playoffs.matches.find((entry) => entry._id === slot.matchId);
                             const scoreboardKey = match?.scoreboardCode || null;
+                            const liveSummary = match ? liveSummariesByMatchId[match._id] : null;
                             return (
                               <tr key={`${roundBlock.roundBlock}-${slot.court}`}>
                                 <td>{slot.facility}</td>
@@ -454,7 +486,10 @@ function TournamentPublicView() {
                                 <td>{slot.matchLabel}</td>
                                 <td>{slot.matchId ? `${slot.teams.a} vs ${slot.teams.b}` : 'Empty'}</td>
                                 <td>{slot.refs.length > 0 ? slot.refs.join(', ') : 'TBD'}</td>
-                                <td>{slot.status || 'empty'}</td>
+                                <td>
+                                  {slot.status || 'empty'}
+                                  {liveSummary && <p className="subtle">{formatLiveSummary(liveSummary)}</p>}
+                                </td>
                                 <td>
                                   {scoreboardKey ? (
                                     <a href={`/board/${scoreboardKey}/display`} target="_blank" rel="noreferrer">
@@ -507,6 +542,11 @@ function TournamentPublicView() {
                                 <p className="subtle">
                                   {match.court} • {match.status === 'final' ? 'Final' : 'Scheduled'}
                                 </p>
+                                {liveSummariesByMatchId[match._id] && (
+                                  <p className="subtle">
+                                    {formatLiveSummary(liveSummariesByMatchId[match._id])}
+                                  </p>
+                                )}
                                 {match.result && (
                                   <p className="subtle">
                                     Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}

@@ -1114,6 +1114,13 @@ button:disabled {
   gap: 0.35rem;
 }
 
+.tournament-team-card-fields-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: end;
+}
+
 .tournament-team-drag-handle {
   border: 1px dashed rgba(37, 99, 235, 0.5);
   border-radius: 999px;
@@ -3302,6 +3309,10 @@ button:disabled {
   }
 
   .tournament-team-add-row {
+    grid-template-columns: 1fr;
+  }
+
+  .tournament-team-card-fields-row {
     grid-template-columns: 1fr;
   }
 

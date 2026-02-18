@@ -85,12 +85,27 @@ const formatDateLabel = (value) => {
     return "No date";
   }
 
+  if (typeof value === "string") {
+    const datePartMatch = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim());
+
+    if (datePartMatch) {
+      const year = Number(datePartMatch[1]);
+      const month = Number(datePartMatch[2]);
+      const day = Number(datePartMatch[3]);
+      const utcDate = new Date(Date.UTC(year, month - 1, day));
+
+      if (!Number.isNaN(utcDate.getTime())) {
+        return new Intl.DateTimeFormat(undefined, { timeZone: "UTC" }).format(utcDate);
+      }
+    }
+  }
+
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
     return "No date";
   }
 
-  return parsed.toLocaleDateString();
+  return new Intl.DateTimeFormat(undefined, { timeZone: "UTC" }).format(parsed);
 };
 
 const formatStatusLabel = (value) => {
@@ -152,46 +167,48 @@ function SortableTeamCard({ team, index, disabled, onUpdate, onRemove }) {
         </button>
       </div>
 
-      <div className="tournament-team-card-fields">
-        <label className="input-label" htmlFor={`team-short-${team.rowId}`}>
-          Team name
-        </label>
-        <input
-          id={`team-short-${team.rowId}`}
-          type="text"
-          value={team.shortName}
-          disabled={disabled}
-          onChange={(event) => onUpdate(team.rowId, "shortName", event.target.value)}
-        />
-      </div>
+      <div className="tournament-team-card-fields-row">
+        <div className="tournament-team-card-fields">
+          <label className="input-label" htmlFor={`team-name-${team.rowId}`}>
+            Team name
+          </label>
+          <input
+            id={`team-name-${team.rowId}`}
+            type="text"
+            value={team.name}
+            disabled={disabled}
+            onChange={(event) => onUpdate(team.rowId, "name", event.target.value)}
+          />
+        </div>
 
-      <div className="tournament-team-card-fields">
-        <label className="input-label" htmlFor={`team-logo-${team.rowId}`}>
-          Logo URL (optional)
-        </label>
-        <input
-          id={`team-logo-${team.rowId}`}
-          type="text"
-          value={team.logoUrl}
+        <div className="tournament-team-card-fields">
+          <label className="input-label" htmlFor={`team-logo-${team.rowId}`}>
+            Logo URL (optional)
+          </label>
+          <input
+            id={`team-logo-${team.rowId}`}
+            type="text"
+            value={team.logoUrl}
+            disabled={disabled}
+            onChange={(event) => onUpdate(team.rowId, "logoUrl", event.target.value)}
+          />
+        </div>
+
+        <button
+          type="button"
+          className="ghost-button tournament-team-remove"
           disabled={disabled}
-          onChange={(event) => onUpdate(team.rowId, "logoUrl", event.target.value)}
-        />
+          onClick={() => onRemove(team.rowId)}
+        >
+          Remove
+        </button>
       </div>
 
       {normalizeLogoUrl(team.logoUrl) && (
         <div className="tournament-team-logo-preview">
-          <img src={team.logoUrl} alt={`${team.shortName || "Team"} logo`} />
+          <img src={team.logoUrl} alt={`${team.name || team.shortName || "Team"} logo`} />
         </div>
       )}
-
-      <button
-        type="button"
-        className="ghost-button tournament-team-remove"
-        disabled={disabled}
-        onClick={() => onRemove(team.rowId)}
-      >
-        Remove
-      </button>
     </article>
   );
 }
@@ -219,7 +236,7 @@ function TournamentsTab({
   const [selectedTournament, setSelectedTournament] = useState(null);
   const [teamsInitial, setTeamsInitial] = useState([]);
   const [teamRows, setTeamRows] = useState([]);
-  const [newTeamShortName, setNewTeamShortName] = useState("");
+  const [newTeamName, setNewTeamName] = useState("");
   const [newTeamLogoUrl, setNewTeamLogoUrl] = useState("");
   const [teamsLoading, setTeamsLoading] = useState(false);
   const [teamsSaving, setTeamsSaving] = useState(false);
@@ -237,7 +254,8 @@ function TournamentsTab({
     (team = {}) => ({
       rowId: makeRowId(),
       _id: team?._id ? String(team._id) : "",
-      shortName: team?.shortName || "",
+      name: team?.name || team?.shortName || "",
+      shortName: team?.shortName || team?.name || "",
       logoUrl: typeof team?.logoUrl === "string" ? team.logoUrl : "",
       orderIndex: Number.isFinite(Number(team?.orderIndex)) ? Number(team.orderIndex) : null,
     }),
@@ -356,7 +374,8 @@ function TournamentsTab({
         const normalizedTeams = Array.isArray(teamsPayload)
           ? teamsPayload.map((team) => ({
               _id: team?._id ? String(team._id) : "",
-              shortName: team?.shortName || "",
+              name: team?.name || team?.shortName || "",
+              shortName: team?.shortName || team?.name || "",
               logoUrl: typeof team?.logoUrl === "string" ? team.logoUrl : "",
               orderIndex: Number.isFinite(Number(team?.orderIndex))
                 ? Number(team.orderIndex)
@@ -413,7 +432,7 @@ function TournamentsTab({
   useEffect(() => {
     setTeamsMessage("");
     setTeamsError("");
-    setNewTeamShortName("");
+    setNewTeamName("");
     setNewTeamLogoUrl("");
     loadSelectedTournament(selectedTournamentId);
   }, [loadSelectedTournament, selectedTournamentId]);
@@ -464,9 +483,9 @@ function TournamentsTab({
       return;
     }
 
-    const shortName = normalizeText(newTeamShortName);
+    const name = normalizeText(newTeamName);
     const logoUrl = normalizeLogoUrl(newTeamLogoUrl);
-    if (!shortName) {
+    if (!name) {
       setTeamsError("Team name is required to add a team.");
       return;
     }
@@ -477,7 +496,8 @@ function TournamentsTab({
 
     try {
       const payload = {
-        shortName,
+        name,
+        shortName: name,
       };
       if (logoUrl !== null) {
         payload.logoUrl = logoUrl;
@@ -489,7 +509,7 @@ function TournamentsTab({
         body: JSON.stringify(payload),
       });
       await loadSelectedTournament(selectedTournamentId);
-      setNewTeamShortName("");
+      setNewTeamName("");
       setNewTeamLogoUrl("");
       setTeamsMessage("Team added.");
       onShowToast?.("success", "Team added");
@@ -652,9 +672,9 @@ function TournamentsTab({
 
     for (let index = 0; index < teamRows.length; index += 1) {
       const row = teamRows[index];
-      const shortName = normalizeText(row?.shortName);
+      const name = normalizeText(row?.name || row?.shortName);
 
-      if (!shortName) {
+      if (!name) {
         setTeamsError(`Team ${index + 1} must include a team name.`);
         return;
       }
@@ -672,14 +692,15 @@ function TournamentsTab({
         const id = String(row._id);
         const previous = initialById.get(id);
         const payload = {};
-        const nextShortName = normalizeText(row.shortName);
-        const previousShortName = normalizeText(previous?.shortName);
+        const nextName = normalizeText(row?.name || row?.shortName);
+        const previousName = normalizeText(previous?.name || previous?.shortName);
+        const previousShortName = normalizeText(previous?.shortName || previous?.name);
         const nextLogoUrl = normalizeLogoUrl(row.logoUrl);
         const previousLogoUrl = normalizeLogoUrl(previous?.logoUrl);
 
-        if (nextShortName !== previousShortName) {
-          payload.shortName = nextShortName;
-          payload.name = nextShortName;
+        if (nextName !== previousName || nextName !== previousShortName) {
+          payload.name = nextName;
+          payload.shortName = nextName;
         }
 
         if (nextLogoUrl !== previousLogoUrl) {
@@ -900,15 +921,15 @@ function TournamentsTab({
         {selectedTournament && (
           <div className="tournament-team-add-row">
             <div className="tournament-team-card-fields">
-              <label className="input-label" htmlFor="team-add-shortname">
+              <label className="input-label" htmlFor="team-add-name">
                 New team name
               </label>
               <input
-                id="team-add-shortname"
+                id="team-add-name"
                 type="text"
-                value={newTeamShortName}
+                value={newTeamName}
                 disabled={teamEditDisabled || teamCreateBusy}
-                onChange={(event) => setNewTeamShortName(event.target.value)}
+                onChange={(event) => setNewTeamName(event.target.value)}
                 placeholder="ODU"
               />
             </div>

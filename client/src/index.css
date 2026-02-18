@@ -1151,6 +1151,67 @@ button:disabled {
   object-fit: cover;
 }
 
+.tournament-team-links-panel {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.tournament-team-links-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.tournament-team-links-header h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.tournament-team-links-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.tournament-team-link-row {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.6rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.tournament-team-link-meta {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.tournament-team-link-meta strong {
+  font-size: 0.85rem;
+  color: #0f172a;
+}
+
+.tournament-team-link-meta code {
+  font-size: 0.74rem;
+  color: #334155;
+  word-break: break-all;
+}
+
+.tournament-team-link-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
 /* ===== Account & Board List ===== */
 .account-panel {
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.08) 0%, rgba(59, 130, 246, 0.12) 100%);
@@ -2315,6 +2376,86 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.team-public-card {
+  display: grid;
+  gap: 1rem;
+  text-align: left;
+}
+
+.team-public-header {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.team-public-header .subtitle {
+  margin-bottom: 0;
+}
+
+.team-public-section {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.team-public-quick-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.5rem;
+}
+
+.team-public-phase-groups {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.team-public-phase-card {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0.65rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.team-public-phase-card h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.team-public-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.team-public-match-row {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.6rem;
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: start;
+}
+
+.team-public-time {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.1;
+}
+
+.team-public-body {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.team-public-opponent {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
 .phase1-success {
   color: #15803d;
 }
@@ -3325,6 +3466,19 @@ button:disabled {
     justify-self: stretch;
   }
 
+  .tournament-team-link-row {
+    grid-template-columns: 1fr;
+  }
+
+  .tournament-team-link-actions {
+    width: 100%;
+  }
+
+  .tournament-team-link-actions .secondary-button,
+  .tournament-team-link-actions .ghost-button {
+    width: 100%;
+  }
+
   .tournament-score-grid {
     grid-template-columns: 1fr;
   }
@@ -3348,6 +3502,19 @@ button:disabled {
 
   .court-schedule-time {
     font-size: 1.1rem;
+  }
+
+  .team-public-quick-links {
+    grid-template-columns: 1fr;
+  }
+
+  .team-public-match-row {
+    grid-template-columns: 1fr;
+    gap: 0.45rem;
+  }
+
+  .team-public-time {
+    font-size: 1rem;
   }
 }
 

@@ -4,11 +4,19 @@ const mongoose = require('mongoose');
 const Tournament = require('../models/Tournament');
 const TournamentTeam = require('../models/TournamentTeam');
 const { requireAuth } = require('../middleware/auth');
+const {
+  createUniqueTeamPublicCode,
+  normalizeTeamPublicCode,
+} = require('../utils/teamPublicCode');
 
 const router = express.Router();
 
 const isObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
+const DUPLICATE_KEY_ERROR_CODE = 11000;
+const isDuplicateTeamPublicCodeError = (error) =>
+  error?.code === DUPLICATE_KEY_ERROR_CODE &&
+  (error?.keyPattern?.publicTeamCode || error?.keyValue?.publicTeamCode);
 
 async function findOwnedTeam(teamId, userId) {
   const team = await TournamentTeam.findById(teamId);
@@ -97,6 +105,55 @@ router.patch('/:teamId', requireAuth, async (req, res, next) => {
     await team.save();
 
     return res.json(team.toObject());
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /api/tournament-teams/:teamId/regenerate-link -> rotate team public link code
+router.post('/:teamId/regenerate-link', requireAuth, async (req, res, next) => {
+  try {
+    const { teamId } = req.params;
+
+    if (!isObjectId(teamId)) {
+      return res.status(400).json({ message: 'Invalid team id' });
+    }
+
+    const team = await findOwnedTeam(teamId, req.user.id);
+
+    if (!team) {
+      return res.status(404).json({ message: 'Tournament team not found or unauthorized' });
+    }
+
+    const previousCode = normalizeTeamPublicCode(team.publicTeamCode);
+    const reservedCodes = new Set(previousCode ? [previousCode] : []);
+    const maxAttempts = 5;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const nextCode = await createUniqueTeamPublicCode(TournamentTeam, team.tournamentId, {
+        excludeTeamId: team._id,
+        reservedCodes,
+      });
+
+      team.publicTeamCode = nextCode;
+
+      try {
+        await team.save();
+        return res.json({
+          teamId: team._id.toString(),
+          publicTeamCode: nextCode,
+        });
+      } catch (error) {
+        if (isDuplicateTeamPublicCodeError(error)) {
+          reservedCodes.add(nextCode);
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    return res.status(500).json({ message: 'Failed to generate a new team link' });
   } catch (error) {
     return next(error);
   }

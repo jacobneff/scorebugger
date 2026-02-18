@@ -40,6 +40,11 @@ const {
   createUniqueTournamentPublicCode,
 } = require('../utils/tournamentPublicCode');
 const {
+  createUniqueTeamPublicCode,
+  isValidTeamPublicCode,
+  normalizeTeamPublicCode,
+} = require('../utils/teamPublicCode');
+const {
   TOURNAMENT_EVENT_TYPES,
   cacheTournamentMatchEntry,
   emitTournamentEvent,
@@ -70,6 +75,15 @@ const PHASE_LABELS = Object.freeze({
   phase2: 'Pool Play 2',
   playoffs: 'Playoffs',
 });
+const BRACKET_LABELS = Object.freeze({
+  gold: 'Gold',
+  silver: 'Silver',
+  bronze: 'Bronze',
+});
+const FACILITY_LABELS = Object.freeze({
+  SRC: 'SRC',
+  VC: 'Volleyball Center',
+});
 
 const phase2PoolNameIndex = PHASE2_POOL_NAMES.reduce((lookup, poolName, index) => {
   lookup[poolName] = index;
@@ -81,6 +95,10 @@ const isObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 const isDuplicatePublicCodeError = (error) =>
   error?.code === DUPLICATE_KEY_ERROR_CODE &&
   (error?.keyPattern?.publicCode || error?.keyValue?.publicCode);
+
+const isDuplicateTeamPublicCodeError = (error) =>
+  error?.code === DUPLICATE_KEY_ERROR_CODE &&
+  (error?.keyPattern?.publicTeamCode || error?.keyValue?.publicTeamCode);
 
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 
@@ -111,6 +129,113 @@ function normalizeTournamentSchedule(schedule) {
       TOURNAMENT_SCHEDULE_DEFAULTS.lunchDurationMinutes
     ),
   };
+}
+
+function parseClockTimeToMinutes(value) {
+  if (!isNonEmptyString(value)) {
+    return 0;
+  }
+
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+
+  if (!match) {
+    return 0;
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+
+  if (
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return 0;
+  }
+
+  return hours * 60 + minutes;
+}
+
+function formatMinutesAsClockTime(minutesSinceMidnight) {
+  const normalizedMinutes = ((Math.floor(minutesSinceMidnight) % 1440) + 1440) % 1440;
+  const hours24 = Math.floor(normalizedMinutes / 60);
+  const minutes = normalizedMinutes % 60;
+  const meridiem = hours24 >= 12 ? 'PM' : 'AM';
+  const hours12 = hours24 % 12 || 12;
+  return `${hours12}:${String(minutes).padStart(2, '0')} ${meridiem}`;
+}
+
+function getTimeZoneOffsetMinutes(timeZone, timestamp) {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(new Date(timestamp));
+  const partMap = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const year = Number(partMap.year);
+  const month = Number(partMap.month);
+  const day = Number(partMap.day);
+  const hour = Number(partMap.hour);
+  const minute = Number(partMap.minute);
+  const second = Number(partMap.second);
+
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    !Number.isFinite(hour) ||
+    !Number.isFinite(minute) ||
+    !Number.isFinite(second)
+  ) {
+    return 0;
+  }
+
+  const asUtc = Date.UTC(year, month - 1, day, hour, minute, second);
+  return Math.round((asUtc - timestamp) / 60000);
+}
+
+function formatMinutesInTimezone(minutesSinceMidnight, timezone) {
+  const referenceMidnightUtc = Date.UTC(2026, 0, 1, 0, 0, 0);
+  const offsetMinutes = getTimeZoneOffsetMinutes(timezone, referenceMidnightUtc);
+  const timestamp = referenceMidnightUtc + (minutesSinceMidnight - offsetMinutes) * 60_000;
+
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(new Date(timestamp));
+}
+
+function formatRoundBlockStartTime(roundBlock, tournament) {
+  const parsedRoundBlock = Number(roundBlock);
+
+  if (!Number.isFinite(parsedRoundBlock)) {
+    return '';
+  }
+
+  const schedule = normalizeTournamentSchedule(tournament?.settings?.schedule);
+  const dayStartMinutes = parseClockTimeToMinutes(schedule.dayStartTime);
+  const timeIndex = Math.max(0, Math.floor(parsedRoundBlock) - 1);
+  const minutesSinceMidnight = dayStartMinutes + timeIndex * schedule.matchDurationMinutes;
+  const timezone = isNonEmptyString(tournament?.timezone)
+    ? tournament.timezone.trim()
+    : 'America/New_York';
+
+  try {
+    return formatMinutesInTimezone(minutesSinceMidnight, timezone);
+  } catch {
+    return formatMinutesAsClockTime(minutesSinceMidnight);
+  }
 }
 
 function attachTournamentScheduleDefaults(tournament) {
@@ -291,7 +416,7 @@ function validateTeamPayload(rawTeam, index) {
   return null;
 }
 
-function buildTeamInsertPayload(rawTeam, tournamentId, orderIndex = null) {
+function buildTeamInsertPayload(rawTeam, tournamentId, orderIndex = null, publicTeamCode = null) {
   const shortName = rawTeam.shortName.trim();
   const normalizedName = isNonEmptyString(rawTeam.name) ? rawTeam.name.trim() : shortName;
   const team = {
@@ -312,7 +437,72 @@ function buildTeamInsertPayload(rawTeam, tournamentId, orderIndex = null) {
     team.seed = rawTeam.seed === null ? null : Number(rawTeam.seed);
   }
 
+  if (isValidTeamPublicCode(publicTeamCode)) {
+    team.publicTeamCode = normalizeTeamPublicCode(publicTeamCode);
+  }
+
   return team;
+}
+
+function hasValidPublicTeamCode(team) {
+  return isValidTeamPublicCode(team?.publicTeamCode);
+}
+
+async function ensureTournamentTeamPublicCodes(tournamentId, { maxAttempts = 4 } = {}) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const teams = await TournamentTeam.find({ tournamentId }).lean();
+    teams.sort(compareTeamsByTournamentOrder);
+
+    const teamsMissingCodes = teams.filter((team) => !hasValidPublicTeamCode(team));
+
+    if (teamsMissingCodes.length === 0) {
+      return teams.map((team) => ({
+        ...team,
+        publicTeamCode: normalizeTeamPublicCode(team.publicTeamCode),
+      }));
+    }
+
+    const reservedCodes = new Set(
+      teams
+        .map((team) => normalizeTeamPublicCode(team.publicTeamCode))
+        .filter((code) => isValidTeamPublicCode(code))
+    );
+
+    const writeOperations = [];
+
+    for (const team of teamsMissingCodes) {
+      const nextCode = await createUniqueTeamPublicCode(TournamentTeam, tournamentId, {
+        excludeTeamId: team._id,
+        reservedCodes,
+      });
+      reservedCodes.add(nextCode);
+      writeOperations.push({
+        updateOne: {
+          filter: {
+            _id: team._id,
+            tournamentId,
+          },
+          update: {
+            $set: {
+              publicTeamCode: nextCode,
+            },
+          },
+        },
+      });
+    }
+
+    try {
+      await TournamentTeam.bulkWrite(writeOperations, { ordered: true });
+    } catch (error) {
+      if (isDuplicateTeamPublicCodeError(error)) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error('Failed to backfill team public codes');
 }
 
 function serializeTeam(team) {
@@ -882,6 +1072,122 @@ function sortMatchesForCourtSchedule(matches) {
   });
 }
 
+function safeNonNegativeNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+}
+
+function computeSetWinsFromScoreboard(sets) {
+  return (Array.isArray(sets) ? sets : []).reduce(
+    (accumulator, set) => {
+      const scores = Array.isArray(set?.scores) ? set.scores : [];
+
+      if (scores.length !== 2) {
+        return accumulator;
+      }
+
+      const scoreA = safeNonNegativeNumber(scores[0]);
+      const scoreB = safeNonNegativeNumber(scores[1]);
+
+      if (scoreA > scoreB) {
+        accumulator.a += 1;
+      } else if (scoreB > scoreA) {
+        accumulator.b += 1;
+      }
+
+      return accumulator;
+    },
+    { a: 0, b: 0 }
+  );
+}
+
+function serializeScoreSummaryFromScoreboard(scoreboard) {
+  if (!scoreboard || typeof scoreboard !== 'object') {
+    return null;
+  }
+
+  const sets = computeSetWinsFromScoreboard(scoreboard.sets);
+
+  return {
+    setsA: sets.a,
+    setsB: sets.b,
+    pointsA: safeNonNegativeNumber(scoreboard?.teams?.[0]?.score),
+    pointsB: safeNonNegativeNumber(scoreboard?.teams?.[1]?.score),
+  };
+}
+
+function normalizeMatchStatus(status) {
+  const normalized = typeof status === 'string' ? status.trim().toLowerCase() : '';
+
+  if (normalized === 'live') {
+    return 'live';
+  }
+
+  if (normalized === 'final') {
+    return 'final';
+  }
+
+  return 'scheduled';
+}
+
+function formatPublicTeamSnippet(team) {
+  if (!team || typeof team !== 'object') {
+    return null;
+  }
+
+  return {
+    teamId: toIdString(team._id),
+    shortName: team.shortName || team.name || 'TBD',
+    logoUrl: team.logoUrl || null,
+  };
+}
+
+function resolveFacilityLabel(match) {
+  const facilityCode = match?.facility || getFacilityFromCourt(match?.court);
+  return FACILITY_LABELS[facilityCode] || facilityCode || '';
+}
+
+function serializeMatchForTeamView(match, focusTeamId, tournament) {
+  const teamA = match?.teamAId && typeof match.teamAId === 'object' ? match.teamAId : null;
+  const teamB = match?.teamBId && typeof match.teamBId === 'object' ? match.teamBId : null;
+  const teamAId = toIdString(teamA?._id || match?.teamAId);
+  const teamBId = toIdString(teamB?._id || match?.teamBId);
+  const normalizedFocusTeamId = toIdString(focusTeamId);
+  const isTeamHome = normalizedFocusTeamId && teamAId === normalizedFocusTeamId;
+  const opponentTeam = isTeamHome ? teamB : teamA;
+  const status = normalizeMatchStatus(match?.status);
+  const resultScore = serializeCourtScheduleScore(match?.result);
+  const scoreboardScore = serializeScoreSummaryFromScoreboard(
+    match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null
+  );
+
+  return {
+    matchId: toIdString(match?._id),
+    phase: match?.phase ?? null,
+    phaseLabel: PHASE_LABELS[match?.phase] || match?.phase || '',
+    bracket: match?.bracket ?? null,
+    bracketLabel: BRACKET_LABELS[normalizeBracket(match?.bracket)] || null,
+    roundLabel: match?.bracketRound ?? null,
+    roundBlock: match?.roundBlock ?? null,
+    timeLabel: formatRoundBlockStartTime(match?.roundBlock, tournament),
+    facility: match?.facility ?? getFacilityFromCourt(match?.court),
+    facilityLabel: resolveFacilityLabel(match),
+    courtCode: match?.court ?? null,
+    courtLabel: mapCourtDisplayLabel(match?.court),
+    opponent: formatPublicTeamSnippet(opponentTeam),
+    teamA: formatPublicTeamSnippet(teamA),
+    teamB: formatPublicTeamSnippet(teamB),
+    isTeamHome: Boolean(isTeamHome),
+    status,
+    scoreSummary: resultScore || scoreboardScore,
+    refBy: Array.isArray(match?.refTeamIds)
+      ? match.refTeamIds
+          .map((team) => (team && typeof team === 'object' ? { shortName: team.shortName || team.name || 'TBD' } : null))
+          .filter(Boolean)
+      : [],
+  };
+}
+
 function sanitizePlayoffMatchForPublic(match) {
   return {
     _id: match?._id ?? null,
@@ -952,6 +1258,112 @@ router.get('/code/:publicCode', async (req, res, next) => {
         orderIndex: normalizeTeamOrderIndex(team.orderIndex),
         seed: team.seed ?? null,
       })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/code/:publicCode/team/:teamCode -> public team-focused view payload
+router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
+  try {
+    const publicCode = normalizePublicCode(req.params.publicCode);
+    const teamCode = normalizeTeamPublicCode(req.params.teamCode);
+
+    if (!new RegExp(`^[A-Z0-9]{${CODE_LENGTH}}$`).test(publicCode) || !isValidTeamPublicCode(teamCode)) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+
+    const tournament = await Tournament.findOne({ publicCode })
+      .select('_id name date timezone publicCode facilities settings.schedule')
+      .lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+
+    const team = await TournamentTeam.findOne({
+      tournamentId: tournament._id,
+      publicTeamCode: teamCode,
+    })
+      .select('_id name shortName logoUrl')
+      .lean();
+
+    if (!team) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+
+    const relevantMatches = await Match.find({
+      tournamentId: tournament._id,
+      $or: [
+        { teamAId: team._id },
+        { teamBId: team._id },
+        { refTeamIds: team._id },
+      ],
+    })
+      .select(
+        'phase bracket bracketRound roundBlock facility court teamAId teamBId refTeamIds status result scoreboardId createdAt'
+      )
+      .populate('teamAId', 'name shortName logoUrl')
+      .populate('teamBId', 'name shortName logoUrl')
+      .populate('refTeamIds', 'name shortName')
+      .populate('scoreboardId', 'teams.score sets')
+      .lean();
+
+    const teamId = toIdString(team._id);
+    const tournamentForTimeLabels = {
+      timezone: tournament.timezone,
+      settings: {
+        schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+      },
+    };
+
+    const participantMatches = sortMatchesForCourtSchedule(
+      relevantMatches.filter((match) => {
+        const teamAId = toIdString(match?.teamAId?._id || match?.teamAId);
+        const teamBId = toIdString(match?.teamBId?._id || match?.teamBId);
+        return teamAId === teamId || teamBId === teamId;
+      })
+    ).map((match) => serializeMatchForTeamView(match, teamId, tournamentForTimeLabels));
+
+    const refAssignments = sortMatchesForCourtSchedule(
+      relevantMatches.filter((match) =>
+        Array.isArray(match?.refTeamIds)
+          ? match.refTeamIds.some((refTeam) => toIdString(refTeam?._id || refTeam) === teamId)
+          : false
+      )
+    ).map((match) => serializeMatchForTeamView(match, teamId, tournamentForTimeLabels));
+
+    const nextUp = participantMatches.find((match) => match.status !== 'final') || null;
+
+    return res.json({
+      tournament: {
+        name: tournament.name,
+        date: tournament.date,
+        timezone: tournament.timezone,
+        publicCode: tournament.publicCode,
+        facilities: tournament.facilities,
+        courts: PHASE1_COURT_ORDER.map((courtCode) => {
+          const facility = getFacilityFromCourt(courtCode);
+          return {
+            code: courtCode,
+            label: mapCourtDisplayLabel(courtCode),
+            facility,
+            facilityLabel: FACILITY_LABELS[facility] || facility,
+          };
+        }),
+        settings: {
+          schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+        },
+      },
+      team: {
+        teamId,
+        shortName: team.shortName || team.name || 'TBD',
+        logoUrl: team.logoUrl || null,
+      },
+      nextUp,
+      matches: participantMatches,
+      refs: refAssignments,
     });
   } catch (error) {
     return next(error);
@@ -2683,11 +3095,18 @@ router.post('/:id/teams', requireAuth, async (req, res, next) => {
 
     let nextOrderIndex =
       maxExistingOrderIndex > 0 ? maxExistingOrderIndex + 1 : existingTeams.length + 1;
-    const payload = rawTeams.map((team) => {
-      const teamPayload = buildTeamInsertPayload(team, id, nextOrderIndex);
+    const reservedCodes = new Set();
+    const payload = [];
+
+    for (const team of rawTeams) {
+      const publicTeamCode = await createUniqueTeamPublicCode(TournamentTeam, id, {
+        reservedCodes,
+      });
+      reservedCodes.add(publicTeamCode);
+      const teamPayload = buildTeamInsertPayload(team, id, nextOrderIndex, publicTeamCode);
       nextOrderIndex += 1;
-      return teamPayload;
-    });
+      payload.push(teamPayload);
+    }
 
     if (Array.isArray(req.body)) {
       const createdTeams = await TournamentTeam.insertMany(payload, { ordered: true });
@@ -2751,6 +3170,44 @@ router.put('/:id/teams/order', requireAuth, async (req, res, next) => {
     const teams = await TournamentTeam.find({ tournamentId: id }).lean();
     teams.sort(compareTeamsByTournamentOrder);
     return res.json(teams);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/:id/teams/links -> list relative team public links for owned tournament
+router.get('/:id/teams/links', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const tournament = await Tournament.findOne({
+      _id: id,
+      createdByUserId: req.user.id,
+    })
+      .select('publicCode')
+      .lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const teams = await ensureTournamentTeamPublicCodes(id);
+
+    return res.json(
+      teams.map((team) => {
+        const teamCode = normalizeTeamPublicCode(team.publicTeamCode);
+        return {
+          teamId: toIdString(team._id),
+          shortName: team.shortName || team.name || 'TBD',
+          publicTeamCode: teamCode,
+          teamLinkUrl: `/t/${tournament.publicCode}/team/${teamCode}`,
+        };
+      })
+    );
   } catch (error) {
     return next(error);
   }

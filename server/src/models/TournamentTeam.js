@@ -31,9 +31,28 @@ const TournamentTeamSchema = new mongoose.Schema(
       type: Number,
       default: null,
     },
+    publicTeamCode: {
+      type: String,
+      default: null,
+      trim: true,
+      uppercase: true,
+      minlength: 8,
+      maxlength: 8,
+      match: /^[A-Z0-9]{8}$/,
+    },
   },
   {
     timestamps: true,
+  }
+);
+
+TournamentTeamSchema.index(
+  { tournamentId: 1, publicTeamCode: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      publicTeamCode: { $type: 'string' },
+    },
   }
 );
 

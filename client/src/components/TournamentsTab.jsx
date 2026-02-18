@@ -80,6 +80,23 @@ const normalizeLogoUrl = (value) => {
   return trimmed ? trimmed : null;
 };
 
+const toAbsoluteUrl = (value) => {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) {
+    return "";
+  }
+
+  if (/^https?:\/\//i.test(raw)) {
+    return raw;
+  }
+
+  if (typeof window === "undefined" || !window.location?.origin) {
+    return raw;
+  }
+
+  return `${window.location.origin}${raw.startsWith("/") ? "" : "/"}${raw}`;
+};
+
 const formatDateLabel = (value) => {
   if (!value) {
     return "No date";
@@ -244,6 +261,11 @@ function TournamentsTab({
   const [teamOrderSaving, setTeamOrderSaving] = useState(false);
   const [teamsError, setTeamsError] = useState("");
   const [teamsMessage, setTeamsMessage] = useState("");
+  const [teamLinks, setTeamLinks] = useState([]);
+  const [teamLinksLoading, setTeamLinksLoading] = useState(false);
+  const [teamLinksError, setTeamLinksError] = useState("");
+  const [teamLinkActionTeamId, setTeamLinkActionTeamId] = useState("");
+  const [copiedTeamLinkTeamId, setCopiedTeamLinkTeamId] = useState("");
 
   const makeRowId = useCallback(() => {
     rowCounterRef.current += 1;
@@ -297,6 +319,30 @@ function TournamentsTab({
       return headers;
     },
     [token]
+  );
+
+  const loadTeamLinks = useCallback(
+    async (tournamentId) => {
+      const normalizedId = typeof tournamentId === "string" ? tournamentId.trim() : "";
+
+      if (!token || !normalizedId) {
+        return [];
+      }
+
+      const payload = await fetchJson(`${API_URL}/api/tournaments/${normalizedId}/teams/links`, {
+        headers: authHeaders(),
+      });
+
+      return Array.isArray(payload)
+        ? payload.map((entry) => ({
+            teamId: entry?.teamId ? String(entry.teamId) : "",
+            shortName: entry?.shortName || "TBD",
+            publicTeamCode: entry?.publicTeamCode || "",
+            teamLinkUrl: toAbsoluteUrl(entry?.teamLinkUrl || ""),
+          }))
+        : [];
+    },
+    [authHeaders, fetchJson, token]
   );
 
   const loadTournaments = useCallback(
@@ -354,12 +400,17 @@ function TournamentsTab({
         setSelectedTournament(null);
         setTeamsInitial([]);
         setTeamRows([]);
+        setTeamLinks([]);
+        setTeamLinksError("");
+        setTeamLinksLoading(false);
         setTeamsLoading(false);
         return;
       }
 
       setTeamsLoading(true);
       setTeamsError("");
+      setTeamLinksLoading(true);
+      setTeamLinksError("");
 
       try {
         const [tournamentPayload, teamsPayload] = await Promise.all([
@@ -370,6 +421,15 @@ function TournamentsTab({
             headers: authHeaders(),
           }),
         ]);
+        let linksPayload = [];
+
+        try {
+          linksPayload = await loadTeamLinks(normalizedId);
+          setTeamLinksError("");
+        } catch (linkError) {
+          linksPayload = [];
+          setTeamLinksError(linkError?.message || "Unable to load team links");
+        }
 
         const normalizedTeams = Array.isArray(teamsPayload)
           ? teamsPayload.map((team) => ({
@@ -386,16 +446,20 @@ function TournamentsTab({
         setSelectedTournament(tournamentPayload || null);
         setTeamsInitial(normalizedTeams);
         setTeamRows(normalizedTeams.map((team) => toDraftRow(team)));
+        setTeamLinks(linksPayload);
       } catch (error) {
         setSelectedTournament(null);
         setTeamsInitial([]);
         setTeamRows([]);
+        setTeamLinks([]);
+        setTeamLinksError("");
         setTeamsError(error?.message || "Unable to load tournament teams");
       } finally {
         setTeamsLoading(false);
+        setTeamLinksLoading(false);
       }
     },
-    [authHeaders, fetchJson, toDraftRow, token]
+    [authHeaders, fetchJson, loadTeamLinks, toDraftRow, token]
   );
 
   useEffect(() => {
@@ -405,6 +469,11 @@ function TournamentsTab({
       setSelectedTournament(null);
       setTeamsInitial([]);
       setTeamRows([]);
+      setTeamLinks([]);
+      setTeamLinksError("");
+      setTeamLinksLoading(false);
+      setTeamLinkActionTeamId("");
+      setCopiedTeamLinkTeamId("");
       setTournamentsError("");
       setTeamsError("");
       setTeamsMessage("");
@@ -434,6 +503,8 @@ function TournamentsTab({
     setTeamsError("");
     setNewTeamName("");
     setNewTeamLogoUrl("");
+    setCopiedTeamLinkTeamId("");
+    setTeamLinkActionTeamId("");
     loadSelectedTournament(selectedTournamentId);
   }, [loadSelectedTournament, selectedTournamentId]);
 
@@ -459,6 +530,42 @@ function TournamentsTab({
     const cleaned = typeof nextId === "string" ? nextId.trim() : "";
     setSelectedTournamentId(cleaned);
   };
+
+  const refreshTeamLinks = useCallback(
+    async ({ tournamentId, showLoading = true } = {}) => {
+      const normalizedId =
+        typeof tournamentId === "string" && tournamentId.trim()
+          ? tournamentId.trim()
+          : selectedTournamentId;
+
+      if (!normalizedId || !token) {
+        setTeamLinks([]);
+        setTeamLinksError("");
+        setTeamLinksLoading(false);
+        return [];
+      }
+
+      if (showLoading) {
+        setTeamLinksLoading(true);
+      }
+
+      try {
+        const links = await loadTeamLinks(normalizedId);
+        setTeamLinks(links);
+        setTeamLinksError("");
+        return links;
+      } catch (error) {
+        setTeamLinks([]);
+        setTeamLinksError(error?.message || "Unable to load team links");
+        return [];
+      } finally {
+        if (showLoading) {
+          setTeamLinksLoading(false);
+        }
+      }
+    },
+    [loadTeamLinks, selectedTournamentId, token]
+  );
 
   const updateTeamRow = (rowId, field, value) => {
     if (!canEditTeams || teamsSaving || teamOrderSaving) {
@@ -549,6 +656,62 @@ function TournamentsTab({
       onShowToast?.("error", message);
     }
   };
+
+  const handleCopyTeamLink = useCallback(
+    async (teamId, teamLinkUrl) => {
+      if (!teamLinkUrl) {
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(teamLinkUrl);
+        setCopiedTeamLinkTeamId(teamId);
+        onShowToast?.("success", "Team link copied");
+        setTimeout(() => {
+          setCopiedTeamLinkTeamId((current) => (current === teamId ? "" : current));
+        }, 1400);
+      } catch {
+        onShowToast?.("error", "Unable to copy team link");
+      }
+    },
+    [onShowToast]
+  );
+
+  const handleRegenerateTeamLink = useCallback(
+    async (teamId, shortName) => {
+      if (!token || !teamId || teamLinkActionTeamId) {
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `Regenerate public link for ${shortName || "this team"}? Existing link will stop working.`
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      setTeamLinkActionTeamId(teamId);
+      setTeamLinksError("");
+
+      try {
+        await fetchJson(`${API_URL}/api/tournament-teams/${teamId}/regenerate-link`, {
+          method: "POST",
+          headers: authHeaders(),
+        });
+
+        await refreshTeamLinks({ showLoading: false });
+        onShowToast?.("success", "Team link regenerated");
+      } catch (error) {
+        const message = error?.message || "Unable to regenerate team link";
+        setTeamLinksError(message);
+        onShowToast?.("error", message);
+      } finally {
+        setTeamLinkActionTeamId("");
+      }
+    },
+    [authHeaders, fetchJson, onShowToast, refreshTeamLinks, teamLinkActionTeamId, token]
+  );
 
   const persistTeamOrder = useCallback(
     async (rows) => {
@@ -911,6 +1074,59 @@ function TournamentsTab({
               </p>
             ))}
           </div>
+        )}
+
+        {selectedTournament && (
+          <section className="tournament-team-links-panel">
+            <div className="tournament-team-links-header">
+              <h3>Team Links</h3>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => refreshTeamLinks({ showLoading: true })}
+                disabled={teamLinksLoading}
+              >
+                {teamLinksLoading ? "Refreshing..." : "Refresh links"}
+              </button>
+            </div>
+
+            {teamLinksError && <p className="error">{teamLinksError}</p>}
+
+            {teamLinksLoading ? (
+              <p className="subtle">Loading team links...</p>
+            ) : teamLinks.length === 0 ? (
+              <p className="subtle">No team links available yet.</p>
+            ) : (
+              <div className="tournament-team-links-list">
+                {teamLinks.map((entry) => (
+                  <article key={entry.teamId || entry.teamLinkUrl} className="tournament-team-link-row">
+                    <div className="tournament-team-link-meta">
+                      <strong>{entry.shortName || "TBD"}</strong>
+                      <code>{entry.teamLinkUrl || "-"}</code>
+                    </div>
+                    <div className="tournament-team-link-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => handleCopyTeamLink(entry.teamId, entry.teamLinkUrl)}
+                        disabled={!entry.teamLinkUrl}
+                      >
+                        {copiedTeamLinkTeamId === entry.teamId ? "Copied" : "Copy URL"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => handleRegenerateTeamLink(entry.teamId, entry.shortName)}
+                        disabled={!entry.teamId || Boolean(teamLinkActionTeamId)}
+                      >
+                        {teamLinkActionTeamId === entry.teamId ? "Regenerating..." : "Regenerate link"}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         )}
 
         {teamsLoading && <p className="subtle">Loading teams...</p>}

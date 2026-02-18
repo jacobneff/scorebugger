@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useLocation, useParams } from 'react-router-dom';
 
 import { API_URL } from '../config/env.js';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
@@ -87,6 +87,7 @@ const formatCourtScoreSummary = (score) => {
 
 function TournamentPublicView() {
   const { publicCode } = useParams();
+  const location = useLocation();
   const [tournament, setTournament] = useState(null);
   const [pools, setPools] = useState([]);
   const [matches, setMatches] = useState([]);
@@ -276,6 +277,20 @@ function TournamentPublicView() {
     setLiveSummariesByMatchId({});
     loadPublicData();
   }, [loadPublicData, publicCode]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const requestedView = params.get('view');
+    const requestedCourtCode = params.get('court');
+
+    if (requestedView === 'courts') {
+      setActiveViewTab('courts');
+    }
+
+    if (typeof requestedCourtCode === 'string' && requestedCourtCode.trim()) {
+      setSelectedCourtCode(requestedCourtCode.trim().toUpperCase());
+    }
+  }, [location.search]);
 
   useEffect(() => {
     if (!selectedCourtCode) {

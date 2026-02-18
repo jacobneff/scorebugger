@@ -9,6 +9,7 @@ import TournamentPhase1Admin from './pages/TournamentPhase1Admin.jsx';
 import TournamentPhase2Admin from './pages/TournamentPhase2Admin.jsx';
 import TournamentPlayoffsAdmin from './pages/TournamentPlayoffsAdmin.jsx';
 import TournamentPublicView from './pages/TournamentPublicView.jsx';
+import TournamentTeamPublicView from './pages/TournamentTeamPublicView.jsx';
 import VerifyEmail from './pages/VerifyEmail.jsx';
 
 function App() {
@@ -24,6 +25,7 @@ function App() {
       <Route path="/tournaments/:id/phase1" element={<TournamentPhase1Admin />} />
       <Route path="/tournaments/:id/phase2" element={<TournamentPhase2Admin />} />
       <Route path="/tournaments/:id/playoffs" element={<TournamentPlayoffsAdmin />} />
+      <Route path="/t/:tournamentCode/team/:teamCode" element={<TournamentTeamPublicView />} />
       <Route path="/t/:publicCode" element={<TournamentPublicView />} />
       <Route path="/auth/verify" element={<VerifyEmail />} />
       <Route path="/auth/reset-password" element={<ResetPassword />} />

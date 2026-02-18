@@ -890,6 +890,200 @@ function Home() {
     </div>
   );
 
+  const renderScoreboardsList = () => (
+    <div className="boards-list">
+      <h3>Your Scoreboards</h3>
+      {boardsLoading && <p>Loading...</p>}
+      {boardsError && <p className="error">{boardsError}</p>}
+      {!boardsLoading && boards.length === 0 && (
+        <p className="subtle">No scoreboards yet.</p>
+      )}
+
+      {boards.map((b) => {
+        const id = b.code || b._id;
+        const rawIdentifier = b.code || b._id || "";
+        const alphanumeric = (rawIdentifier.match(/[a-z0-9]/gi) || [])
+          .join("")
+          .toUpperCase();
+        const shortIdentifier =
+          alphanumeric.slice(0, 5) || rawIdentifier.slice(0, 5).toUpperCase();
+        const displayIdentifier = shortIdentifier || "-----";
+        return (
+          <div key={id} className="board-item" onClick={() => openBoard(id)}>
+            <div className="board-title-wrap">
+              {editingId === b._id ? (
+                <div className="input-count-wrapper" style={{ width: "100%" }}>
+                  <input
+                    className="edit-input"
+                    value={editValue}
+                    maxLength={MAX_TITLE}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleRenameSave(b._id);
+                      if (e.key === "Escape") setEditingId(null);
+                    }}
+                    autoFocus
+                  />
+                  {remaining(editValue) <= 5 && (
+                    <span className="countdown">{remaining(editValue)}</span>
+                  )}
+                </div>
+              ) : (
+                <h4 className="board-title-text">{boardTitle(b)}</h4>
+              )}
+              <div className="board-meta">
+                <span className="board-updated">
+                  {formatCompactTime(b.updatedAt)}
+                </span>
+                <div className="board-icons" onClick={(e) => e.stopPropagation()}>
+                  {editingId === b._id ? (
+                    <div
+                      className="icon-box blue"
+                      title="Save"
+                      onClick={() => handleRenameSave(b._id)}
+                    >
+                      <MdSave />
+                    </div>
+                  ) : (
+                    <div
+                      className="icon-box blue"
+                      title="Rename"
+                      onClick={() => {
+                        setEditingId(b._id);
+                        setEditValue(boardTitle(b));
+                      }}
+                    >
+                      <MdEdit />
+                    </div>
+                  )}
+                  <div
+                    className="icon-box red"
+                    title="Delete"
+                    onClick={() => handleDelete(b._id)}
+                  >
+                    <MdDelete />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              className="board-code-row"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <span className="board-code-badge" aria-label="Scoreboard ID">
+                {displayIdentifier}
+              </span>
+              <button
+                type="button"
+                className={`board-code-copy ${
+                  copiedBoardId === id ? "is-copied" : ""
+                }`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCopyBoardId(rawIdentifier, id);
+                }}
+                aria-label="Copy scoreboard ID"
+              >
+                <span className="copy-icon copy-icon--copy">
+                  <MdContentCopy />
+                </span>
+                <span
+                  className="copy-icon copy-icon--check"
+                  aria-hidden={copiedBoardId !== id}
+                >
+                  ✓
+                </span>
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const renderChangePasswordSection = () => (
+    <div style={{ marginTop: "2rem" }}>
+      <h3 className="secondary-title" style={{ marginBottom: "0.75rem" }}>
+        Change password
+      </h3>
+      <form className="account-form auth-form" onSubmit={handleChangePassword}>
+        <label className="input-label" htmlFor="currentPassword">
+          Current password
+        </label>
+        <input
+          id="currentPassword"
+          type="password"
+          autoComplete="current-password"
+          required
+          value={currentPasswordInput}
+          onChange={(e) => setCurrentPasswordInput(e.target.value)}
+        />
+
+        <label className="input-label" htmlFor="newPassword">
+          New password
+        </label>
+        <input
+          id="newPassword"
+          type="password"
+          autoComplete="new-password"
+          required
+          value={newPasswordInput}
+          onChange={(e) => setNewPasswordInput(e.target.value)}
+        />
+
+        <label className="input-label" htmlFor="confirmPassword">
+          Confirm new password
+        </label>
+        <input
+          id="confirmPassword"
+          type="password"
+          autoComplete="new-password"
+          required
+          value={confirmPasswordInput}
+          onChange={(e) => setConfirmPasswordInput(e.target.value)}
+        />
+
+        {changePasswordError && (
+          <p className="error" style={{ marginTop: 4 }}>
+            {changePasswordError}
+          </p>
+        )}
+        {changePasswordInfo && (
+          <p className="subtle" style={{ marginTop: 4, color: "#16a34a" }}>
+            {changePasswordInfo}
+          </p>
+        )}
+
+        <button
+          className="primary-button"
+          type="submit"
+          disabled={changePasswordBusy}
+          style={{ width: "100%", marginTop: "0.25rem" }}
+        >
+          {changePasswordBusy ? "Updating..." : "Update password"}
+        </button>
+      </form>
+    </div>
+  );
+
+  const renderSignedInAccountPanel = ({ includeScoreboards = false } = {}) => (
+    <>
+      <div className="account-header">
+        <h2>Welcome back</h2>
+        <p>
+          Signed in as <b>{user.displayName || user.email}</b>
+        </p>
+        <button className="ghost-button" onClick={logout}>
+          Sign out
+        </button>
+      </div>
+
+      {includeScoreboards && renderScoreboardsList()}
+      {renderChangePasswordSection()}
+    </>
+  );
+
   return (
     <main className="container">
       {/* Toast Stack */}
@@ -937,7 +1131,7 @@ function Home() {
               </button>
             </div>
             <aside className="account-panel" id="account-panel" style={{ marginTop: "1.5rem" }}>
-              {renderAuthCard()}
+              {user ? renderSignedInAccountPanel() : renderAuthCard()}
             </aside>
           </>
         ) : (
@@ -1110,193 +1304,9 @@ function Home() {
               </form>
 
               <aside className="account-panel" id="account-panel">
-                {user ? (
-                  <>
-                    <div className="account-header">
-                      <h2>Welcome back</h2>
-                      <p>
-                        Signed in as <b>{user.displayName || user.email}</b>
-                      </p>
-                      <button className="ghost-button" onClick={logout}>
-                        Sign out
-                      </button>
-                    </div>
-
-                    <div className="boards-list">
-                      <h3>Your Scoreboards</h3>
-                      {boardsLoading && <p>Loading...</p>}
-                      {boardsError && <p className="error">{boardsError}</p>}
-                      {!boardsLoading && boards.length === 0 && (
-                        <p className="subtle">No scoreboards yet.</p>
-                      )}
-
-                      {boards.map((b) => {
-                        const id = b.code || b._id;
-                        const rawIdentifier = b.code || b._id || "";
-                        const alphanumeric = (rawIdentifier.match(/[a-z0-9]/gi) || [])
-                          .join("")
-                          .toUpperCase();
-                        const shortIdentifier =
-                          alphanumeric.slice(0, 5) || rawIdentifier.slice(0, 5).toUpperCase();
-                        const displayIdentifier = shortIdentifier || "-----";
-                        return (
-                          <div key={id} className="board-item" onClick={() => openBoard(id)}>
-                            <div className="board-title-wrap">
-                              {editingId === b._id ? (
-                                <div className="input-count-wrapper" style={{ width: "100%" }}>
-                                  <input
-                                    className="edit-input"
-                                    value={editValue}
-                                    maxLength={MAX_TITLE}
-                                    onChange={(e) => setEditValue(e.target.value)}
-                                    onClick={(e) => e.stopPropagation()}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") handleRenameSave(b._id);
-                                      if (e.key === "Escape") setEditingId(null);
-                                    }}
-                                    autoFocus
-                                  />
-                                  {remaining(editValue) <= 5 && (
-                                    <span className="countdown">{remaining(editValue)}</span>
-                                  )}
-                                </div>
-                              ) : (
-                                <h4 className="board-title-text">{boardTitle(b)}</h4>
-                              )}
-                              <div className="board-meta">
-                                <span className="board-updated">
-                                  {formatCompactTime(b.updatedAt)}
-                                </span>
-                                <div className="board-icons" onClick={(e) => e.stopPropagation()}>
-                                  {editingId === b._id ? (
-                                    <div
-                                      className="icon-box blue"
-                                      title="Save"
-                                      onClick={() => handleRenameSave(b._id)}
-                                    >
-                                      <MdSave />
-                                    </div>
-                                  ) : (
-                                    <div
-                                      className="icon-box blue"
-                                      title="Rename"
-                                      onClick={() => {
-                                        setEditingId(b._id);
-                                        setEditValue(boardTitle(b));
-                                      }}
-                                    >
-                                      <MdEdit />
-                                    </div>
-                                  )}
-                                  <div
-                                    className="icon-box red"
-                                    title="Delete"
-                                    onClick={() => handleDelete(b._id)}
-                                  >
-                                    <MdDelete />
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                            <div
-                              className="board-code-row"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <span className="board-code-badge" aria-label="Scoreboard ID">
-                                {displayIdentifier}
-                              </span>
-                              <button
-                                type="button"
-                                className={`board-code-copy ${
-                                  copiedBoardId === id ? "is-copied" : ""
-                                }`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleCopyBoardId(rawIdentifier, id);
-                                }}
-                                aria-label="Copy scoreboard ID"
-                              >
-                                <span className="copy-icon copy-icon--copy">
-                                  <MdContentCopy />
-                                </span>
-                                <span
-                                  className="copy-icon copy-icon--check"
-                                  aria-hidden={copiedBoardId !== id}
-                                >
-                                  ✓
-                                </span>
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div style={{ marginTop: "2rem" }}>
-                      <h3 className="secondary-title" style={{ marginBottom: "0.75rem" }}>
-                        Change password
-                      </h3>
-                      <form className="account-form auth-form" onSubmit={handleChangePassword}>
-                        <label className="input-label" htmlFor="currentPassword">
-                          Current password
-                        </label>
-                        <input
-                          id="currentPassword"
-                          type="password"
-                          autoComplete="current-password"
-                          required
-                          value={currentPasswordInput}
-                          onChange={(e) => setCurrentPasswordInput(e.target.value)}
-                        />
-
-                        <label className="input-label" htmlFor="newPassword">
-                          New password
-                        </label>
-                        <input
-                          id="newPassword"
-                          type="password"
-                          autoComplete="new-password"
-                          required
-                          value={newPasswordInput}
-                          onChange={(e) => setNewPasswordInput(e.target.value)}
-                        />
-
-                        <label className="input-label" htmlFor="confirmPassword">
-                          Confirm new password
-                        </label>
-                        <input
-                          id="confirmPassword"
-                          type="password"
-                          autoComplete="new-password"
-                          required
-                          value={confirmPasswordInput}
-                          onChange={(e) => setConfirmPasswordInput(e.target.value)}
-                        />
-
-                        {changePasswordError && (
-                          <p className="error" style={{ marginTop: 4 }}>
-                            {changePasswordError}
-                          </p>
-                        )}
-                        {changePasswordInfo && (
-                          <p className="subtle" style={{ marginTop: 4, color: "#16a34a" }}>
-                            {changePasswordInfo}
-                          </p>
-                        )}
-
-                        <button
-                          className="primary-button"
-                          type="submit"
-                          disabled={changePasswordBusy}
-                          style={{ width: "100%", marginTop: "0.25rem" }}
-                        >
-                          {changePasswordBusy ? "Updating..." : "Update password"}
-                        </button>
-                      </form>
-                    </div>
-                  </>
-                ) : (
-                  renderAuthCard()
-                )}
+                {user
+                  ? renderSignedInAccountPanel({ includeScoreboards: true })
+                  : renderAuthCard()}
               </aside>
             </div>
 

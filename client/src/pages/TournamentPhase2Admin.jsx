@@ -556,6 +556,9 @@ function TournamentPhase2Admin() {
             </p>
           </div>
           <div className="phase1-admin-actions">
+            <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
+              Open Playoffs
+            </a>
             <button
               className="secondary-button"
               type="button"

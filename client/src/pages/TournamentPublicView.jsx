@@ -10,6 +10,13 @@ import {
   sortPhase1Pools,
 } from '../utils/phase1.js';
 
+const PLAYOFF_BRACKET_ORDER = ['gold', 'silver', 'bronze'];
+const PLAYOFF_BRACKET_LABELS = {
+  gold: 'Gold',
+  silver: 'Silver',
+  bronze: 'Bronze',
+};
+
 const normalizePools = (pools) =>
   sortPhase1Pools(pools).map((pool) => ({
     ...pool,
@@ -23,6 +30,12 @@ const normalizePools = (pools) =>
       : [],
   }));
 
+const normalizePlayoffPayload = (payload) => ({
+  matches: Array.isArray(payload?.matches) ? payload.matches : [],
+  brackets: payload?.brackets && typeof payload.brackets === 'object' ? payload.brackets : {},
+  opsSchedule: Array.isArray(payload?.opsSchedule) ? payload.opsSchedule : [],
+});
+
 const formatSetPct = (value) => `${(Math.max(0, Number(value) || 0) * 100).toFixed(1)}%`;
 
 const formatPointDiff = (value) => {
@@ -30,25 +43,36 @@ const formatPointDiff = (value) => {
   return parsed > 0 ? `+${parsed}` : `${parsed}`;
 };
 
+const formatTeamName = (team) => team?.shortName || team?.name || 'TBD';
+
 function TournamentPublicView() {
   const { publicCode } = useParams();
   const [tournament, setTournament] = useState(null);
   const [pools, setPools] = useState([]);
   const [matches, setMatches] = useState([]);
+  const [playoffs, setPlayoffs] = useState({
+    matches: [],
+    brackets: {},
+    opsSchedule: [],
+  });
   const [standingsByPhase, setStandingsByPhase] = useState({
     phase1: { pools: [], overall: [] },
     phase2: { pools: [], overall: [] },
     cumulative: { pools: [], overall: [] },
   });
   const [activeStandingsTab, setActiveStandingsTab] = useState('phase1');
+  const [activeViewTab, setActiveViewTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
+    let pollTimer = null;
 
-    async function loadPublicData() {
-      setLoading(true);
+    async function loadPublicData({ silent = false } = {}) {
+      if (!silent) {
+        setLoading(true);
+      }
       setError('');
 
       try {
@@ -59,6 +83,7 @@ function TournamentPublicView() {
           phase1StandingsResponse,
           phase2StandingsResponse,
           cumulativeStandingsResponse,
+          playoffsResponse,
         ] = await Promise.all([
           fetch(`${API_URL}/api/tournaments/code/${publicCode}`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/phase1/pools`),
@@ -66,6 +91,7 @@ function TournamentPublicView() {
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=phase1`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=phase2`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=cumulative`),
+          fetch(`${API_URL}/api/tournaments/code/${publicCode}/playoffs`),
         ]);
 
         const [
@@ -75,6 +101,7 @@ function TournamentPublicView() {
           phase1StandingsPayload,
           phase2StandingsPayload,
           cumulativeStandingsPayload,
+          playoffsPayload,
         ] = await Promise.all([
           tournamentResponse.json().catch(() => null),
           poolResponse.json().catch(() => null),
@@ -82,6 +109,7 @@ function TournamentPublicView() {
           phase1StandingsResponse.json().catch(() => null),
           phase2StandingsResponse.json().catch(() => null),
           cumulativeStandingsResponse.json().catch(() => null),
+          playoffsResponse.json().catch(() => null),
         ]);
 
         if (!tournamentResponse.ok) {
@@ -102,6 +130,9 @@ function TournamentPublicView() {
         if (!cumulativeStandingsResponse.ok) {
           throw new Error(cumulativeStandingsPayload?.message || 'Unable to load cumulative standings');
         }
+        if (!playoffsResponse.ok) {
+          throw new Error(playoffsPayload?.message || 'Unable to load playoffs');
+        }
 
         if (cancelled) {
           return;
@@ -110,22 +141,15 @@ function TournamentPublicView() {
         setTournament(tournamentPayload.tournament);
         setPools(normalizePools(poolPayload));
         setMatches(Array.isArray(matchPayload) ? matchPayload : []);
+        setPlayoffs(normalizePlayoffPayload(playoffsPayload));
         setStandingsByPhase({
           phase1: {
-            pools: Array.isArray(phase1StandingsPayload?.pools)
-              ? phase1StandingsPayload.pools
-              : [],
-            overall: Array.isArray(phase1StandingsPayload?.overall)
-              ? phase1StandingsPayload.overall
-              : [],
+            pools: Array.isArray(phase1StandingsPayload?.pools) ? phase1StandingsPayload.pools : [],
+            overall: Array.isArray(phase1StandingsPayload?.overall) ? phase1StandingsPayload.overall : [],
           },
           phase2: {
-            pools: Array.isArray(phase2StandingsPayload?.pools)
-              ? phase2StandingsPayload.pools
-              : [],
-            overall: Array.isArray(phase2StandingsPayload?.overall)
-              ? phase2StandingsPayload.overall
-              : [],
+            pools: Array.isArray(phase2StandingsPayload?.pools) ? phase2StandingsPayload.pools : [],
+            overall: Array.isArray(phase2StandingsPayload?.overall) ? phase2StandingsPayload.overall : [],
           },
           cumulative: {
             pools: Array.isArray(cumulativeStandingsPayload?.pools)
@@ -141,7 +165,7 @@ function TournamentPublicView() {
           setError(loadError.message || 'Unable to load public tournament view');
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && !silent) {
           setLoading(false);
         }
       }
@@ -149,6 +173,9 @@ function TournamentPublicView() {
 
     if (publicCode) {
       loadPublicData();
+      pollTimer = setInterval(() => {
+        loadPublicData({ silent: true });
+      }, 15000);
     } else {
       setLoading(false);
       setError('Missing tournament code');
@@ -156,6 +183,9 @@ function TournamentPublicView() {
 
     return () => {
       cancelled = true;
+      if (pollTimer) {
+        clearInterval(pollTimer);
+      }
     };
   }, [publicCode]);
 
@@ -192,188 +222,309 @@ function TournamentPublicView() {
     <main className="container">
       <section className="card phase1-public-card">
         <h1 className="title">{tournament?.name || 'Tournament'}</h1>
-        <p className="subtitle">
-          Phase 1 Pools and Schedule • Code {tournament?.publicCode || publicCode}
-        </p>
+        <p className="subtitle">Code {tournament?.publicCode || publicCode}</p>
 
-        <section>
-          <h2 className="secondary-title">Pool Rosters</h2>
-          <div className="phase1-pool-grid phase1-pool-grid--readonly">
-            {pools.map((pool) => (
-              <article key={pool._id} className="phase1-pool-column">
-                <header className="phase1-pool-header">
-                  <h3>Pool {pool.name}</h3>
-                  <p>{pool.homeCourt || 'No home court'}</p>
-                </header>
-                <ul className="phase1-public-team-list">
-                  {pool.teamIds.map((team) => (
-                    <li key={team._id}>
-                      <span>{team.name}</span>
-                      <span>Seed #{team.seed ?? 'N/A'}</span>
-                    </li>
-                  ))}
-                  {pool.teamIds.length === 0 && <li className="subtle">No teams assigned</li>}
-                </ul>
-              </article>
-            ))}
-          </div>
-        </section>
+        <div className="phase1-admin-actions">
+          <button
+            className={activeViewTab === 'overview' ? 'primary-button' : 'secondary-button'}
+            type="button"
+            onClick={() => setActiveViewTab('overview')}
+          >
+            Pools + Standings
+          </button>
+          <button
+            className={activeViewTab === 'playoffs' ? 'primary-button' : 'secondary-button'}
+            type="button"
+            onClick={() => setActiveViewTab('playoffs')}
+          >
+            Playoffs
+          </button>
+        </div>
 
-        <section className="phase1-schedule">
-          <h2 className="secondary-title">Phase 1 Schedule</h2>
-          <div className="phase1-table-wrap">
-            <table className="phase1-schedule-table">
-              <thead>
-                <tr>
-                  <th>Round</th>
-                  {PHASE1_COURT_ORDER.map((court) => (
-                    <th key={court}>{court}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {PHASE1_ROUND_BLOCKS.map((roundBlock) => (
-                  <tr key={roundBlock}>
-                    <th>Round {roundBlock}</th>
-                    {PHASE1_COURT_ORDER.map((court) => {
-                      const match = scheduleLookup[`${roundBlock}-${court}`];
-                      const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
-
-                      return (
-                        <td key={`${roundBlock}-${court}`}>
-                          {match ? (
-                            <div className="phase1-match-cell">
-                              <p>
-                                <strong>Pool {match.poolName}</strong>
-                                {`: ${formatTeamLabel(match.teamA)} vs ${formatTeamLabel(match.teamB)}`}
-                              </p>
-                              <p>Ref: {formatTeamLabel(match.refTeams?.[0])}</p>
-                              {scoreboardKey ? (
-                                <a
-                                  href={`/board/${scoreboardKey}/display`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  Open Live Scoreboard
-                                </a>
-                              ) : (
-                                <span className="subtle">No scoreboard link</span>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="subtle">-</span>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
+        {activeViewTab === 'overview' ? (
+          <>
+            <section>
+              <h2 className="secondary-title">Pool Rosters</h2>
+              <div className="phase1-pool-grid phase1-pool-grid--readonly">
+                {pools.map((pool) => (
+                  <article key={pool._id} className="phase1-pool-column">
+                    <header className="phase1-pool-header">
+                      <h3>Pool {pool.name}</h3>
+                      <p>{pool.homeCourt || 'No home court'}</p>
+                    </header>
+                    <ul className="phase1-public-team-list">
+                      {pool.teamIds.map((team) => (
+                        <li key={team._id}>
+                          <span>{team.name}</span>
+                          <span>Seed #{team.seed ?? 'N/A'}</span>
+                        </li>
+                      ))}
+                      {pool.teamIds.length === 0 && <li className="subtle">No teams assigned</li>}
+                    </ul>
+                  </article>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+              </div>
+            </section>
 
-        <section className="phase1-standings">
-          <h2 className="secondary-title">Standings</h2>
-          <p className="subtle">Standings are based on finalized matches only.</p>
-          <div className="phase1-admin-actions">
-            <button
-              className={activeStandingsTab === 'phase1' ? 'primary-button' : 'secondary-button'}
-              type="button"
-              onClick={() => setActiveStandingsTab('phase1')}
-            >
-              Phase 1
-            </button>
-            <button
-              className={activeStandingsTab === 'phase2' ? 'primary-button' : 'secondary-button'}
-              type="button"
-              onClick={() => setActiveStandingsTab('phase2')}
-            >
-              Phase 2
-            </button>
-            <button
-              className={
-                activeStandingsTab === 'cumulative' ? 'primary-button' : 'secondary-button'
-              }
-              type="button"
-              onClick={() => setActiveStandingsTab('cumulative')}
-            >
-              Cumulative
-            </button>
-          </div>
-
-          {activeStandingsTab !== 'cumulative' && (
-            <div className="phase1-standings-grid">
-              {activeStandings.pools.map((poolStanding) => (
-                <article key={poolStanding.poolName} className="phase1-standings-card">
-                  <h3>Pool {poolStanding.poolName}</h3>
-                  <div className="phase1-table-wrap">
-                    <table className="phase1-standings-table">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Team</th>
-                          <th>W-L</th>
-                          <th>Set %</th>
-                          <th>Pt Diff</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(poolStanding.teams || []).map((team) => (
-                          <tr key={team.teamId}>
-                            <td>{team.rank}</td>
-                            <td>{team.shortName || team.name}</td>
-                            <td>
-                              {team.matchesWon}-{team.matchesLost}
-                            </td>
-                            <td>{formatSetPct(team.setPct)}</td>
-                            <td>{formatPointDiff(team.pointDiff)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-
-          <article className="phase1-standings-card phase1-standings-card--overall">
-            <h3>
-              {activeStandingsTab === 'phase1'
-                ? 'Phase 1 Overall'
-                : activeStandingsTab === 'phase2'
-                  ? 'Phase 2 Overall'
-                  : 'Cumulative Overall'}
-            </h3>
-            <div className="phase1-table-wrap">
-              <table className="phase1-standings-table">
-                <thead>
-                  <tr>
-                    <th>Seed</th>
-                    <th>Team</th>
-                    <th>W-L</th>
-                    <th>Set %</th>
-                    <th>Pt Diff</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(activeStandings.overall || []).map((team) => (
-                    <tr key={team.teamId}>
-                      <td>{team.rank}</td>
-                      <td>{team.shortName || team.name}</td>
-                      <td>
-                        {team.matchesWon}-{team.matchesLost}
-                      </td>
-                      <td>{formatSetPct(team.setPct)}</td>
-                      <td>{formatPointDiff(team.pointDiff)}</td>
+            <section className="phase1-schedule">
+              <h2 className="secondary-title">Phase 1 Schedule</h2>
+              <div className="phase1-table-wrap">
+                <table className="phase1-schedule-table">
+                  <thead>
+                    <tr>
+                      <th>Round</th>
+                      {PHASE1_COURT_ORDER.map((court) => (
+                        <th key={court}>{court}</th>
+                      ))}
                     </tr>
+                  </thead>
+                  <tbody>
+                    {PHASE1_ROUND_BLOCKS.map((roundBlock) => (
+                      <tr key={roundBlock}>
+                        <th>Round {roundBlock}</th>
+                        {PHASE1_COURT_ORDER.map((court) => {
+                          const match = scheduleLookup[`${roundBlock}-${court}`];
+                          const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
+
+                          return (
+                            <td key={`${roundBlock}-${court}`}>
+                              {match ? (
+                                <div className="phase1-match-cell">
+                                  <p>
+                                    <strong>Pool {match.poolName}</strong>
+                                    {`: ${formatTeamLabel(match.teamA)} vs ${formatTeamLabel(match.teamB)}`}
+                                  </p>
+                                  <p>Ref: {formatTeamLabel(match.refTeams?.[0])}</p>
+                                  {scoreboardKey ? (
+                                    <a
+                                      href={`/board/${scoreboardKey}/display`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      Open Live Scoreboard
+                                    </a>
+                                  ) : (
+                                    <span className="subtle">No scoreboard link</span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="subtle">-</span>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="phase1-standings">
+              <h2 className="secondary-title">Standings</h2>
+              <p className="subtle">Standings are based on finalized matches only.</p>
+              <div className="phase1-admin-actions">
+                <button
+                  className={activeStandingsTab === 'phase1' ? 'primary-button' : 'secondary-button'}
+                  type="button"
+                  onClick={() => setActiveStandingsTab('phase1')}
+                >
+                  Phase 1
+                </button>
+                <button
+                  className={activeStandingsTab === 'phase2' ? 'primary-button' : 'secondary-button'}
+                  type="button"
+                  onClick={() => setActiveStandingsTab('phase2')}
+                >
+                  Phase 2
+                </button>
+                <button
+                  className={activeStandingsTab === 'cumulative' ? 'primary-button' : 'secondary-button'}
+                  type="button"
+                  onClick={() => setActiveStandingsTab('cumulative')}
+                >
+                  Cumulative
+                </button>
+              </div>
+
+              {activeStandingsTab !== 'cumulative' && (
+                <div className="phase1-standings-grid">
+                  {activeStandings.pools.map((poolStanding) => (
+                    <article key={poolStanding.poolName} className="phase1-standings-card">
+                      <h3>Pool {poolStanding.poolName}</h3>
+                      <div className="phase1-table-wrap">
+                        <table className="phase1-standings-table">
+                          <thead>
+                            <tr>
+                              <th>#</th>
+                              <th>Team</th>
+                              <th>W-L</th>
+                              <th>Set %</th>
+                              <th>Pt Diff</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(poolStanding.teams || []).map((team) => (
+                              <tr key={team.teamId}>
+                                <td>{team.rank}</td>
+                                <td>{team.shortName || team.name}</td>
+                                <td>
+                                  {team.matchesWon}-{team.matchesLost}
+                                </td>
+                                <td>{formatSetPct(team.setPct)}</td>
+                                <td>{formatPointDiff(team.pointDiff)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </article>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          </article>
-        </section>
+                </div>
+              )}
+
+              <article className="phase1-standings-card phase1-standings-card--overall">
+                <h3>
+                  {activeStandingsTab === 'phase1'
+                    ? 'Phase 1 Overall'
+                    : activeStandingsTab === 'phase2'
+                      ? 'Phase 2 Overall'
+                      : 'Cumulative Overall'}
+                </h3>
+                <div className="phase1-table-wrap">
+                  <table className="phase1-standings-table">
+                    <thead>
+                      <tr>
+                        <th>Seed</th>
+                        <th>Team</th>
+                        <th>W-L</th>
+                        <th>Set %</th>
+                        <th>Pt Diff</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(activeStandings.overall || []).map((team) => (
+                        <tr key={team.teamId}>
+                          <td>{team.rank}</td>
+                          <td>{team.shortName || team.name}</td>
+                          <td>
+                            {team.matchesWon}-{team.matchesLost}
+                          </td>
+                          <td>{formatSetPct(team.setPct)}</td>
+                          <td>{formatPointDiff(team.pointDiff)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            </section>
+          </>
+        ) : (
+          <>
+            <section className="phase1-schedule">
+              <h2 className="secondary-title">Playoff Ops Schedule</h2>
+              {playoffs.opsSchedule.length === 0 ? (
+                <p className="subtle">Playoffs have not been generated yet.</p>
+              ) : (
+                playoffs.opsSchedule.map((roundBlock) => (
+                  <article key={roundBlock.roundBlock} className="phase1-standings-card">
+                    <h3>{roundBlock.label}</h3>
+                    <div className="phase1-table-wrap">
+                      <table className="phase1-schedule-table">
+                        <thead>
+                          <tr>
+                            <th>Facility</th>
+                            <th>Court</th>
+                            <th>Match</th>
+                            <th>Teams</th>
+                            <th>Ref</th>
+                            <th>Status</th>
+                            <th>Live</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {roundBlock.slots.map((slot) => {
+                            const match = playoffs.matches.find((entry) => entry._id === slot.matchId);
+                            const scoreboardKey = match?.scoreboardCode || null;
+                            return (
+                              <tr key={`${roundBlock.roundBlock}-${slot.court}`}>
+                                <td>{slot.facility}</td>
+                                <td>{slot.court}</td>
+                                <td>{slot.matchLabel}</td>
+                                <td>{slot.matchId ? `${slot.teams.a} vs ${slot.teams.b}` : 'Empty'}</td>
+                                <td>{slot.refs.length > 0 ? slot.refs.join(', ') : 'TBD'}</td>
+                                <td>{slot.status || 'empty'}</td>
+                                <td>
+                                  {scoreboardKey ? (
+                                    <a href={`/board/${scoreboardKey}/display`} target="_blank" rel="noreferrer">
+                                      Open Live Scoreboard
+                                    </a>
+                                  ) : (
+                                    <span className="subtle">-</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </article>
+                ))
+              )}
+            </section>
+
+            {playoffs.matches.length > 0 && (
+              <section className="phase1-standings">
+                <h2 className="secondary-title">Playoff Brackets</h2>
+                <div className="playoff-bracket-grid">
+                  {PLAYOFF_BRACKET_ORDER.map((bracket) => {
+                    const bracketData = playoffs.brackets?.[bracket];
+                    if (!bracketData) {
+                      return null;
+                    }
+
+                    return (
+                      <article key={bracket} className="phase1-standings-card playoff-bracket-card">
+                        <h3>{PLAYOFF_BRACKET_LABELS[bracket]}</h3>
+                        <div className="playoff-seed-list">
+                          {(bracketData.seeds || []).map((entry) => (
+                            <p key={`${bracket}-seed-${entry.seed}`}>
+                              #{entry.seed} {formatTeamName(entry.team)}
+                            </p>
+                          ))}
+                        </div>
+                        {['R1', 'R2', 'R3'].map((roundKey) => (
+                          <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
+                            <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
+                            {(bracketData.rounds?.[roundKey] || []).map((match) => (
+                              <div key={match._id} className="playoff-round-match">
+                                <p>
+                                  {match.teamA ? formatTeamLabel(match.teamA) : 'TBD'} vs{' '}
+                                  {match.teamB ? formatTeamLabel(match.teamB) : 'TBD'}
+                                </p>
+                                <p className="subtle">
+                                  {match.court} • {match.status === 'final' ? 'Final' : 'Scheduled'}
+                                </p>
+                                {match.result && (
+                                  <p className="subtle">
+                                    Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
+                                    {match.result.pointsForA}-{match.result.pointsForB}
+                                  </p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+          </>
+        )}
       </section>
     </main>
   );

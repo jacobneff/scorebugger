@@ -105,6 +105,43 @@ const MatchSchema = new mongoose.Schema(
       enum: ['R1', 'R2', 'R3'],
       default: null,
     },
+    bracketMatchKey: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    seedA: {
+      type: Number,
+      default: null,
+      min: 1,
+      max: 5,
+    },
+    seedB: {
+      type: Number,
+      default: null,
+      min: 1,
+      max: 5,
+    },
+    teamAFromMatchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Match',
+      default: null,
+    },
+    teamAFromSlot: {
+      type: String,
+      enum: ['winner', 'loser'],
+      default: null,
+    },
+    teamBFromMatchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Match',
+      default: null,
+    },
+    teamBFromSlot: {
+      type: String,
+      enum: ['winner', 'loser'],
+      default: null,
+    },
     roundBlock: {
       type: Number,
       default: null,
@@ -144,12 +181,32 @@ const MatchSchema = new mongoose.Schema(
     teamAId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'TournamentTeam',
-      required: true,
+      default: null,
+      validate: {
+        validator(value) {
+          if (this.phase === 'playoffs') {
+            return true;
+          }
+
+          return Boolean(value);
+        },
+        message: 'teamAId is required for non-playoff matches',
+      },
     },
     teamBId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'TournamentTeam',
-      required: true,
+      default: null,
+      validate: {
+        validator(value) {
+          if (this.phase === 'playoffs') {
+            return true;
+          }
+
+          return Boolean(value);
+        },
+        message: 'teamBId is required for non-playoff matches',
+      },
     },
     refTeamIds: {
       type: [

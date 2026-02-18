@@ -5,7 +5,9 @@ const { requireAuth } = require('../middleware/auth');
 const Match = require('../models/Match');
 const Scoreboard = require('../models/Scoreboard');
 const Tournament = require('../models/Tournament');
+const TournamentTeam = require('../models/TournamentTeam');
 const { computeMatchSnapshot } = require('../services/tournamentEngine/standings');
+const { recomputePlayoffBracketProgression } = require('../services/playoffs');
 
 const router = express.Router();
 
@@ -44,6 +46,13 @@ const serializeMatch = (match) => ({
   poolId: toIdString(match?.poolId),
   bracket: match?.bracket ?? null,
   bracketRound: match?.bracketRound ?? null,
+  bracketMatchKey: match?.bracketMatchKey ?? null,
+  seedA: match?.seedA ?? null,
+  seedB: match?.seedB ?? null,
+  teamAFromMatchId: toIdString(match?.teamAFromMatchId),
+  teamAFromSlot: match?.teamAFromSlot ?? null,
+  teamBFromMatchId: toIdString(match?.teamBFromMatchId),
+  teamBFromSlot: match?.teamBFromSlot ?? null,
   roundBlock: match?.roundBlock ?? null,
   facility: match?.facility ?? null,
   court: match?.court ?? null,
@@ -114,7 +123,13 @@ router.post('/:matchId/finalize', requireAuth, async (req, res, next) => {
 
     await match.save();
 
-    return res.json(serializeMatch(match.toObject()));
+    if (match.phase === 'playoffs' && match.bracket) {
+      await recomputePlayoffBracketProgression(match.tournamentId, match.bracket);
+    }
+
+    const refreshedMatch = await Match.findById(match._id);
+
+    return res.json(serializeMatch((refreshedMatch || match).toObject()));
   } catch (error) {
     return next(error);
   }
@@ -146,6 +161,64 @@ router.post('/:matchId/unfinalize', requireAuth, async (req, res, next) => {
     match.finalizedBy = null;
     match.status = 'scheduled';
 
+    await match.save();
+
+    if (match.phase === 'playoffs' && match.bracket) {
+      await recomputePlayoffBracketProgression(match.tournamentId, match.bracket);
+    }
+
+    const refreshedMatch = await Match.findById(match._id);
+
+    return res.json(serializeMatch((refreshedMatch || match).toObject()));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PATCH /api/matches/:matchId/refs -> owner-only manual ref assignment
+router.patch('/:matchId/refs', requireAuth, async (req, res, next) => {
+  try {
+    const { matchId } = req.params;
+    const rawRefTeamIds = req.body?.refTeamIds;
+
+    if (!isObjectId(matchId)) {
+      return res.status(400).json({ message: 'Invalid match id' });
+    }
+
+    if (!Array.isArray(rawRefTeamIds)) {
+      return res.status(400).json({ message: 'refTeamIds must be an array of team ids' });
+    }
+
+    const normalizedRefTeamIds = [...new Set(rawRefTeamIds.map((teamId) => toIdString(teamId)).filter(Boolean))];
+
+    if (normalizedRefTeamIds.some((teamId) => !isObjectId(teamId))) {
+      return res.status(400).json({ message: 'refTeamIds includes an invalid team id' });
+    }
+
+    const match = await Match.findById(matchId);
+
+    if (!match) {
+      return res.status(404).json({ message: 'Match not found' });
+    }
+
+    const hasAccess = await ensureOwnerAccess(match.tournamentId, req.user.id);
+
+    if (!hasAccess) {
+      return res.status(404).json({ message: 'Match not found or unauthorized' });
+    }
+
+    if (normalizedRefTeamIds.length > 0) {
+      const validRefTeamsCount = await TournamentTeam.countDocuments({
+        _id: { $in: normalizedRefTeamIds },
+        tournamentId: match.tournamentId,
+      });
+
+      if (validRefTeamsCount !== normalizedRefTeamIds.length) {
+        return res.status(400).json({ message: 'refTeamIds must belong to this tournament' });
+      }
+    }
+
+    match.refTeamIds = normalizedRefTeamIds;
     await match.save();
 
     return res.json(serializeMatch(match.toObject()));

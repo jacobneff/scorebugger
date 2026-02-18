@@ -1,0 +1,538 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useParams } from 'react-router-dom';
+
+import { API_URL } from '../config/env.js';
+import { useAuth } from '../context/AuthContext.jsx';
+import { formatTeamLabel } from '../utils/phase1.js';
+
+const PLAYOFF_BRACKET_ORDER = ['gold', 'silver', 'bronze'];
+const PLAYOFF_BRACKET_LABELS = {
+  gold: 'Gold',
+  silver: 'Silver',
+  bronze: 'Bronze',
+};
+
+const authHeaders = (token) => ({
+  Authorization: `Bearer ${token}`,
+});
+
+const jsonHeaders = (token) => ({
+  'Content-Type': 'application/json',
+  Authorization: `Bearer ${token}`,
+});
+
+const normalizePlayoffPayload = (payload) => ({
+  matches: Array.isArray(payload?.matches) ? payload.matches : [],
+  brackets: payload?.brackets && typeof payload.brackets === 'object' ? payload.brackets : {},
+  opsSchedule: Array.isArray(payload?.opsSchedule) ? payload.opsSchedule : [],
+});
+
+const formatRefTeamLabel = (team) => team?.shortName || team?.name || 'TBD';
+
+const formatBracketMatchSummary = (match) => {
+  if (!match) {
+    return 'TBD vs TBD';
+  }
+
+  const teamALabel = match.teamA ? formatTeamLabel(match.teamA) : 'TBD';
+  const teamBLabel = match.teamB ? formatTeamLabel(match.teamB) : 'TBD';
+  return `${teamALabel} vs ${teamBLabel}`;
+};
+
+function TournamentPlayoffsAdmin() {
+  const { id } = useParams();
+  const { token, user, initializing } = useAuth();
+
+  const [tournament, setTournament] = useState(null);
+  const [teams, setTeams] = useState([]);
+  const [playoffs, setPlayoffs] = useState({
+    matches: [],
+    brackets: {},
+    opsSchedule: [],
+  });
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [generateLoading, setGenerateLoading] = useState(false);
+  const [matchActionId, setMatchActionId] = useState('');
+  const [savingRefMatchId, setSavingRefMatchId] = useState('');
+  const [refSelections, setRefSelections] = useState({});
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const fetchJson = useCallback(async (url, options = {}) => {
+    const response = await fetch(url, options);
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(payload?.message || 'Request failed');
+    }
+
+    return payload;
+  }, []);
+
+  const loadPlayoffs = useCallback(async () => {
+    const payload = await fetchJson(`${API_URL}/api/tournaments/${id}/playoffs`, {
+      headers: authHeaders(token),
+    });
+    return normalizePlayoffPayload(payload);
+  }, [fetchJson, id, token]);
+
+  const loadData = useCallback(async () => {
+    if (!token || !id) {
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const [tournamentPayload, teamsPayload, playoffsPayload] = await Promise.all([
+        fetchJson(`${API_URL}/api/tournaments/${id}`, {
+          headers: authHeaders(token),
+        }),
+        fetchJson(`${API_URL}/api/tournaments/${id}/teams`, {
+          headers: authHeaders(token),
+        }),
+        loadPlayoffs(),
+      ]);
+
+      setTournament(tournamentPayload);
+      setTeams(Array.isArray(teamsPayload) ? teamsPayload : []);
+      setPlayoffs(playoffsPayload);
+    } catch (loadError) {
+      setError(loadError.message || 'Unable to load playoff dashboard');
+    } finally {
+      setLoading(false);
+    }
+  }, [fetchJson, id, loadPlayoffs, token]);
+
+  const refreshPlayoffs = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const payload = await loadPlayoffs();
+      setPlayoffs(payload);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadPlayoffs]);
+
+  useEffect(() => {
+    if (initializing) {
+      return;
+    }
+
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+
+    loadData();
+  }, [initializing, loadData, token]);
+
+  const generatePlayoffs = useCallback(
+    async (force = false) => {
+      const suffix = force ? '?force=true' : '';
+      const response = await fetch(`${API_URL}/api/tournaments/${id}/generate/playoffs${suffix}`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (response.status === 409 && !force) {
+        return {
+          requiresForce: true,
+          message: payload?.message || 'Playoffs already generated.',
+        };
+      }
+
+      if (!response.ok || !payload) {
+        const details =
+          Array.isArray(payload?.missing) && payload.missing.length > 0
+            ? `\n${payload.missing.join('\n')}`
+            : '';
+        throw new Error(`${payload?.message || 'Unable to generate playoffs'}${details}`);
+      }
+
+      return {
+        requiresForce: false,
+        playoffs: normalizePlayoffPayload(payload),
+      };
+    },
+    [id, token]
+  );
+
+  const handleGeneratePlayoffs = useCallback(async () => {
+    if (!token || !id || generateLoading) {
+      return;
+    }
+
+    setGenerateLoading(true);
+    setError('');
+    setMessage('');
+
+    try {
+      const firstAttempt = await generatePlayoffs(false);
+
+      if (firstAttempt.requiresForce) {
+        const shouldForce = window.confirm(
+          `${firstAttempt.message}\n\nThis will delete and regenerate all playoff matches and scoreboards. Continue?`
+        );
+
+        if (!shouldForce) {
+          setMessage(firstAttempt.message);
+          return;
+        }
+
+        const forcedAttempt = await generatePlayoffs(true);
+        setPlayoffs(forcedAttempt.playoffs);
+        setMessage('Playoffs regenerated.');
+        return;
+      }
+
+      setPlayoffs(firstAttempt.playoffs);
+      setMessage('Playoffs generated.');
+    } catch (generateError) {
+      setError(generateError.message || 'Unable to generate playoffs');
+    } finally {
+      setGenerateLoading(false);
+    }
+  }, [generateLoading, generatePlayoffs, id, token]);
+
+  const handleFinalizeMatch = useCallback(
+    async (matchId) => {
+      if (!token || !matchId || matchActionId) {
+        return;
+      }
+
+      setMatchActionId(matchId);
+      setError('');
+      setMessage('');
+
+      try {
+        await fetchJson(`${API_URL}/api/matches/${matchId}/finalize`, {
+          method: 'POST',
+          headers: authHeaders(token),
+        });
+        await refreshPlayoffs();
+        setMessage('Playoff match finalized.');
+      } catch (finalizeError) {
+        setError(finalizeError.message || 'Unable to finalize playoff match');
+      } finally {
+        setMatchActionId('');
+      }
+    },
+    [fetchJson, matchActionId, refreshPlayoffs, token]
+  );
+
+  const handleUnfinalizeMatch = useCallback(
+    async (matchId) => {
+      if (!token || !matchId || matchActionId) {
+        return;
+      }
+
+      setMatchActionId(matchId);
+      setError('');
+      setMessage('');
+
+      try {
+        await fetchJson(`${API_URL}/api/matches/${matchId}/unfinalize`, {
+          method: 'POST',
+          headers: authHeaders(token),
+        });
+        await refreshPlayoffs();
+        setMessage('Playoff match unfinalized.');
+      } catch (unfinalizeError) {
+        setError(unfinalizeError.message || 'Unable to unfinalize playoff match');
+      } finally {
+        setMatchActionId('');
+      }
+    },
+    [fetchJson, matchActionId, refreshPlayoffs, token]
+  );
+
+  const handleSaveRefs = useCallback(
+    async (matchId) => {
+      if (!token || !matchId || savingRefMatchId) {
+        return;
+      }
+
+      const selectedRefId = refSelections[matchId] || '';
+      setSavingRefMatchId(matchId);
+      setError('');
+      setMessage('');
+
+      try {
+        await fetchJson(`${API_URL}/api/matches/${matchId}/refs`, {
+          method: 'PATCH',
+          headers: jsonHeaders(token),
+          body: JSON.stringify({
+            refTeamIds: selectedRefId ? [selectedRefId] : [],
+          }),
+        });
+        await refreshPlayoffs();
+        setMessage('Ref assignment updated.');
+      } catch (saveError) {
+        setError(saveError.message || 'Unable to save refs');
+      } finally {
+        setSavingRefMatchId('');
+      }
+    },
+    [fetchJson, refSelections, refreshPlayoffs, savingRefMatchId, token]
+  );
+
+  const matchesById = useMemo(
+    () => Object.fromEntries(playoffs.matches.map((match) => [match._id, match])),
+    [playoffs.matches]
+  );
+
+  const teamsById = useMemo(
+    () => Object.fromEntries(teams.map((team) => [String(team._id), team])),
+    [teams]
+  );
+
+  if (initializing || loading) {
+    return (
+      <main className="container">
+        <section className="card phase1-admin-card">
+          <p className="subtle">Loading playoffs dashboard...</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!user || !token) {
+    return (
+      <main className="container">
+        <section className="card phase1-admin-card">
+          <h1 className="title">Playoffs</h1>
+          <p className="subtle">Sign in to manage playoff generation and operations.</p>
+          <a className="primary-button" href="/?mode=signin">
+            Sign In
+          </a>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="container">
+      <section className="card phase1-admin-card">
+        <div className="phase1-admin-header">
+          <div>
+            <h1 className="title">Playoffs</h1>
+            <p className="subtitle">
+              {tournament?.name || 'Tournament'} • Generate Gold/Silver/Bronze brackets and run
+              the fixed ops schedule.
+            </p>
+          </div>
+          <div className="phase1-admin-actions">
+            <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
+              Back To Phase 2
+            </a>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={handleGeneratePlayoffs}
+              disabled={generateLoading}
+            >
+              {generateLoading ? 'Generating Playoffs...' : 'Generate Playoffs'}
+            </button>
+          </div>
+        </div>
+
+        {refreshing && <p className="subtle">Refreshing playoff data...</p>}
+        {error && <p className="error">{error}</p>}
+        {message && <p className="subtle phase1-success">{message}</p>}
+
+        {playoffs.opsSchedule.length === 0 ? (
+          <p className="subtle">No playoff matches yet. Generate playoffs to build the schedule.</p>
+        ) : (
+          <section className="phase1-schedule">
+            <h2 className="secondary-title">Ops Schedule</h2>
+            {playoffs.opsSchedule.map((roundBlock) => (
+              <article key={roundBlock.roundBlock} className="phase1-standings-card">
+                <h3>{roundBlock.label}</h3>
+                <div className="phase1-table-wrap">
+                  <table className="phase1-schedule-table">
+                    <thead>
+                      <tr>
+                        <th>Facility</th>
+                        <th>Court</th>
+                        <th>Match</th>
+                        <th>Teams</th>
+                        <th>Ref</th>
+                        <th>Control Panel</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {roundBlock.slots.map((slot) => {
+                        const match = slot.matchId ? matchesById[slot.matchId] : null;
+                        const scoreboardKey = match?.scoreboardCode || match?.scoreboardId || null;
+                        const currentRefId = match?.refTeamIds?.[0] || '';
+                        const selectedRefId = refSelections[slot.matchId] ?? currentRefId;
+                        const canEditRefs = Boolean(match) && Number(match.roundBlock) > 7;
+                        const canFinalize = Boolean(match?.teamAId && match?.teamBId);
+
+                        return (
+                          <tr key={`${roundBlock.roundBlock}-${slot.court}`}>
+                            <td>{slot.facility}</td>
+                            <td>{slot.court}</td>
+                            <td>{slot.matchLabel}</td>
+                            <td>
+                              {slot.matchId ? `${slot.teams.a} vs ${slot.teams.b}` : <span className="subtle">-</span>}
+                            </td>
+                            <td>
+                              {!slot.matchId ? (
+                                <span className="subtle">-</span>
+                              ) : canEditRefs ? (
+                                <div className="playoff-ref-editor">
+                                  <select
+                                    value={selectedRefId}
+                                    onChange={(event) =>
+                                      setRefSelections((previous) => ({
+                                        ...previous,
+                                        [slot.matchId]: event.target.value,
+                                      }))
+                                    }
+                                  >
+                                    <option value="">TBD</option>
+                                    {teams.map((team) => (
+                                      <option key={team._id} value={team._id}>
+                                        {formatRefTeamLabel(team)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    className="secondary-button phase1-inline-button"
+                                    type="button"
+                                    onClick={() => handleSaveRefs(slot.matchId)}
+                                    disabled={Boolean(savingRefMatchId)}
+                                  >
+                                    {savingRefMatchId === slot.matchId ? 'Saving...' : 'Save'}
+                                  </button>
+                                </div>
+                              ) : slot.refs.length > 0 ? (
+                                slot.refs.join(', ')
+                              ) : (
+                                'TBD'
+                              )}
+                            </td>
+                            <td>
+                              {scoreboardKey ? (
+                                <a href={`/board/${scoreboardKey}/control`} target="_blank" rel="noreferrer">
+                                  Open Control Panel
+                                </a>
+                              ) : (
+                                <span className="subtle">No control link</span>
+                              )}
+                            </td>
+                            <td>
+                              {!match ? (
+                                <span className="subtle">Empty</span>
+                              ) : (
+                                <span
+                                  className={`phase1-status-badge ${
+                                    match.status === 'final'
+                                      ? 'phase1-status-badge--final'
+                                      : 'phase1-status-badge--scheduled'
+                                  }`}
+                                >
+                                  {match.status === 'final' ? 'Finalized' : 'Not Finalized'}
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              {!match ? (
+                                <span className="subtle">-</span>
+                              ) : match.status === 'final' ? (
+                                <button
+                                  className="secondary-button phase1-inline-button"
+                                  type="button"
+                                  onClick={() => handleUnfinalizeMatch(match._id)}
+                                  disabled={Boolean(matchActionId)}
+                                >
+                                  {matchActionId === match._id ? 'Unfinalizing...' : 'Unfinalize'}
+                                </button>
+                              ) : (
+                                <button
+                                  className="primary-button phase1-inline-button"
+                                  type="button"
+                                  onClick={() => handleFinalizeMatch(match._id)}
+                                  disabled={Boolean(matchActionId) || !canFinalize}
+                                >
+                                  {!canFinalize
+                                    ? 'Awaiting Teams'
+                                    : matchActionId === match._id
+                                      ? 'Finalizing...'
+                                      : 'Finalize'}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            ))}
+          </section>
+        )}
+
+        {playoffs.matches.length > 0 && (
+          <section className="phase1-standings">
+            <h2 className="secondary-title">Bracket View</h2>
+            <div className="playoff-bracket-grid">
+              {PLAYOFF_BRACKET_ORDER.map((bracket) => {
+                const bracketData = playoffs.brackets?.[bracket];
+                if (!bracketData) {
+                  return null;
+                }
+
+                return (
+                  <article key={bracket} className="phase1-standings-card playoff-bracket-card">
+                    <h3>{PLAYOFF_BRACKET_LABELS[bracket]}</h3>
+                    <div className="playoff-seed-list">
+                      {Array.isArray(bracketData.seeds) && bracketData.seeds.length > 0 ? (
+                        bracketData.seeds.map((seedEntry) => (
+                          <p key={`${bracket}-seed-${seedEntry.seed}`}>
+                            #{seedEntry.seed} {formatRefTeamLabel(teamsById[seedEntry.teamId] || seedEntry.team)}
+                          </p>
+                        ))
+                      ) : (
+                        <p className="subtle">Seeds not resolved</p>
+                      )}
+                    </div>
+                    {['R1', 'R2', 'R3'].map((roundKey) => (
+                      <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
+                        <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
+                        {(bracketData.rounds?.[roundKey] || []).map((match) => (
+                          <div key={match._id} className="playoff-round-match">
+                            <p>{formatBracketMatchSummary(match)}</p>
+                            <p className="subtle">
+                              {match.court} • {match.status === 'final' ? 'Final' : 'Scheduled'}
+                            </p>
+                            {match.result && (
+                              <p className="subtle">
+                                Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
+                                {match.result.pointsForA}-{match.result.pointsForB}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        )}
+      </section>
+    </main>
+  );
+}
+
+export default TournamentPlayoffsAdmin;

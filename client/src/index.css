@@ -833,6 +833,147 @@ button:disabled {
   gap: 0.65rem;
 }
 
+.tournament-date-picker {
+  position: relative;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.tournament-date-input-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.tournament-date-trigger {
+  border: 1px solid rgba(37, 99, 235, 0.35);
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+  border-radius: 10px;
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.tournament-date-trigger:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.18);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px rgba(37, 99, 235, 0.2);
+}
+
+.tournament-date-trigger-icon {
+  width: 20px;
+  height: 20px;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tournament-date-display {
+  font-size: 0.82rem;
+}
+
+.tournament-date-popover {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  z-index: 30;
+  width: min(320px, 100%);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.16);
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.tournament-date-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.tournament-date-popover-header strong {
+  font-size: 0.92rem;
+  color: #0f172a;
+}
+
+.tournament-date-nav {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.72rem;
+}
+
+.tournament-date-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+.tournament-date-weekdays span {
+  text-align: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tournament-date-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+.tournament-date-grid-empty {
+  height: 34px;
+}
+
+.tournament-date-day {
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: #f8fafc;
+  color: #0f172a;
+  height: 34px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.tournament-date-day:hover {
+  background: rgba(37, 99, 235, 0.14);
+  border-color: rgba(37, 99, 235, 0.35);
+  transform: translateY(-1px);
+}
+
+.tournament-date-day.is-today {
+  border-color: rgba(14, 116, 144, 0.45);
+}
+
+.tournament-date-day.is-selected {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: 0 10px 18px rgba(37, 99, 235, 0.24);
+}
+
+.tournament-date-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tournament-date-popover-actions .secondary-button {
+  padding: 0.45rem 0.8rem;
+  font-size: 0.8rem;
+}
+
 .tournaments-list-header {
   display: flex;
   align-items: center;
@@ -3252,6 +3393,14 @@ button:disabled {
 
   .tournament-list-actions {
     grid-template-columns: 1fr;
+  }
+
+  .tournament-date-input-wrap {
+    grid-template-columns: 1fr;
+  }
+
+  .tournament-date-popover {
+    width: 100%;
   }
 }
 .team-card-header {

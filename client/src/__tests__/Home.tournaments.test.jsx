@@ -142,7 +142,7 @@ describe("Home tournaments tab", () => {
 
     await user.type(screen.getByLabelText("Tournament name"), "City Finals");
     fireEvent.change(screen.getByLabelText("Tournament date"), {
-      target: { value: "2026-06-01" },
+      target: { value: "06-01-2026" },
     });
 
     await user.click(screen.getByRole("button", { name: "Create tournament" }));

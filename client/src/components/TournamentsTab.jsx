@@ -11,6 +11,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 import { API_URL } from "../config/env.js";
+import TournamentDatePicker from "./TournamentDatePicker.jsx";
 
 const DEFAULT_TIMEZONE = "America/New_York";
 
@@ -24,6 +25,47 @@ const resolveTimezone = () => {
 };
 
 const normalizeText = (value) => (typeof value === "string" ? value.trim() : "");
+
+const parseUsDateInput = (value) => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(trimmed);
+
+  if (!match) {
+    return null;
+  }
+
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  const year = Number(match[3]);
+
+  if (!Number.isInteger(month) || !Number.isInteger(day) || !Number.isInteger(year)) {
+    return null;
+  }
+
+  const parsed = new Date(year, month - 1, day);
+
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() + 1 !== month ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return parsed;
+};
+
+const toIsoDateString = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 const normalizeLogoUrl = (value) => {
   if (value === null || value === undefined) {
@@ -559,12 +601,18 @@ function TournamentsTab({
       return;
     }
 
+    const parsedDate = parseUsDateInput(createDate);
+    if (!parsedDate) {
+      setCreateError("Tournament date must use MM-DD-YYYY.");
+      return;
+    }
+
     setCreateBusy(true);
     setCreateError("");
 
     const payload = {
       name: normalizeText(createName),
-      date: createDate,
+      date: toIsoDateString(parsedDate),
       timezone: resolveTimezone(),
     };
 
@@ -713,12 +761,12 @@ function TournamentsTab({
             <label className="input-label" htmlFor="tournament-date">
               Tournament date
             </label>
-            <input
+            <TournamentDatePicker
               id="tournament-date"
-              type="date"
-              required
               value={createDate}
-              onChange={(event) => setCreateDate(event.target.value)}
+              required
+              disabled={createBusy}
+              onChange={setCreateDate}
             />
 
             {createError && <p className="error">{createError}</p>}

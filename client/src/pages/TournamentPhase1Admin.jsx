@@ -21,6 +21,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 import { API_URL } from '../config/env.js';
+import TournamentSchedulingTabs from '../components/TournamentSchedulingTabs.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
@@ -1093,13 +1094,11 @@ function TournamentPhase1Admin() {
               {tournament?.name || 'Tournament'} • Create pools, drag teams from Team Bank, then
               generate the fixed Pool Play 1 schedule.
             </p>
+            <TournamentSchedulingTabs tournamentId={id} activeTab="phase1" />
           </div>
           <div className="phase1-admin-actions">
             <a className="secondary-button" href={`/?tab=tournaments&tournamentId=${id}`}>
               Manage Teams
-            </a>
-            <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-              Open Pool Play 2 Setup
             </a>
             <button
               className="secondary-button"

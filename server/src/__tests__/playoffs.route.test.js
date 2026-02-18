@@ -299,9 +299,49 @@ describe('playoff generation + progression routes', () => {
     expect(response.body.brackets).toHaveProperty('silver');
     expect(response.body.brackets).toHaveProperty('bronze');
 
+    const round7 = response.body.opsSchedule.find((roundBlock) => Number(roundBlock.roundBlock) === 7);
+    const round8 = response.body.opsSchedule.find((roundBlock) => Number(roundBlock.roundBlock) === 8);
+    const goldR145 = round7?.slots?.find((slot) => slot.court === 'SRC-1');
+    const silverR2 = round8?.slots?.find((slot) => slot.court === 'VC-2');
+
+    expect(goldR145?.matchLabel).toBe('Gold 4v5');
+    expect(silverR2?.matchLabel).toBe('Silver 1 vs W(4/5)');
+
+    expect(response.body.brackets.gold.seeds.map((entry) => entry.overallSeed)).toEqual([1, 2, 3, 4, 5]);
+    expect(response.body.brackets.silver.seeds.map((entry) => entry.overallSeed)).toEqual([6, 7, 8, 9, 10]);
+    expect(response.body.brackets.bronze.seeds.map((entry) => entry.overallSeed)).toEqual([11, 12, 13, 14, 15]);
+
     response.body.matches.forEach((match) => {
       expect(match.finalizedBy).toBeUndefined();
       expect(match.scoreboardId).toBeUndefined();
     });
+  });
+
+  test('owner playoffs endpoint pre-fills ops schedule matchup labels before generation', async () => {
+    const tournament = await createOwnedTournament();
+
+    const response = await request(app)
+      .get(`/api/tournaments/${tournament._id}/playoffs`)
+      .set(authHeader());
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.matches).toEqual([]);
+    expect(response.body.opsSchedule).toHaveLength(3);
+
+    const round7 = response.body.opsSchedule.find((roundBlock) => Number(roundBlock.roundBlock) === 7);
+    const round8 = response.body.opsSchedule.find((roundBlock) => Number(roundBlock.roundBlock) === 8);
+
+    expect(round7.slots.find((slot) => slot.court === 'SRC-1')).toEqual(
+      expect.objectContaining({
+        matchId: null,
+        matchLabel: 'Gold 4v5',
+      })
+    );
+    expect(round8.slots.find((slot) => slot.court === 'VC-2')).toEqual(
+      expect.objectContaining({
+        matchId: null,
+        matchLabel: 'Silver 1 vs W(4/5)',
+      })
+    );
   });
 });

@@ -20,6 +20,21 @@ const PLAYOFF_BRACKET_LABELS = {
   silver: 'Silver',
   bronze: 'Bronze',
 };
+const PLAYOFF_OVERALL_SEED_OFFSETS = Object.freeze({
+  gold: 0,
+  silver: 5,
+  bronze: 10,
+});
+const TOURNAMENT_DETAILS_DEFAULTS = Object.freeze({
+  specialNotes: '',
+  foodInfo: {
+    text: '',
+    linkUrl: '',
+  },
+  facilitiesInfo: '',
+  parkingInfo: '',
+  mapImageUrls: [],
+});
 
 const normalizePools = (pools) =>
   sortPhase1Pools(pools).map((pool) => ({
@@ -46,6 +61,61 @@ const formatPointDiff = (value) => {
 };
 
 const formatTeamName = (team) => team?.shortName || team?.name || 'TBD';
+const toIdString = (value) => {
+  if (!value) {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'object' && value._id) {
+    return String(value._id);
+  }
+
+  return String(value);
+};
+const normalizeBracket = (value) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+const toOverallSeed = (bracket, bracketSeed) => {
+  const seed = Number(bracketSeed);
+  const offset = PLAYOFF_OVERALL_SEED_OFFSETS[normalizeBracket(bracket)];
+
+  if (!Number.isFinite(seed) || !Number.isFinite(offset)) {
+    return null;
+  }
+
+  return offset + seed;
+};
+const formatTeamWithOverallSeed = (team, overallSeed) => {
+  const hasResolvedTeam =
+    team &&
+    typeof team === 'object' &&
+    (typeof team.shortName === 'string' || typeof team.name === 'string');
+  const teamLabel = formatTeamName(team);
+
+  if (!hasResolvedTeam || teamLabel === 'TBD') {
+    return 'TBD';
+  }
+
+  return Number.isFinite(Number(overallSeed)) ? `${teamLabel} (#${Number(overallSeed)})` : teamLabel;
+};
+const formatPlayoffMatchSummary = (match, seedByTeamId) => {
+  if (!match) {
+    return 'TBD vs TBD';
+  }
+
+  const teamAId = toIdString(match.teamA?._id || match.teamAId);
+  const teamBId = toIdString(match.teamB?._id || match.teamBId);
+  const teamASeed = seedByTeamId.get(teamAId) ?? toOverallSeed(match.bracket, match.seedA);
+  const teamBSeed = seedByTeamId.get(teamBId) ?? toOverallSeed(match.bracket, match.seedB);
+
+  return `${formatTeamWithOverallSeed(match.teamA, teamASeed)} vs ${formatTeamWithOverallSeed(
+    match.teamB,
+    teamBSeed
+  )}`;
+};
 const formatLiveSummary = (summary) => {
   if (!summary) {
     return '';
@@ -84,6 +154,168 @@ const formatCourtScoreSummary = (score) => {
 
   return `Sets ${score.setsA ?? 0}-${score.setsB ?? 0} • Pts ${score.pointsA ?? 0}-${score.pointsB ?? 0}`;
 };
+const normalizeText = (value) => (typeof value === 'string' ? value : '');
+const normalizeUrl = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const normalizeTournamentDetails = (details) => {
+  const source = details && typeof details === 'object' ? details : {};
+  const foodInfo = source.foodInfo && typeof source.foodInfo === 'object' ? source.foodInfo : {};
+  const mapImageUrls = Array.isArray(source.mapImageUrls) ? source.mapImageUrls : [];
+
+  return {
+    specialNotes: normalizeText(source.specialNotes),
+    foodInfo: {
+      text: normalizeText(foodInfo.text),
+      linkUrl: normalizeUrl(foodInfo.linkUrl),
+    },
+    facilitiesInfo: normalizeText(source.facilitiesInfo),
+    parkingInfo: normalizeText(source.parkingInfo),
+    mapImageUrls: mapImageUrls
+      .map((url) => normalizeUrl(url))
+      .filter(Boolean)
+      .slice(0, 3),
+  };
+};
+
+const normalizeLiveScoreSummary = (summary) => {
+  if (!summary || typeof summary !== 'object') {
+    return null;
+  }
+
+  const hasFlatFields =
+    summary.setsA !== undefined ||
+    summary.setsB !== undefined ||
+    summary.pointsA !== undefined ||
+    summary.pointsB !== undefined;
+  const sets = summary.sets && typeof summary.sets === 'object' ? summary.sets : {};
+  const points = summary.points && typeof summary.points === 'object' ? summary.points : {};
+
+  return hasFlatFields
+    ? {
+        setsA: Number(summary.setsA) || 0,
+        setsB: Number(summary.setsB) || 0,
+        pointsA: Number(summary.pointsA) || 0,
+        pointsB: Number(summary.pointsB) || 0,
+      }
+    : {
+        setsA: Number(sets.a) || 0,
+        setsB: Number(sets.b) || 0,
+        pointsA: Number(points.a) || 0,
+        pointsB: Number(points.b) || 0,
+      };
+};
+
+const formatLiveCardScoreSummary = (summary) => {
+  const normalized = normalizeLiveScoreSummary(summary);
+  if (!normalized) {
+    return '';
+  }
+
+  return `Sets ${normalized.setsA}-${normalized.setsB} • Pts ${normalized.pointsA}-${normalized.pointsB}`;
+};
+
+const isHttpUrl = (value) => /^https?:\/\//i.test(value || '');
+
+const renderInlineMarkdown = (text, keyPrefix) => {
+  if (!text) {
+    return text;
+  }
+
+  const nodes = [];
+  const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
+  let cursor = 0;
+  let match;
+  let index = 0;
+
+  while ((match = linkPattern.exec(text))) {
+    if (match.index > cursor) {
+      nodes.push(text.slice(cursor, match.index));
+    }
+
+    nodes.push(
+      <a key={`${keyPrefix}-link-${index}`} href={match[2]} target="_blank" rel="noreferrer">
+        {match[1]}
+      </a>
+    );
+    cursor = match.index + match[0].length;
+    index += 1;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+
+  return nodes.length > 0 ? nodes : text;
+};
+
+const renderBasicMarkdown = (markdown) => {
+  const source = normalizeText(markdown);
+  if (!source.trim()) {
+    return null;
+  }
+
+  const lines = source.replace(/\r\n/g, '\n').split('\n');
+  const blocks = [];
+  let listItems = [];
+  let blockIndex = 0;
+
+  const flushList = () => {
+    if (listItems.length === 0) {
+      return;
+    }
+
+    blocks.push(
+      <ul key={`md-list-${blockIndex}`} className="tournament-details-markdown-list">
+        {listItems.map((item, itemIndex) => (
+          <li key={`md-list-item-${blockIndex}-${itemIndex}`}>
+            {renderInlineMarkdown(item, `md-list-${blockIndex}-${itemIndex}`)}
+          </li>
+        ))}
+      </ul>
+    );
+    listItems = [];
+    blockIndex += 1;
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushList();
+      return;
+    }
+
+    if (trimmed.startsWith('- ')) {
+      listItems.push(trimmed.slice(2).trim());
+      return;
+    }
+
+    flushList();
+
+    const headingMatch = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+    if (headingMatch) {
+      const level = headingMatch[1].length + 2;
+      const HeadingTag = level === 3 ? 'h3' : level === 4 ? 'h4' : 'h5';
+      blocks.push(
+        <HeadingTag key={`md-heading-${blockIndex}`} className="tournament-details-markdown-heading">
+          {renderInlineMarkdown(headingMatch[2], `md-heading-${blockIndex}`)}
+        </HeadingTag>
+      );
+      blockIndex += 1;
+      return;
+    }
+
+    blocks.push(
+      <p key={`md-paragraph-${blockIndex}`}>
+        {renderInlineMarkdown(line, `md-paragraph-${blockIndex}`)}
+      </p>
+    );
+    blockIndex += 1;
+  });
+
+  flushList();
+  return blocks;
+};
 
 function TournamentPublicView() {
   const { publicCode } = useParams();
@@ -106,11 +338,13 @@ function TournamentPublicView() {
     cumulative: { pools: [], overall: [] },
   });
   const [activeStandingsTab, setActiveStandingsTab] = useState('phase1');
-  const [activeViewTab, setActiveViewTab] = useState('overview');
+  const [activeViewTab, setActiveViewTab] = useState('live');
   const [loading, setLoading] = useState(true);
   const [courtScheduleLoading, setCourtScheduleLoading] = useState(false);
   const [error, setError] = useState('');
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
+  const [details, setDetails] = useState(() => TOURNAMENT_DETAILS_DEFAULTS);
+  const [liveMatches, setLiveMatches] = useState([]);
 
   const loadPublicData = useCallback(
     async ({ silent = false } = {}) => {
@@ -133,6 +367,8 @@ function TournamentPublicView() {
           phase2StandingsResponse,
           cumulativeStandingsResponse,
           playoffsResponse,
+          detailsResponse,
+          liveMatchesResponse,
         ] = await Promise.all([
           fetch(`${API_URL}/api/tournaments/code/${publicCode}`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/phase1/pools`),
@@ -142,6 +378,8 @@ function TournamentPublicView() {
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=phase2`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=cumulative`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/playoffs`),
+          fetch(`${API_URL}/api/tournaments/code/${publicCode}/details`),
+          fetch(`${API_URL}/api/tournaments/code/${publicCode}/live`),
         ]);
 
         const [
@@ -153,6 +391,8 @@ function TournamentPublicView() {
           phase2StandingsPayload,
           cumulativeStandingsPayload,
           playoffsPayload,
+          detailsPayload,
+          liveMatchesPayload,
         ] = await Promise.all([
           tournamentResponse.json().catch(() => null),
           poolResponse.json().catch(() => null),
@@ -162,6 +402,8 @@ function TournamentPublicView() {
           phase2StandingsResponse.json().catch(() => null),
           cumulativeStandingsResponse.json().catch(() => null),
           playoffsResponse.json().catch(() => null),
+          detailsResponse.json().catch(() => null),
+          liveMatchesResponse.json().catch(() => null),
         ]);
 
         if (!tournamentResponse.ok) {
@@ -188,8 +430,16 @@ function TournamentPublicView() {
         if (!playoffsResponse.ok) {
           throw new Error(playoffsPayload?.message || 'Unable to load playoffs');
         }
+        if (!detailsResponse.ok) {
+          throw new Error(detailsPayload?.message || 'Unable to load details');
+        }
+        if (!liveMatchesResponse.ok) {
+          throw new Error(liveMatchesPayload?.message || 'Unable to load live matches');
+        }
 
         setTournament(tournamentPayload.tournament);
+        setDetails(normalizeTournamentDetails(detailsPayload?.details));
+        setLiveMatches(Array.isArray(liveMatchesPayload) ? liveMatchesPayload : []);
         setPools(normalizePools(poolPayload));
         setMatches(Array.isArray(matchPayload) ? matchPayload : []);
         const nextCourts = Array.isArray(courtsPayload?.courts) ? courtsPayload.courts : [];
@@ -271,6 +521,8 @@ function TournamentPublicView() {
     if (!publicCode) {
       setLoading(false);
       setError('Missing tournament code');
+      setDetails(TOURNAMENT_DETAILS_DEFAULTS);
+      setLiveMatches([]);
       return;
     }
 
@@ -283,8 +535,8 @@ function TournamentPublicView() {
     const requestedView = params.get('view');
     const requestedCourtCode = params.get('court');
 
-    if (requestedView === 'courts') {
-      setActiveViewTab('courts');
+    if (['overview', 'playoffs', 'courts', 'live', 'details'].includes(requestedView)) {
+      setActiveViewTab(requestedView);
     }
 
     if (typeof requestedCourtCode === 'string' && requestedCourtCode.trim()) {
@@ -343,6 +595,42 @@ function TournamentPublicView() {
       : activeStandingsTab === 'cumulative'
         ? standingsByPhase.cumulative
         : standingsByPhase.phase1;
+  const liveCards = useMemo(
+    () =>
+      [...(Array.isArray(liveMatches) ? liveMatches : [])]
+        .sort((left, right) => {
+          const leftRound = Number.isFinite(Number(left?.roundBlock))
+            ? Number(left.roundBlock)
+            : Number.MAX_SAFE_INTEGER;
+          const rightRound = Number.isFinite(Number(right?.roundBlock))
+            ? Number(right.roundBlock)
+            : Number.MAX_SAFE_INTEGER;
+
+          if (leftRound !== rightRound) {
+            return leftRound - rightRound;
+          }
+
+          return String(left?.courtLabel || left?.courtCode || '').localeCompare(
+            String(right?.courtLabel || right?.courtCode || '')
+          );
+        })
+        .map((match) => ({
+          ...match,
+          resolvedScoreSummary:
+            normalizeLiveScoreSummary(liveSummariesByMatchId[match?.matchId]) ||
+            normalizeLiveScoreSummary(match?.scoreSummary),
+        })),
+    [liveMatches, liveSummariesByMatchId]
+  );
+  const hasSpecialNotes = Boolean(details?.specialNotes?.trim());
+  const hasFacilitiesInfo = Boolean(details?.facilitiesInfo?.trim());
+  const hasParkingInfo = Boolean(details?.parkingInfo?.trim());
+  const hasFoodText = Boolean(details?.foodInfo?.text?.trim());
+  const hasFoodLink = Boolean(details?.foodInfo?.linkUrl?.trim());
+  const hasFood = hasFoodText || hasFoodLink;
+  const hasMaps = Array.isArray(details?.mapImageUrls) && details.mapImageUrls.length > 0;
+  const hasAnyDetails =
+    hasSpecialNotes || hasFacilitiesInfo || hasParkingInfo || hasFood || hasMaps;
 
   if (loading) {
     return (
@@ -373,11 +661,25 @@ function TournamentPublicView() {
 
         <div className="phase1-admin-actions">
           <button
+            className={activeViewTab === 'live' ? 'primary-button' : 'secondary-button'}
+            type="button"
+            onClick={() => setActiveViewTab('live')}
+          >
+            Live
+          </button>
+          <button
             className={activeViewTab === 'overview' ? 'primary-button' : 'secondary-button'}
             type="button"
             onClick={() => setActiveViewTab('overview')}
           >
             Pools + Standings
+          </button>
+          <button
+            className={activeViewTab === 'details' ? 'primary-button' : 'secondary-button'}
+            type="button"
+            onClick={() => setActiveViewTab('details')}
+          >
+            Details
           </button>
           <button
             className={activeViewTab === 'playoffs' ? 'primary-button' : 'secondary-button'}
@@ -395,7 +697,119 @@ function TournamentPublicView() {
           </button>
         </div>
 
-        {activeViewTab === 'overview' ? (
+        {activeViewTab === 'live' ? (
+          <section className="tournament-live-view">
+            <h2 className="secondary-title">Live Matches</h2>
+            {liveCards.length === 0 ? (
+              <p className="subtle">No matches are live right now.</p>
+            ) : (
+              <div className="tournament-live-list">
+                {liveCards.map((match) => {
+                  const timeLabel =
+                    match?.timeLabel || formatRoundBlockStartTime(match?.roundBlock, tournament) || '-';
+                  const courtLabel = match?.courtLabel || mapCourtLabel(match?.courtCode) || 'Court TBD';
+                  const facilityLabel =
+                    match?.facilityLabel || match?.facility || (match?.courtCode ? courtLabel : 'Facility TBD');
+                  const scoreSummary = formatLiveCardScoreSummary(match?.resolvedScoreSummary);
+                  return (
+                    <article key={match?.matchId || `${match?.roundBlock}-${match?.courtCode}`} className="tournament-live-card">
+                      <div className="tournament-live-card-header">
+                        <p className="tournament-live-card-time">{timeLabel}</p>
+                        <span className="tournament-live-pill">LIVE</span>
+                      </div>
+                      <p className="tournament-live-card-location">
+                        {courtLabel} · {facilityLabel}
+                      </p>
+                      <p className="tournament-live-card-phase">
+                        {match?.phaseLabel || match?.phase || 'Match'}
+                        {match?.bracket ? ` · ${String(match.bracket).toUpperCase()}` : ''}
+                      </p>
+                      <p className="tournament-live-card-teams">
+                        {match?.teamA?.shortName || 'TBD'} vs {match?.teamB?.shortName || 'TBD'}
+                      </p>
+                      {scoreSummary ? <p className="tournament-live-card-score">{scoreSummary}</p> : null}
+                      {match?.scoreboardCode ? (
+                        <a
+                          className="tournament-live-card-link"
+                          href={`/board/${match.scoreboardCode}/display`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          View match
+                        </a>
+                      ) : (
+                        <p className="subtle">No live scoreboard link available.</p>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        ) : activeViewTab === 'details' ? (
+          <section className="tournament-public-details-view">
+            <h2 className="secondary-title">Details</h2>
+            {!hasAnyDetails ? (
+              <p className="subtle">No details posted yet.</p>
+            ) : (
+              <div className="tournament-public-details-stack">
+                {hasSpecialNotes ? (
+                  <article className="tournament-public-details-section">
+                    <h3>Special Notes</h3>
+                    <div className="tournament-details-markdown">
+                      {renderBasicMarkdown(details.specialNotes)}
+                    </div>
+                  </article>
+                ) : null}
+
+                {hasFacilitiesInfo ? (
+                  <article className="tournament-public-details-section">
+                    <h3>Facilities / Court Notes</h3>
+                    <p>{details.facilitiesInfo}</p>
+                  </article>
+                ) : null}
+
+                {hasMaps ? (
+                  <article className="tournament-public-details-section">
+                    <h3>Maps</h3>
+                    <div className="tournament-public-details-map-grid">
+                      {details.mapImageUrls.map((url) => (
+                        <a
+                          key={url}
+                          href={url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="tournament-public-details-map"
+                        >
+                          <img src={url} alt="Tournament map" loading="lazy" />
+                        </a>
+                      ))}
+                    </div>
+                  </article>
+                ) : null}
+
+                {hasFood ? (
+                  <article className="tournament-public-details-section">
+                    <h3>Food</h3>
+                    {hasFoodText ? <p>{details.foodInfo.text}</p> : null}
+                    {hasFoodLink && isHttpUrl(details.foodInfo.linkUrl) ? (
+                      <a href={details.foodInfo.linkUrl} target="_blank" rel="noreferrer">
+                        Food details
+                      </a>
+                    ) : null}
+                  </article>
+                ) : null}
+
+                {hasParkingInfo ? (
+                  <article className="tournament-public-details-section">
+                    <h3>Parking</h3>
+                    <p>{details.parkingInfo}</p>
+                  </article>
+                ) : null}
+              </div>
+            )}
+          </section>
+        ) : activeViewTab === 'overview' ? (
           <>
             <section>
               <h2 className="secondary-title">Pool Rosters</h2>
@@ -714,37 +1128,60 @@ function TournamentPublicView() {
                         <div className="playoff-seed-list">
                           {(bracketData.seeds || []).map((entry) => (
                             <p key={`${bracket}-seed-${entry.seed}`}>
-                              #{entry.seed} {formatTeamName(entry.team)}
+                              #
+                              {Number.isFinite(Number(entry?.overallSeed))
+                                ? Number(entry.overallSeed)
+                                : entry.seed}{' '}
+                              {formatTeamName(entry.team)}
                             </p>
                           ))}
                         </div>
-                        {['R1', 'R2', 'R3'].map((roundKey) => (
-                          <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
-                            <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
-                            {(bracketData.rounds?.[roundKey] || []).map((match) => (
-                              <div key={match._id} className="playoff-round-match">
-                                <p>
-                                  {match.teamA ? formatTeamLabel(match.teamA) : 'TBD'} vs{' '}
-                                  {match.teamB ? formatTeamLabel(match.teamB) : 'TBD'}
-                                </p>
-                                <p className="subtle">
-                                  {mapCourtLabel(match.court)} • {match.status === 'final' ? 'Final' : 'Scheduled'}
-                                </p>
-                                {liveSummariesByMatchId[match._id] && (
+                        {(() => {
+                          const seedByTeamId = new Map(
+                            (bracketData?.seeds || [])
+                              .map((entry) => {
+                                const teamId = toIdString(entry?.teamId);
+                                if (!teamId) {
+                                  return null;
+                                }
+
+                                return [
+                                  teamId,
+                                  Number.isFinite(Number(entry?.overallSeed))
+                                    ? Number(entry.overallSeed)
+                                    : Number.isFinite(Number(entry?.seed))
+                                      ? Number(entry.seed)
+                                      : null,
+                                ];
+                              })
+                              .filter(Boolean)
+                          );
+
+                          return ['R1', 'R2', 'R3'].map((roundKey) => (
+                            <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
+                              <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
+                              {(bracketData.rounds?.[roundKey] || []).map((match) => (
+                                <div key={match._id} className="playoff-round-match">
+                                  <p>{formatPlayoffMatchSummary(match, seedByTeamId)}</p>
                                   <p className="subtle">
-                                    {formatLiveSummary(liveSummariesByMatchId[match._id])}
+                                    {mapCourtLabel(match.court)} • {match.status === 'final' ? 'Final' : 'Scheduled'}
                                   </p>
-                                )}
-                                {match.result && (
-                                  <p className="subtle">
-                                    Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
-                                    {match.result.pointsForA}-{match.result.pointsForB}
-                                  </p>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        ))}
+                                  {liveSummariesByMatchId[match._id] && (
+                                    <p className="subtle">
+                                      {formatLiveSummary(liveSummariesByMatchId[match._id])}
+                                    </p>
+                                  )}
+                                  {match.result && (
+                                    <p className="subtle">
+                                      Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
+                                      {match.result.pointsForA}-{match.result.pointsForB}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ));
+                        })()}
                       </article>
                     );
                   })}

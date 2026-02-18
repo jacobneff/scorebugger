@@ -84,6 +84,19 @@ const FACILITY_LABELS = Object.freeze({
   SRC: 'SRC',
   VC: 'Volleyball Center',
 });
+const TOURNAMENT_DETAILS_MAX_TEXT_LENGTH = 10_000;
+const TOURNAMENT_DETAILS_MAX_URL_LENGTH = 2_048;
+const TOURNAMENT_DETAILS_MAX_MAP_IMAGES = 3;
+const TOURNAMENT_DETAILS_DEFAULTS = Object.freeze({
+  specialNotes: '',
+  foodInfo: {
+    text: '',
+    linkUrl: '',
+  },
+  facilitiesInfo: '',
+  parkingInfo: '',
+  mapImageUrls: [],
+});
 
 const phase2PoolNameIndex = PHASE2_POOL_NAMES.reduce((lookup, poolName, index) => {
   lookup[poolName] = index;
@@ -277,6 +290,15 @@ const normalizeStandingsPhase = (value) =>
 const normalizeTeamIdList = (value) =>
   Array.isArray(value) ? value.map((teamId) => toIdString(teamId)).filter(Boolean) : null;
 
+function isValidHttpUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 const isPermutation = (candidate, expected) => {
   if (!Array.isArray(candidate) || !Array.isArray(expected)) {
     return false;
@@ -382,6 +404,182 @@ async function ensureTournamentOwnership(tournamentId, userId) {
     _id: tournamentId,
     createdByUserId: userId,
   });
+}
+
+function serializeTournamentDetails(details) {
+  const source = details && typeof details === 'object' ? details : {};
+  const rawFoodInfo = source.foodInfo && typeof source.foodInfo === 'object' ? source.foodInfo : {};
+  const rawMapImageUrls = Array.isArray(source.mapImageUrls) ? source.mapImageUrls : [];
+
+  return {
+    specialNotes:
+      typeof source.specialNotes === 'string'
+        ? source.specialNotes
+        : TOURNAMENT_DETAILS_DEFAULTS.specialNotes,
+    foodInfo: {
+      text:
+        typeof rawFoodInfo.text === 'string'
+          ? rawFoodInfo.text
+          : TOURNAMENT_DETAILS_DEFAULTS.foodInfo.text,
+      linkUrl:
+        typeof rawFoodInfo.linkUrl === 'string'
+          ? rawFoodInfo.linkUrl
+          : TOURNAMENT_DETAILS_DEFAULTS.foodInfo.linkUrl,
+    },
+    facilitiesInfo:
+      typeof source.facilitiesInfo === 'string'
+        ? source.facilitiesInfo
+        : TOURNAMENT_DETAILS_DEFAULTS.facilitiesInfo,
+    parkingInfo:
+      typeof source.parkingInfo === 'string'
+        ? source.parkingInfo
+        : TOURNAMENT_DETAILS_DEFAULTS.parkingInfo,
+    mapImageUrls: rawMapImageUrls
+      .filter((url) => typeof url === 'string' && url.trim())
+      .map((url) => url.trim())
+      .slice(0, TOURNAMENT_DETAILS_MAX_MAP_IMAGES),
+  };
+}
+
+function normalizeTournamentDetailsPatch(rawBody) {
+  if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+    return {
+      updates: {},
+      error: 'Request body must be an object',
+    };
+  }
+
+  const updates = {};
+  const addTextUpdate = (path, value, fieldLabel) => {
+    if (value === null) {
+      updates[path] = '';
+      return;
+    }
+
+    if (typeof value !== 'string') {
+      throw new Error(`${fieldLabel} must be a string`);
+    }
+
+    if (value.length > TOURNAMENT_DETAILS_MAX_TEXT_LENGTH) {
+      throw new Error(`${fieldLabel} must be ${TOURNAMENT_DETAILS_MAX_TEXT_LENGTH} characters or fewer`);
+    }
+
+    updates[path] = value;
+  };
+  const addUrlUpdate = (path, value, fieldLabel) => {
+    if (value === null) {
+      updates[path] = '';
+      return;
+    }
+
+    if (typeof value !== 'string') {
+      throw new Error(`${fieldLabel} must be a string`);
+    }
+
+    const trimmed = value.trim();
+
+    if (trimmed.length > TOURNAMENT_DETAILS_MAX_URL_LENGTH) {
+      throw new Error(`${fieldLabel} must be ${TOURNAMENT_DETAILS_MAX_URL_LENGTH} characters or fewer`);
+    }
+
+    if (trimmed && !isValidHttpUrl(trimmed)) {
+      throw new Error(`${fieldLabel} must be a valid http or https URL`);
+    }
+
+    updates[path] = trimmed;
+  };
+
+  try {
+    if (rawBody.specialNotes !== undefined) {
+      addTextUpdate('details.specialNotes', rawBody.specialNotes, 'specialNotes');
+    }
+
+    if (rawBody.facilitiesInfo !== undefined) {
+      addTextUpdate('details.facilitiesInfo', rawBody.facilitiesInfo, 'facilitiesInfo');
+    }
+
+    if (rawBody.parkingInfo !== undefined) {
+      addTextUpdate('details.parkingInfo', rawBody.parkingInfo, 'parkingInfo');
+    }
+
+    if (rawBody.foodInfo !== undefined) {
+      if (!rawBody.foodInfo || typeof rawBody.foodInfo !== 'object' || Array.isArray(rawBody.foodInfo)) {
+        return {
+          updates: {},
+          error: 'foodInfo must be an object',
+        };
+      }
+
+      if (rawBody.foodInfo.text !== undefined) {
+        addTextUpdate('details.foodInfo.text', rawBody.foodInfo.text, 'foodInfo.text');
+      }
+
+      if (rawBody.foodInfo.linkUrl !== undefined) {
+        addUrlUpdate('details.foodInfo.linkUrl', rawBody.foodInfo.linkUrl, 'foodInfo.linkUrl');
+      }
+    }
+
+    if (rawBody.mapImageUrls !== undefined) {
+      const value = rawBody.mapImageUrls;
+      if (value === null) {
+        updates['details.mapImageUrls'] = [];
+      } else if (!Array.isArray(value)) {
+        return {
+          updates: {},
+          error: 'mapImageUrls must be an array',
+        };
+      } else {
+        if (value.length > TOURNAMENT_DETAILS_MAX_MAP_IMAGES) {
+          return {
+            updates: {},
+            error: `mapImageUrls cannot contain more than ${TOURNAMENT_DETAILS_MAX_MAP_IMAGES} URLs`,
+          };
+        }
+
+        const normalizedUrls = [];
+        for (let index = 0; index < value.length; index += 1) {
+          const entry = value[index];
+          if (typeof entry !== 'string') {
+            return {
+              updates: {},
+              error: `mapImageUrls[${index}] must be a string`,
+            };
+          }
+
+          const trimmed = entry.trim();
+
+          if (!trimmed) {
+            continue;
+          }
+
+          if (trimmed.length > TOURNAMENT_DETAILS_MAX_URL_LENGTH) {
+            return {
+              updates: {},
+              error: `mapImageUrls[${index}] must be ${TOURNAMENT_DETAILS_MAX_URL_LENGTH} characters or fewer`,
+            };
+          }
+
+          if (!isValidHttpUrl(trimmed)) {
+            return {
+              updates: {},
+              error: `mapImageUrls[${index}] must be a valid http or https URL`,
+            };
+          }
+
+          normalizedUrls.push(trimmed);
+        }
+
+        updates['details.mapImageUrls'] = normalizedUrls;
+      }
+    }
+  } catch (error) {
+    return {
+      updates: {},
+      error: error.message || 'Invalid details payload',
+    };
+  }
+
+  return { updates, error: null };
 }
 
 function validateTeamPayload(rawTeam, index) {
@@ -1147,6 +1345,57 @@ function resolveFacilityLabel(match) {
   return FACILITY_LABELS[facilityCode] || facilityCode || '';
 }
 
+function serializeMatchForLiveView(match, tournament) {
+  const teamA = match?.teamAId && typeof match.teamAId === 'object' ? match.teamAId : null;
+  const teamB = match?.teamBId && typeof match.teamBId === 'object' ? match.teamBId : null;
+  const scoreboard = match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null;
+  const resultScore = serializeCourtScheduleScore(match?.result);
+  const scoreboardScore = serializeScoreSummaryFromScoreboard(scoreboard);
+
+  return {
+    matchId: toIdString(match?._id),
+    phase: match?.phase ?? null,
+    phaseLabel: PHASE_LABELS[match?.phase] || match?.phase || '',
+    bracket: match?.bracket ?? null,
+    roundBlock: match?.roundBlock ?? null,
+    timeLabel: formatRoundBlockStartTime(match?.roundBlock, tournament),
+    facility: match?.facility ?? getFacilityFromCourt(match?.court),
+    facilityLabel: resolveFacilityLabel(match),
+    courtCode: match?.court ?? null,
+    courtLabel: mapCourtDisplayLabel(match?.court),
+    teamA: formatPublicTeamSnippet(teamA),
+    teamB: formatPublicTeamSnippet(teamB),
+    status: normalizeMatchStatus(match?.status),
+    scoreSummary: resultScore || scoreboardScore || null,
+    scoreboardCode: scoreboard?.code ?? null,
+  };
+}
+
+function sortLiveMatchCards(matchCards) {
+  return [...(Array.isArray(matchCards) ? matchCards : [])].sort((left, right) => {
+    const leftRound = Number.isFinite(Number(left?.roundBlock))
+      ? Number(left.roundBlock)
+      : Number.MAX_SAFE_INTEGER;
+    const rightRound = Number.isFinite(Number(right?.roundBlock))
+      ? Number(right.roundBlock)
+      : Number.MAX_SAFE_INTEGER;
+
+    if (leftRound !== rightRound) {
+      return leftRound - rightRound;
+    }
+
+    const leftCourt = String(left?.courtLabel || left?.courtCode || '');
+    const rightCourt = String(right?.courtLabel || right?.courtCode || '');
+    const byCourt = leftCourt.localeCompare(rightCourt);
+
+    if (byCourt !== 0) {
+      return byCourt;
+    }
+
+    return String(left?.matchId || '').localeCompare(String(right?.matchId || ''));
+  });
+}
+
 function serializeMatchForTeamView(match, focusTeamId, tournament) {
   const teamA = match?.teamAId && typeof match.teamAId === 'object' ? match.teamAId : null;
   const teamB = match?.teamBId && typeof match.teamBId === 'object' ? match.teamBId : null;
@@ -1259,6 +1508,74 @@ router.get('/code/:publicCode', async (req, res, next) => {
         seed: team.seed ?? null,
       })),
     });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/code/:publicCode/details -> public details content
+router.get('/code/:publicCode/details', async (req, res, next) => {
+  try {
+    const publicCode = normalizePublicCode(req.params.publicCode);
+
+    if (!new RegExp(`^[A-Z0-9]{${CODE_LENGTH}}$`).test(publicCode)) {
+      return res.status(400).json({ message: 'Invalid tournament code' });
+    }
+
+    const tournament = await Tournament.findOne({ publicCode })
+      .select('name date timezone publicCode details')
+      .lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found' });
+    }
+
+    return res.json({
+      tournament: {
+        name: tournament.name,
+        date: tournament.date,
+        timezone: tournament.timezone,
+        publicCode: tournament.publicCode,
+      },
+      details: serializeTournamentDetails(tournament.details),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/code/:publicCode/live -> public live matches cards
+router.get('/code/:publicCode/live', async (req, res, next) => {
+  try {
+    const publicCode = normalizePublicCode(req.params.publicCode);
+
+    if (!new RegExp(`^[A-Z0-9]{${CODE_LENGTH}}$`).test(publicCode)) {
+      return res.status(400).json({ message: 'Invalid tournament code' });
+    }
+
+    const tournament = await Tournament.findOne({ publicCode })
+      .select('_id timezone settings.schedule')
+      .lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found' });
+    }
+
+    const liveMatches = await Match.find({
+      tournamentId: tournament._id,
+      status: 'live',
+    })
+      .select('phase bracket roundBlock facility court teamAId teamBId status result scoreboardId')
+      .populate('teamAId', 'name shortName logoUrl')
+      .populate('teamBId', 'name shortName logoUrl')
+      .populate('scoreboardId', 'code teams.score sets')
+      .lean();
+
+    const cards = sortLiveMatchCards(
+      liveMatches.map((match) => serializeMatchForLiveView(match, tournament))
+    );
+
+    return res.json(cards);
   } catch (error) {
     return next(error);
   }
@@ -1726,6 +2043,120 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     }
 
     return res.json(tournament.toObject());
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// DELETE /api/tournaments/:id -> owner-only tournament delete
+router.delete('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const tournament = await Tournament.findOne({
+      _id: id,
+      createdByUserId: req.user.id,
+    })
+      .select('_id')
+      .lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const matches = await Match.find({ tournamentId: id }).select('scoreboardId').lean();
+    const scoreboardIds = [...new Set(
+      matches
+        .map((match) => (match?.scoreboardId ? toIdString(match.scoreboardId) : ''))
+        .filter(Boolean)
+    )];
+
+    await Match.deleteMany({ tournamentId: id });
+    await Pool.deleteMany({ tournamentId: id });
+    await TournamentTeam.deleteMany({ tournamentId: id });
+
+    if (scoreboardIds.length > 0) {
+      await Scoreboard.deleteMany({
+        _id: { $in: scoreboardIds },
+      });
+    }
+
+    await Tournament.deleteOne({
+      _id: id,
+      createdByUserId: req.user.id,
+    });
+
+    return res.json({
+      deleted: true,
+      tournamentId: id,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PATCH /api/tournaments/:id/details -> owner-only tournament details content update
+router.patch('/:id/details', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+
+    if (!ownedTournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const { updates, error } = normalizeTournamentDetailsPatch(req.body);
+
+    if (error) {
+      return res.status(400).json({ message: error });
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ message: 'No valid details fields provided for update' });
+    }
+
+    const tournament = await Tournament.findOneAndUpdate(
+      {
+        _id: id,
+        createdByUserId: req.user.id,
+      },
+      {
+        $set: updates,
+      },
+      {
+        new: true,
+        runValidators: true,
+        omitUndefined: true,
+      }
+    )
+      .select('publicCode details')
+      .lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const serializedDetails = serializeTournamentDetails(tournament.details);
+
+    emitTournamentEventFromRequest(
+      req,
+      tournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.DETAILS_UPDATED,
+      { details: serializedDetails }
+    );
+
+    return res.json({
+      details: serializedDetails,
+    });
   } catch (error) {
     return next(error);
   }

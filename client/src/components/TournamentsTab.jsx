@@ -14,6 +14,17 @@ import { API_URL } from "../config/env.js";
 import TournamentDatePicker from "./TournamentDatePicker.jsx";
 
 const DEFAULT_TIMEZONE = "America/New_York";
+const TOURNAMENT_DETAILS_MAP_SLOTS = 3;
+const TOURNAMENT_DETAILS_DEFAULTS = Object.freeze({
+  specialNotes: "",
+  foodInfo: {
+    text: "",
+    linkUrl: "",
+  },
+  facilitiesInfo: "",
+  parkingInfo: "",
+  mapImageUrls: [],
+});
 
 const resolveTimezone = () => {
   if (typeof Intl === "undefined" || typeof Intl.DateTimeFormat !== "function") {
@@ -25,6 +36,72 @@ const resolveTimezone = () => {
 };
 
 const normalizeText = (value) => (typeof value === "string" ? value.trim() : "");
+const normalizeDetailText = (value) => (typeof value === "string" ? value : "");
+const normalizeDetailUrl = (value) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim();
+};
+const normalizeTournamentDetails = (details) => {
+  const source = details && typeof details === "object" ? details : {};
+  const foodInfo = source.foodInfo && typeof source.foodInfo === "object" ? source.foodInfo : {};
+  const mapImageUrls = Array.isArray(source.mapImageUrls) ? source.mapImageUrls : [];
+
+  return {
+    specialNotes:
+      typeof source.specialNotes === "string"
+        ? source.specialNotes
+        : TOURNAMENT_DETAILS_DEFAULTS.specialNotes,
+    foodInfo: {
+      text:
+        typeof foodInfo.text === "string"
+          ? foodInfo.text
+          : TOURNAMENT_DETAILS_DEFAULTS.foodInfo.text,
+      linkUrl:
+        typeof foodInfo.linkUrl === "string"
+          ? foodInfo.linkUrl
+          : TOURNAMENT_DETAILS_DEFAULTS.foodInfo.linkUrl,
+    },
+    facilitiesInfo:
+      typeof source.facilitiesInfo === "string"
+        ? source.facilitiesInfo
+        : TOURNAMENT_DETAILS_DEFAULTS.facilitiesInfo,
+    parkingInfo:
+      typeof source.parkingInfo === "string"
+        ? source.parkingInfo
+        : TOURNAMENT_DETAILS_DEFAULTS.parkingInfo,
+    mapImageUrls: mapImageUrls
+      .filter((entry) => typeof entry === "string" && entry.trim())
+      .map((entry) => entry.trim())
+      .slice(0, TOURNAMENT_DETAILS_MAP_SLOTS),
+  };
+};
+const buildMapImageSlots = (mapImageUrls = []) => {
+  const slots = Array.isArray(mapImageUrls)
+    ? mapImageUrls
+        .filter((entry) => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .slice(0, TOURNAMENT_DETAILS_MAP_SLOTS)
+    : [];
+
+  while (slots.length < TOURNAMENT_DETAILS_MAP_SLOTS) {
+    slots.push("");
+  }
+
+  return slots;
+};
+const createDetailsDraft = (details) => {
+  const normalized = normalizeTournamentDetails(details);
+  return {
+    specialNotes: normalized.specialNotes,
+    facilitiesInfo: normalized.facilitiesInfo,
+    parkingInfo: normalized.parkingInfo,
+    foodText: normalized.foodInfo.text,
+    foodLinkUrl: normalized.foodInfo.linkUrl,
+    mapImageSlots: buildMapImageSlots(normalized.mapImageUrls),
+  };
+};
 
 const parseUsDateInput = (value) => {
   if (typeof value !== "string") {
@@ -251,6 +328,10 @@ function TournamentsTab({
   const [selectedTournamentId, setSelectedTournamentId] = useState("");
 
   const [selectedTournament, setSelectedTournament] = useState(null);
+  const [detailsDraft, setDetailsDraft] = useState(() => createDetailsDraft());
+  const [detailsSaving, setDetailsSaving] = useState(false);
+  const [detailsError, setDetailsError] = useState("");
+  const [detailsMessage, setDetailsMessage] = useState("");
   const [teamsInitial, setTeamsInitial] = useState([]);
   const [teamRows, setTeamRows] = useState([]);
   const [newTeamName, setNewTeamName] = useState("");
@@ -266,6 +347,7 @@ function TournamentsTab({
   const [teamLinksError, setTeamLinksError] = useState("");
   const [teamLinkActionTeamId, setTeamLinkActionTeamId] = useState("");
   const [copiedTeamLinkTeamId, setCopiedTeamLinkTeamId] = useState("");
+  const [deletingTournamentId, setDeletingTournamentId] = useState("");
 
   const makeRowId = useCallback(() => {
     rowCounterRef.current += 1;
@@ -398,6 +480,9 @@ function TournamentsTab({
 
       if (!token || !normalizedId) {
         setSelectedTournament(null);
+        setDetailsDraft(createDetailsDraft());
+        setDetailsError("");
+        setDetailsMessage("");
         setTeamsInitial([]);
         setTeamRows([]);
         setTeamLinks([]);
@@ -444,11 +529,17 @@ function TournamentsTab({
           : [];
 
         setSelectedTournament(tournamentPayload || null);
+        setDetailsDraft(createDetailsDraft(tournamentPayload?.details));
+        setDetailsError("");
+        setDetailsMessage("");
         setTeamsInitial(normalizedTeams);
         setTeamRows(normalizedTeams.map((team) => toDraftRow(team)));
         setTeamLinks(linksPayload);
       } catch (error) {
         setSelectedTournament(null);
+        setDetailsDraft(createDetailsDraft());
+        setDetailsError("");
+        setDetailsMessage("");
         setTeamsInitial([]);
         setTeamRows([]);
         setTeamLinks([]);
@@ -467,6 +558,10 @@ function TournamentsTab({
       setTournaments([]);
       setSelectedTournamentId("");
       setSelectedTournament(null);
+      setDetailsDraft(createDetailsDraft());
+      setDetailsSaving(false);
+      setDetailsError("");
+      setDetailsMessage("");
       setTeamsInitial([]);
       setTeamRows([]);
       setTeamLinks([]);
@@ -501,6 +596,8 @@ function TournamentsTab({
   useEffect(() => {
     setTeamsMessage("");
     setTeamsError("");
+    setDetailsError("");
+    setDetailsMessage("");
     setNewTeamName("");
     setNewTeamLogoUrl("");
     setCopiedTeamLinkTeamId("");
@@ -525,6 +622,14 @@ function TournamentsTab({
     }
     return warnings;
   }, [currentTeamCount, selectedTournament]);
+  const detailsPreviewUrls = useMemo(
+    () =>
+      detailsDraft.mapImageSlots
+        .map((entry) => normalizeDetailUrl(entry))
+        .filter(Boolean)
+        .slice(0, TOURNAMENT_DETAILS_MAP_SLOTS),
+    [detailsDraft.mapImageSlots]
+  );
 
   const selectTournament = (nextId) => {
     const cleaned = typeof nextId === "string" ? nextId.trim() : "";
@@ -566,6 +671,80 @@ function TournamentsTab({
     },
     [loadTeamLinks, selectedTournamentId, token]
   );
+  const updateDetailsField = useCallback((field, value) => {
+    setDetailsDraft((previous) => ({
+      ...previous,
+      [field]: value,
+    }));
+  }, []);
+
+  const updateMapImageSlot = useCallback((index, value) => {
+    setDetailsDraft((previous) => ({
+      ...previous,
+      mapImageSlots: previous.mapImageSlots.map((entry, slotIndex) =>
+        slotIndex === index ? value : entry
+      ),
+    }));
+  }, []);
+
+  const handleSaveDetails = useCallback(async () => {
+    if (!token || !selectedTournamentId || detailsSaving) {
+      return;
+    }
+
+    setDetailsSaving(true);
+    setDetailsError("");
+    setDetailsMessage("");
+
+    try {
+      const payload = {
+        specialNotes: normalizeDetailText(detailsDraft.specialNotes),
+        facilitiesInfo: normalizeDetailText(detailsDraft.facilitiesInfo),
+        parkingInfo: normalizeDetailText(detailsDraft.parkingInfo),
+        foodInfo: {
+          text: normalizeDetailText(detailsDraft.foodText),
+          linkUrl: normalizeDetailUrl(detailsDraft.foodLinkUrl),
+        },
+        mapImageUrls: detailsDraft.mapImageSlots
+          .map((entry) => normalizeDetailUrl(entry))
+          .filter(Boolean)
+          .slice(0, TOURNAMENT_DETAILS_MAP_SLOTS),
+      };
+
+      const response = await fetchJson(`${API_URL}/api/tournaments/${selectedTournamentId}/details`, {
+        method: "PATCH",
+        headers: authHeaders(true),
+        body: JSON.stringify(payload),
+      });
+
+      const normalizedDetails = normalizeTournamentDetails(response?.details);
+      setSelectedTournament((current) =>
+        current
+          ? {
+              ...current,
+              details: normalizedDetails,
+            }
+          : current
+      );
+      setDetailsDraft(createDetailsDraft(normalizedDetails));
+      setDetailsMessage("Tournament details saved.");
+      onShowToast?.("success", "Tournament details updated");
+    } catch (error) {
+      const message = error?.message || "Unable to save tournament details";
+      setDetailsError(message);
+      onShowToast?.("error", message);
+    } finally {
+      setDetailsSaving(false);
+    }
+  }, [
+    authHeaders,
+    detailsDraft,
+    detailsSaving,
+    fetchJson,
+    onShowToast,
+    selectedTournamentId,
+    token,
+  ]);
 
   const updateTeamRow = (rowId, field, value) => {
     if (!canEditTeams || teamsSaving || teamOrderSaving) {
@@ -909,6 +1088,61 @@ function TournamentsTab({
     }
   };
 
+  const handleDeleteTournament = useCallback(
+    async (tournament) => {
+      const tournamentId = tournament?._id ? String(tournament._id) : "";
+      const tournamentName = tournament?.name || "this tournament";
+
+      if (!token || !tournamentId || deletingTournamentId) {
+        return;
+      }
+
+      const shouldDelete = window.confirm(
+        `Delete ${tournamentName}?\n\nThis will remove all tournament teams, pools, matches, and linked scoreboards.`
+      );
+      if (!shouldDelete) {
+        return;
+      }
+
+      setDeletingTournamentId(tournamentId);
+      setTournamentsError("");
+
+      try {
+        await fetchJson(`${API_URL}/api/tournaments/${tournamentId}`, {
+          method: "DELETE",
+          headers: authHeaders(),
+        });
+
+        const remaining = tournaments
+          .map((entry) => (entry?._id ? String(entry._id) : ""))
+          .filter((id) => id && id !== tournamentId);
+        const preferredTournamentId =
+          selectedTournamentId === tournamentId
+            ? remaining[0] || ""
+            : selectedTournamentId;
+
+        await loadTournaments({ preferredTournamentId });
+        onShowToast?.("success", "Tournament deleted");
+      } catch (error) {
+        const message = error?.message || "Unable to delete tournament";
+        setTournamentsError(message);
+        onShowToast?.("error", message);
+      } finally {
+        setDeletingTournamentId("");
+      }
+    },
+    [
+      authHeaders,
+      deletingTournamentId,
+      fetchJson,
+      loadTournaments,
+      onShowToast,
+      selectedTournamentId,
+      token,
+      tournaments,
+    ]
+  );
+
   const teamEditDisabled = !canEditTeams || teamsSaving || teamOrderSaving;
 
   if (!user || !token) {
@@ -928,7 +1162,7 @@ function TournamentsTab({
       <div className="tournaments-layout">
         <section className="tournaments-card tournaments-create-card">
           <h2 className="secondary-title">Create Tournament</h2>
-          <p className="subtle">Start a new tournament and jump directly into Pool Play 1 setup.</p>
+          <p className="subtle">Start a new tournament and jump directly into Scheduling.</p>
           <form className="tournaments-form" onSubmit={handleCreateTournament}>
             <label className="input-label" htmlFor="tournament-name">
               Tournament name
@@ -1009,13 +1243,7 @@ function TournamentsTab({
 
                     <div className="tournament-list-actions">
                       <a className="secondary-button" href={`/tournaments/${id}/phase1`}>
-                        Pool Play 1
-                      </a>
-                      <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-                        Pool Play 2
-                      </a>
-                      <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
-                        Playoffs
+                        Scheduling
                       </a>
                       <a className="secondary-button" href={`/tournaments/${id}/quick-scores`}>
                         Quick Scores
@@ -1028,6 +1256,14 @@ function TournamentsTab({
                       >
                         Public View
                       </a>
+                      <button
+                        type="button"
+                        className="secondary-button tournament-delete-button"
+                        onClick={() => handleDeleteTournament(tournament)}
+                        disabled={deletingTournamentId === id}
+                      >
+                        {deletingTournamentId === id ? "Deleting..." : "Delete"}
+                      </button>
                     </div>
                   </article>
                 );
@@ -1036,6 +1272,137 @@ function TournamentsTab({
           )}
         </section>
       </div>
+
+      <section className="tournaments-card tournaments-details-card">
+        <div className="tournaments-team-header">
+          <div>
+            <h2 className="secondary-title">Tournament Details</h2>
+            {selectedTournament ? (
+              <p className="subtle">Update public notes, maps, and venue information.</p>
+            ) : (
+              <p className="subtle">Select a tournament to edit public details.</p>
+            )}
+          </div>
+          <div className="tournaments-team-actions">
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={handleSaveDetails}
+              disabled={!selectedTournament || detailsSaving}
+            >
+              {detailsSaving ? "Saving..." : "Save details"}
+            </button>
+          </div>
+        </div>
+
+        {!selectedTournament ? (
+          <p className="subtle">Choose a tournament from the list above to start editing details.</p>
+        ) : (
+          <>
+            <div className="tournament-details-grid">
+              <div className="tournament-team-card-fields">
+                <label className="input-label" htmlFor="tournament-special-notes">
+                  Special Notes (markdown supported)
+                </label>
+                <textarea
+                  id="tournament-special-notes"
+                  rows={5}
+                  value={detailsDraft.specialNotes}
+                  onChange={(event) => updateDetailsField("specialNotes", event.target.value)}
+                  placeholder="Enter tournament notes for teams and spectators."
+                />
+              </div>
+
+              <div className="tournament-team-card-fields">
+                <label className="input-label" htmlFor="tournament-facilities-info">
+                  Facilities / Court Notes
+                </label>
+                <textarea
+                  id="tournament-facilities-info"
+                  rows={3}
+                  value={detailsDraft.facilitiesInfo}
+                  onChange={(event) => updateDetailsField("facilitiesInfo", event.target.value)}
+                  placeholder="Court rules, warm-up zones, restroom info, etc."
+                />
+              </div>
+
+              <div className="tournament-team-card-fields">
+                <label className="input-label" htmlFor="tournament-parking-info">
+                  Parking (optional)
+                </label>
+                <textarea
+                  id="tournament-parking-info"
+                  rows={3}
+                  value={detailsDraft.parkingInfo}
+                  onChange={(event) => updateDetailsField("parkingInfo", event.target.value)}
+                  placeholder="Parking access notes and lot guidance."
+                />
+              </div>
+
+              <div className="tournament-team-card-fields">
+                <label className="input-label" htmlFor="tournament-food-text">
+                  Food Info
+                </label>
+                <textarea
+                  id="tournament-food-text"
+                  rows={3}
+                  value={detailsDraft.foodText}
+                  onChange={(event) => updateDetailsField("foodText", event.target.value)}
+                  placeholder="Concessions, nearby restaurants, meal notes."
+                />
+              </div>
+
+              <div className="tournament-team-card-fields">
+                <label className="input-label" htmlFor="tournament-food-link">
+                  Food Link (optional)
+                </label>
+                <input
+                  id="tournament-food-link"
+                  type="text"
+                  value={detailsDraft.foodLinkUrl}
+                  onChange={(event) => updateDetailsField("foodLinkUrl", event.target.value)}
+                  placeholder="https://..."
+                />
+              </div>
+            </div>
+
+            <section className="tournament-details-maps-panel">
+              <h3>Map Images (up to 3 URLs)</h3>
+              <div className="tournament-details-map-inputs">
+                {detailsDraft.mapImageSlots.map((entry, index) => (
+                  <div key={`map-slot-${index}`} className="tournament-team-card-fields">
+                    <label className="input-label" htmlFor={`tournament-map-url-${index}`}>
+                      Map URL {index + 1}
+                    </label>
+                    <input
+                      id={`tournament-map-url-${index}`}
+                      type="text"
+                      value={entry}
+                      onChange={(event) => updateMapImageSlot(index, event.target.value)}
+                      placeholder="https://..."
+                    />
+                  </div>
+                ))}
+              </div>
+
+              {detailsPreviewUrls.length > 0 ? (
+                <div className="tournament-details-map-previews">
+                  {detailsPreviewUrls.map((url) => (
+                    <a key={url} href={url} target="_blank" rel="noreferrer" className="tournament-details-map-preview">
+                      <img src={url} alt="Tournament map preview" loading="lazy" />
+                    </a>
+                  ))}
+                </div>
+              ) : (
+                <p className="subtle">Add map URLs to preview them before saving.</p>
+              )}
+            </section>
+
+            {detailsError && <p className="error">{detailsError}</p>}
+            {detailsMessage && <p className="subtle tournaments-team-success">{detailsMessage}</p>}
+          </>
+        )}
+      </section>
 
       <section className="tournaments-card tournaments-team-card">
         <div className="tournaments-team-header">

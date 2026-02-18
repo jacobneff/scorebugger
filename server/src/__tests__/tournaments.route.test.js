@@ -8,6 +8,8 @@ const tournamentRoutes = require('../routes/tournaments');
 const tournamentTeamRoutes = require('../routes/tournamentTeams');
 const User = require('../models/User');
 const Match = require('../models/Match');
+const Pool = require('../models/Pool');
+const Scoreboard = require('../models/Scoreboard');
 const Tournament = require('../models/Tournament');
 const TournamentTeam = require('../models/TournamentTeam');
 
@@ -167,6 +169,341 @@ describe('tournament routes', () => {
         },
       })
     );
+  });
+
+  test('PATCH /api/tournaments/:id/details updates details for the owner', async () => {
+    const tournament = await Tournament.create({
+      name: 'Details Edit Tournament',
+      date: new Date('2026-07-15T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'DET001',
+      createdByUserId: user._id,
+    });
+
+    const response = await request(app)
+      .patch(`/api/tournaments/${tournament._id}/details`)
+      .set(authHeader())
+      .send({
+        specialNotes: 'Bring your own volleyballs.',
+        foodInfo: {
+          text: 'Food trucks near SRC.',
+          linkUrl: 'https://example.com/food',
+        },
+        facilitiesInfo: 'Court 3 has low ceiling clearance.',
+        parkingInfo: 'Use Lot B after 8 AM.',
+        mapImageUrls: ['https://example.com/map-a.png', 'https://example.com/map-b.png'],
+      });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({
+      details: {
+        specialNotes: 'Bring your own volleyballs.',
+        foodInfo: {
+          text: 'Food trucks near SRC.',
+          linkUrl: 'https://example.com/food',
+        },
+        facilitiesInfo: 'Court 3 has low ceiling clearance.',
+        parkingInfo: 'Use Lot B after 8 AM.',
+        mapImageUrls: ['https://example.com/map-a.png', 'https://example.com/map-b.png'],
+      },
+    });
+
+    const stored = await Tournament.findById(tournament._id).lean();
+    expect(stored.details).toEqual(
+      expect.objectContaining({
+        specialNotes: 'Bring your own volleyballs.',
+        facilitiesInfo: 'Court 3 has low ceiling clearance.',
+        parkingInfo: 'Use Lot B after 8 AM.',
+      })
+    );
+    expect(stored.details.foodInfo).toEqual(
+      expect.objectContaining({
+        text: 'Food trucks near SRC.',
+        linkUrl: 'https://example.com/food',
+      })
+    );
+    expect(stored.details.mapImageUrls).toEqual([
+      'https://example.com/map-a.png',
+      'https://example.com/map-b.png',
+    ]);
+  });
+
+  test('PATCH /api/tournaments/:id/details requires ownership', async () => {
+    const tournament = await Tournament.create({
+      name: 'Details Ownership Tournament',
+      date: new Date('2026-07-15T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'DET002',
+      createdByUserId: user._id,
+    });
+    const intruder = await User.create({
+      email: 'intruder@example.com',
+      passwordHash: 'hashed',
+      emailVerified: true,
+    });
+    const intruderToken = jwt.sign({ sub: intruder._id.toString() }, process.env.JWT_SECRET);
+
+    const response = await request(app)
+      .patch(`/api/tournaments/${tournament._id}/details`)
+      .set({
+        Authorization: `Bearer ${intruderToken}`,
+      })
+      .send({
+        specialNotes: 'Unauthorized write',
+      });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body.message).toMatch(/not found or unauthorized/i);
+  });
+
+  test('GET /api/tournaments/code/:publicCode/details returns sanitized public details payload', async () => {
+    await Tournament.create({
+      name: 'Public Details Tournament',
+      date: new Date('2026-07-16T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'DET003',
+      createdByUserId: user._id,
+      details: {
+        specialNotes: 'Warm-up starts at 8:30 AM.',
+        foodInfo: {
+          text: 'Concessions in the lobby.',
+          linkUrl: 'https://example.com/menu',
+        },
+        facilitiesInfo: 'Bring indoor shoes.',
+        parkingInfo: 'Use garage level 2.',
+        mapImageUrls: ['https://example.com/map-main.png'],
+      },
+    });
+
+    const response = await request(app).get('/api/tournaments/code/DET003/details');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.tournament).toEqual(
+      expect.objectContaining({
+        name: 'Public Details Tournament',
+        timezone: 'America/New_York',
+        publicCode: 'DET003',
+      })
+    );
+    expect(response.body.details).toEqual({
+      specialNotes: 'Warm-up starts at 8:30 AM.',
+      foodInfo: {
+        text: 'Concessions in the lobby.',
+        linkUrl: 'https://example.com/menu',
+      },
+      facilitiesInfo: 'Bring indoor shoes.',
+      parkingInfo: 'Use garage level 2.',
+      mapImageUrls: ['https://example.com/map-main.png'],
+    });
+    expect(response.body.tournament).not.toHaveProperty('createdByUserId');
+    expect(response.body).not.toHaveProperty('createdByUserId');
+  });
+
+  test('GET /api/tournaments/code/:publicCode/live returns only live matches sorted by time then court', async () => {
+    const tournament = await Tournament.create({
+      name: 'Live Endpoint Tournament',
+      date: new Date('2026-08-12T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'LIVE01',
+      createdByUserId: user._id,
+    });
+    const [alpha, bravo, charlie, delta] = await TournamentTeam.insertMany(
+      [
+        { tournamentId: tournament._id, name: 'Alpha', shortName: 'ALP', orderIndex: 1 },
+        { tournamentId: tournament._id, name: 'Bravo', shortName: 'BRV', orderIndex: 2 },
+        { tournamentId: tournament._id, name: 'Charlie', shortName: 'CHR', orderIndex: 3 },
+        { tournamentId: tournament._id, name: 'Delta', shortName: 'DLT', orderIndex: 4 },
+      ],
+      { ordered: true }
+    );
+    const scoreboard = await Scoreboard.create({
+      owner: user._id,
+      title: 'ALP vs BRV',
+      teams: [
+        { name: 'ALP', score: 14 },
+        { name: 'BRV', score: 11 },
+      ],
+      sets: [
+        {
+          scores: [25, 22],
+        },
+      ],
+    });
+
+    const [liveSrcRound1, liveVcRound1] = await Match.insertMany(
+      [
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          poolId: null,
+          roundBlock: 1,
+          facility: 'SRC',
+          court: 'SRC-2',
+          teamAId: alpha._id,
+          teamBId: bravo._id,
+          refTeamIds: [],
+          status: 'live',
+          scoreboardId: scoreboard._id,
+        },
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          poolId: null,
+          roundBlock: 1,
+          facility: 'VC',
+          court: 'VC-1',
+          teamAId: charlie._id,
+          teamBId: delta._id,
+          refTeamIds: [],
+          status: 'live',
+        },
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          poolId: null,
+          roundBlock: 2,
+          facility: 'SRC',
+          court: 'SRC-1',
+          teamAId: alpha._id,
+          teamBId: charlie._id,
+          refTeamIds: [],
+          status: 'scheduled',
+        },
+      ],
+      { ordered: true }
+    );
+
+    const response = await request(app).get('/api/tournaments/code/LIVE01/live');
+
+    expect(response.statusCode).toBe(200);
+    expect(Array.isArray(response.body)).toBe(true);
+    expect(response.body).toHaveLength(2);
+    expect(response.body.map((match) => match.matchId)).toEqual([
+      liveSrcRound1._id.toString(),
+      liveVcRound1._id.toString(),
+    ]);
+    expect(response.body.every((match) => match.status === 'live')).toBe(true);
+    expect(response.body[0]).toEqual(
+      expect.objectContaining({
+        phase: 'phase1',
+        phaseLabel: 'Pool Play 1',
+        courtCode: 'SRC-2',
+        courtLabel: 'SRC Court 2',
+        facility: 'SRC',
+        facilityLabel: 'SRC',
+        scoreboardCode: scoreboard.code,
+      })
+    );
+    expect(response.body[0].scoreSummary).toEqual(
+      expect.objectContaining({
+        setsA: 1,
+        setsB: 0,
+        pointsA: 14,
+        pointsB: 11,
+      })
+    );
+  });
+
+  test('DELETE /api/tournaments/:id removes owner tournament and related records', async () => {
+    const tournament = await Tournament.create({
+      name: 'Delete Me Tournament',
+      date: new Date('2026-08-20T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'DEL001',
+      createdByUserId: user._id,
+    });
+
+    const [teamA, teamB] = await TournamentTeam.insertMany(
+      [
+        {
+          tournamentId: tournament._id,
+          name: 'Alpha',
+          shortName: 'ALP',
+          orderIndex: 1,
+        },
+        {
+          tournamentId: tournament._id,
+          name: 'Bravo',
+          shortName: 'BRV',
+          orderIndex: 2,
+        },
+      ],
+      { ordered: true }
+    );
+
+    await Pool.create({
+      tournamentId: tournament._id,
+      phase: 'phase1',
+      name: 'A',
+      teamIds: [teamA._id, teamB._id],
+      homeCourt: 'SRC-1',
+    });
+
+    const scoreboard = await Scoreboard.create({
+      owner: user._id,
+      title: 'Delete test board',
+      teams: [
+        { name: 'ALP', score: 0 },
+        { name: 'BRV', score: 0 },
+      ],
+      sets: [],
+    });
+
+    await Match.create({
+      tournamentId: tournament._id,
+      phase: 'phase1',
+      poolId: null,
+      roundBlock: 1,
+      facility: 'SRC',
+      court: 'SRC-1',
+      teamAId: teamA._id,
+      teamBId: teamB._id,
+      refTeamIds: [],
+      status: 'scheduled',
+      scoreboardId: scoreboard._id,
+    });
+
+    const response = await request(app)
+      .delete(`/api/tournaments/${tournament._id}`)
+      .set(authHeader());
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({
+      deleted: true,
+      tournamentId: String(tournament._id),
+    });
+
+    expect(await Tournament.findById(tournament._id)).toBeNull();
+    expect(await TournamentTeam.countDocuments({ tournamentId: tournament._id })).toBe(0);
+    expect(await Pool.countDocuments({ tournamentId: tournament._id })).toBe(0);
+    expect(await Match.countDocuments({ tournamentId: tournament._id })).toBe(0);
+    expect(await Scoreboard.findById(scoreboard._id)).toBeNull();
+  });
+
+  test('DELETE /api/tournaments/:id requires ownership', async () => {
+    const tournament = await Tournament.create({
+      name: 'Delete Ownership Tournament',
+      date: new Date('2026-08-20T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'DEL002',
+      createdByUserId: user._id,
+    });
+
+    const intruder = await User.create({
+      email: 'intruder-delete@example.com',
+      passwordHash: 'hashed',
+      emailVerified: true,
+    });
+    const intruderToken = jwt.sign({ sub: intruder._id.toString() }, process.env.JWT_SECRET);
+
+    const response = await request(app)
+      .delete(`/api/tournaments/${tournament._id}`)
+      .set({
+        Authorization: `Bearer ${intruderToken}`,
+      });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body.message).toMatch(/not found or unauthorized/i);
   });
 
   test('creating a team with shortName only defaults name and assigns incremental orderIndex', async () => {

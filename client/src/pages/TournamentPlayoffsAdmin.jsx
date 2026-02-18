@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { API_URL } from '../config/env.js';
+import TournamentSchedulingTabs from '../components/TournamentSchedulingTabs.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
-import { formatRoundBlockStartTime, formatTeamLabel, mapCourtLabel } from '../utils/phase1.js';
+import { formatRoundBlockStartTime, mapCourtLabel } from '../utils/phase1.js';
 import {
   buildTournamentMatchControlHref,
   getMatchStatusMeta,
@@ -33,15 +34,65 @@ const normalizePlayoffPayload = (payload) => ({
 });
 
 const formatRefTeamLabel = (team) => team?.shortName || team?.name || 'TBD';
+const PLAYOFF_OVERALL_SEED_OFFSETS = Object.freeze({
+  gold: 0,
+  silver: 5,
+  bronze: 10,
+});
+const normalizeBracket = (value) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+const toIdString = (value) => {
+  if (!value) {
+    return '';
+  }
 
-const formatBracketMatchSummary = (match) => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'object' && value._id) {
+    return String(value._id);
+  }
+
+  return String(value);
+};
+const toOverallSeed = (bracket, bracketSeed) => {
+  const offset = PLAYOFF_OVERALL_SEED_OFFSETS[normalizeBracket(bracket)];
+  const seed = Number(bracketSeed);
+
+  if (!Number.isFinite(offset) || !Number.isFinite(seed)) {
+    return null;
+  }
+
+  return offset + seed;
+};
+const formatBracketTeamLabel = (team, overallSeed) => {
+  const hasResolvedTeam =
+    team &&
+    typeof team === 'object' &&
+    (typeof team.shortName === 'string' || typeof team.name === 'string');
+  const name = formatRefTeamLabel(team);
+
+  if (!hasResolvedTeam || name === 'TBD') {
+    return 'TBD';
+  }
+
+  return Number.isFinite(Number(overallSeed)) ? `${name} (#${Number(overallSeed)})` : name;
+};
+const formatBracketMatchSummary = (match, seedByTeamId) => {
   if (!match) {
     return 'TBD vs TBD';
   }
 
-  const teamALabel = match.teamA ? formatTeamLabel(match.teamA) : 'TBD';
-  const teamBLabel = match.teamB ? formatTeamLabel(match.teamB) : 'TBD';
-  return `${teamALabel} vs ${teamBLabel}`;
+  const teamAId = toIdString(match.teamA?._id || match.teamAId);
+  const teamBId = toIdString(match.teamB?._id || match.teamBId);
+  const teamASeed = seedByTeamId.get(teamAId) ?? toOverallSeed(match.bracket, match.seedA);
+  const teamBSeed = seedByTeamId.get(teamBId) ?? toOverallSeed(match.bracket, match.seedB);
+
+  return `${formatBracketTeamLabel(match.teamA, teamASeed)} vs ${formatBracketTeamLabel(
+    match.teamB,
+    teamBSeed
+  )}`;
 };
 const formatLiveSummary = (summary) =>
   `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
@@ -374,11 +425,9 @@ function TournamentPlayoffsAdmin() {
               {tournament?.name || 'Tournament'} • Generate Gold/Silver/Bronze brackets and run
               the fixed ops schedule.
             </p>
+            <TournamentSchedulingTabs tournamentId={id} activeTab="playoffs" />
           </div>
           <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-              Back To Pool Play 2
-            </a>
             <button
               className="primary-button"
               type="button"
@@ -556,41 +605,69 @@ function TournamentPlayoffsAdmin() {
                       {Array.isArray(bracketData.seeds) && bracketData.seeds.length > 0 ? (
                         bracketData.seeds.map((seedEntry) => (
                           <p key={`${bracket}-seed-${seedEntry.seed}`}>
-                            #{seedEntry.seed} {formatRefTeamLabel(teamsById[seedEntry.teamId] || seedEntry.team)}
+                            #
+                            {Number.isFinite(Number(seedEntry?.overallSeed))
+                              ? Number(seedEntry.overallSeed)
+                              : seedEntry.seed}
+                            {' '}
+                            {formatRefTeamLabel(teamsById[seedEntry.teamId] || seedEntry.team)}
                           </p>
                         ))
                       ) : (
                         <p className="subtle">Seeds not resolved</p>
                       )}
                     </div>
-                    {['R1', 'R2', 'R3'].map((roundKey) => (
-                      <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
-                        <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
-                        {(bracketData.rounds?.[roundKey] || []).map((match) => {
-                          const bracketStatusMeta = getMatchStatusMeta(match?.status);
+                    {(() => {
+                      const seedByTeamId = new Map(
+                        (bracketData?.seeds || [])
+                          .map((entry) => {
+                            const teamId = toIdString(entry?.teamId);
+                            if (!teamId) {
+                              return null;
+                            }
+                            return [
+                              teamId,
+                              Number.isFinite(Number(entry?.overallSeed))
+                                ? Number(entry.overallSeed)
+                                : Number.isFinite(Number(entry?.seed))
+                                  ? Number(entry.seed)
+                                  : null,
+                            ];
+                          })
+                          .filter(Boolean)
+                      );
 
-                          return (
-                            <div key={match._id} className="playoff-round-match">
-                              <p>{formatBracketMatchSummary(match)}</p>
-                              <p className="subtle">
-                                {mapCourtLabel(match.court)} • {bracketStatusMeta.label}
-                              </p>
-                              {liveSummariesByMatchId[match._id] && (
-                                <p className="subtle">
-                                  {formatLiveSummary(liveSummariesByMatchId[match._id])}
-                                </p>
-                              )}
-                              {match.result && (
-                                <p className="subtle">
-                                  Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
-                                  {match.result.pointsForA}-{match.result.pointsForB}
-                                </p>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ))}
+                      return ['R1', 'R2', 'R3'].map((roundKey) => {
+                        return (
+                          <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
+                            <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
+                            {(bracketData.rounds?.[roundKey] || []).map((match) => {
+                              const bracketStatusMeta = getMatchStatusMeta(match?.status);
+
+                              return (
+                                <div key={match._id} className="playoff-round-match">
+                                  <p>{formatBracketMatchSummary(match, seedByTeamId)}</p>
+                                  <p className="subtle">
+                                    {mapCourtLabel(match.court)} • {bracketStatusMeta.label}
+                                  </p>
+                                  {liveSummariesByMatchId[match._id] && (
+                                    <p className="subtle">
+                                      {formatLiveSummary(liveSummariesByMatchId[match._id])}
+                                    </p>
+                                  )}
+                                  {match.result && (
+                                    <p className="subtle">
+                                      Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
+                                      {match.result.pointsForA}-{match.result.pointsForB}
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      });
+                    })()}
                   </article>
                 );
               })}

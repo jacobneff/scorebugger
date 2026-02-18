@@ -9,6 +9,11 @@ const PLAYOFF_BRACKET_LABELS = {
   silver: 'Silver',
   bronze: 'Bronze',
 };
+const PLAYOFF_BRACKET_OVERALL_SEED_OFFSET = {
+  gold: 0,
+  silver: 5,
+  bronze: 10,
+};
 
 const PLAYOFF_ROUND_LABELS = {
   R1: 'Round 1',
@@ -208,6 +213,18 @@ const ROUND_ORDER = {
 const normalizeBracket = (value) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
 
+const toOverallSeed = (bracket, bracketSeed) => {
+  const normalizedBracket = normalizeBracket(bracket);
+  const parsedSeed = Number(bracketSeed);
+  const offset = PLAYOFF_BRACKET_OVERALL_SEED_OFFSET[normalizedBracket];
+
+  if (!Number.isFinite(parsedSeed) || !Number.isFinite(offset)) {
+    return null;
+  }
+
+  return offset + parsedSeed;
+};
+
 const toIdString = (value) => {
   if (!value) {
     return null;
@@ -361,15 +378,21 @@ function buildPlayoffBracketView(matches) {
     const seedB = Number(match?.seedB);
 
     if (Number.isFinite(seedA) && match?.teamAId && match?.teamA) {
+      const overallSeedA = toOverallSeed(bracket, seedA);
       seedBuckets[bracket].set(seedA, {
-        seed: seedA,
+        seed: overallSeedA ?? seedA,
+        bracketSeed: seedA,
+        overallSeed: overallSeedA,
         teamId: toIdString(match.teamAId),
         team: match.teamA,
       });
     }
     if (Number.isFinite(seedB) && match?.teamBId && match?.teamB) {
+      const overallSeedB = toOverallSeed(bracket, seedB);
       seedBuckets[bracket].set(seedB, {
-        seed: seedB,
+        seed: overallSeedB ?? seedB,
+        bracketSeed: seedB,
+        overallSeed: overallSeedB,
         teamId: toIdString(match.teamBId),
         team: match.teamB,
       });
@@ -378,7 +401,9 @@ function buildPlayoffBracketView(matches) {
 
   PLAYOFF_BRACKETS.forEach((bracket) => {
     bracketState[bracket].seeds = Array.from(seedBuckets[bracket].values()).sort(
-      (left, right) => left.seed - right.seed
+      (left, right) =>
+        (left.bracketSeed ?? left.seed ?? Number.MAX_SAFE_INTEGER) -
+        (right.bracketSeed ?? right.seed ?? Number.MAX_SAFE_INTEGER)
     );
 
     Object.keys(bracketState[bracket].rounds).forEach((round) => {
@@ -394,6 +419,9 @@ function buildPlayoffBracketView(matches) {
 }
 
 function buildPlayoffOpsSchedule(matches) {
+  const templateBySlot = new Map(
+    PLAYOFF_MATCH_TEMPLATES.map((template) => [`${template.roundBlock}:${template.court}`, template])
+  );
   const matchBySlot = new Map(
     (Array.isArray(matches) ? matches : []).map((match) => [`${match.roundBlock}:${match.court}`, match])
   );
@@ -403,16 +431,18 @@ function buildPlayoffOpsSchedule(matches) {
     label: PLAYOFF_ROUND_BLOCK_LABELS[roundBlock],
     slots: (PLAYOFF_ROUND_BLOCK_COURTS[roundBlock] || []).map((court) => {
       const match = matchBySlot.get(`${roundBlock}:${court}`) || null;
+      const template = templateBySlot.get(`${roundBlock}:${court}`) || null;
       const facility = court.startsWith('SRC-') ? 'SRC' : 'VC';
+      const matchForLabel = match || template;
 
       return {
         roundBlock,
         facility,
         court,
         matchId: match?._id || null,
-        matchLabel: match ? buildMatchLabel(match) : 'Empty',
-        bracket: match?.bracket || null,
-        bracketRound: match?.bracketRound || null,
+        matchLabel: matchForLabel ? buildMatchLabel(matchForLabel) : 'Empty',
+        bracket: match?.bracket || template?.bracket || null,
+        bracketRound: match?.bracketRound || template?.bracketRound || null,
         teams: {
           a: match?.teamA ? resolveTeamName(match.teamA) : 'TBD',
           b: match?.teamB ? resolveTeamName(match.teamB) : 'TBD',

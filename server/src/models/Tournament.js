@@ -17,6 +17,15 @@ const SCHEDULE_DEFAULTS = {
   lunchDurationMinutes: 45,
 };
 
+const TOURNAMENT_DETAILS_DEFAULTS = {
+  specialNotes: '',
+  foodText: '',
+  foodLinkUrl: '',
+  facilitiesInfo: '',
+  parkingInfo: '',
+  mapImageUrls: [],
+};
+
 const StandingsPhaseOverridesSchema = new mongoose.Schema(
   {
     poolOrderOverrides: {
@@ -128,6 +137,34 @@ const TournamentSchema = new mongoose.Schema(
       phase2: {
         type: StandingsPhaseOverridesSchema,
         default: undefined,
+      },
+    },
+    details: {
+      specialNotes: {
+        type: String,
+        default: TOURNAMENT_DETAILS_DEFAULTS.specialNotes,
+      },
+      foodInfo: {
+        text: {
+          type: String,
+          default: TOURNAMENT_DETAILS_DEFAULTS.foodText,
+        },
+        linkUrl: {
+          type: String,
+          default: TOURNAMENT_DETAILS_DEFAULTS.foodLinkUrl,
+        },
+      },
+      facilitiesInfo: {
+        type: String,
+        default: TOURNAMENT_DETAILS_DEFAULTS.facilitiesInfo,
+      },
+      parkingInfo: {
+        type: String,
+        default: TOURNAMENT_DETAILS_DEFAULTS.parkingInfo,
+      },
+      mapImageUrls: {
+        type: [String],
+        default: () => [...TOURNAMENT_DETAILS_DEFAULTS.mapImageUrls],
       },
     },
     createdByUserId: {

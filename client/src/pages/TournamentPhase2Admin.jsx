@@ -21,6 +21,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 import { API_URL } from '../config/env.js';
+import TournamentSchedulingTabs from '../components/TournamentSchedulingTabs.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
@@ -1149,11 +1150,9 @@ function TournamentPhase2Admin() {
               {tournament?.name || 'Tournament'} • Build pools F-J from Pool Play 1 placements, then
               generate fixed rounds 4-6.
             </p>
+            <TournamentSchedulingTabs tournamentId={id} activeTab="phase2" />
           </div>
           <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
-              Open Playoffs
-            </a>
             <button
               className="secondary-button"
               type="button"

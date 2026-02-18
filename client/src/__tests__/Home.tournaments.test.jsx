@@ -6,9 +6,10 @@ import Home from "../pages/Home.jsx";
 const mockNavigate = vi.fn();
 const mockUseAuth = vi.fn();
 let mockSearchParams = new URLSearchParams();
+const mockSetSearchParams = vi.fn();
 
 vi.mock("react-router-dom", () => ({
-  useSearchParams: () => [mockSearchParams],
+  useSearchParams: () => [mockSearchParams, mockSetSearchParams],
   useNavigate: () => mockNavigate,
 }));
 
@@ -62,6 +63,7 @@ describe("Home tournaments tab", () => {
     mockNavigate.mockReset();
     mockUseAuth.mockReset();
     mockSearchParams = new URLSearchParams();
+    mockSetSearchParams.mockReset();
     globalThis.fetch = vi.fn();
   });
 
@@ -69,16 +71,14 @@ describe("Home tournaments tab", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders and activates the Tournaments tab", async () => {
+  it("renders service landing and activates the Tournaments module", async () => {
     mockUseAuth.mockReturnValue(createSignedOutAuth());
     const user = userEvent.setup();
 
     renderHome();
 
-    const tournamentsTab = screen.getByRole("button", { name: "Tournaments" });
-    expect(tournamentsTab).toBeInTheDocument();
-
-    await user.click(tournamentsTab);
+    expect(screen.getByRole("button", { name: /Scoreboard Overlays/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Tournaments/i }));
     expect(screen.getByRole("heading", { name: "Tournament Hub" })).toBeInTheDocument();
   });
 
@@ -87,7 +87,7 @@ describe("Home tournaments tab", () => {
     const user = userEvent.setup();
 
     renderHome();
-    await user.click(screen.getByRole("button", { name: "Tournaments" }));
+    await user.click(screen.getByRole("button", { name: /Tournaments/i }));
 
     expect(
       screen.getByRole("link", { name: "Sign in to manage tournaments" })
@@ -138,7 +138,7 @@ describe("Home tournaments tab", () => {
     });
 
     renderHome();
-    await user.click(screen.getByRole("button", { name: "Tournaments" }));
+    await user.click(screen.getByRole("button", { name: /Tournaments/i }));
 
     await user.type(screen.getByLabelText("Tournament name"), "City Finals");
     fireEvent.change(screen.getByLabelText("Tournament date"), {
@@ -204,7 +204,7 @@ describe("Home tournaments tab", () => {
     });
 
     renderHome();
-    await user.click(screen.getByRole("button", { name: "Tournaments" }));
+    await user.click(screen.getByRole("button", { name: /Tournaments/i }));
 
     expect(
       await screen.findByText(/Team edits are locked because this tournament is in/i)

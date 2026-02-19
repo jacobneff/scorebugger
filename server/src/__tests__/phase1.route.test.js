@@ -312,6 +312,32 @@ describe('phase1 pool + match generation routes', () => {
     expect(response.body.message).toMatch(/cannot appear in multiple/i);
   });
 
+  test('pool update supports 4-team pools when requiredTeamCount is 4', async () => {
+    const tournament = await createOwnedTournament();
+    const teams = await seedTournamentTeams(tournament._id, 4);
+
+    const pool = await Pool.create({
+      tournamentId: tournament._id,
+      phase: 'phase1',
+      stageKey: 'poolPlay1',
+      name: 'A',
+      requiredTeamCount: 4,
+      teamIds: [teams[0]._id, teams[1]._id, teams[2]._id],
+      homeCourt: 'SRC-1',
+    });
+
+    const response = await request(app)
+      .patch(`/api/pools/${pool._id}`)
+      .set(authHeader())
+      .send({
+        teamIds: teams.map((team) => team._id),
+      });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.requiredTeamCount).toBe(4);
+    expect(response.body.teamIds).toHaveLength(4);
+  });
+
   test('pool edit emits POOLS_UPDATED to tournament room', async () => {
     const tournament = await createOwnedTournament();
     await seedTournamentTeams(tournament._id);

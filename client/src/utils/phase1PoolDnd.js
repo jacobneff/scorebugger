@@ -36,6 +36,15 @@ const toTeamIdList = (pool) =>
     ? pool.teamIds.map((team) => extractTeamId(team)).filter(Boolean)
     : [];
 
+const getPoolCapacity = (pool, fallback = MAX_PHASE1_POOL_SIZE) => {
+  const parsed = Number(pool?.requiredTeamCount);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.floor(parsed);
+};
+
 const findPoolById = (pools, poolId) =>
   (Array.isArray(pools) ? pools : []).find((pool) => toIdString(pool?._id) === poolId) || null;
 
@@ -310,8 +319,9 @@ export const computeTeamDragPreview = ({ pools, teams, activeTeamId, overId }) =
           touchedPoolIds.push(sourceContainerId, targetContainerId);
         }
       } else {
-        if (targetPool.teamIds.length >= MAX_PHASE1_POOL_SIZE) {
-          return { error: 'A pool can include at most 3 teams. Move one out first.' };
+        const maxTeams = getPoolCapacity(targetPool);
+        if (targetPool.teamIds.length >= maxTeams) {
+          return { error: `A pool can include at most ${maxTeams} teams. Move one out first.` };
         }
 
         targetPool.teamIds.splice(targetTeamIndex, 0, draggedTeam);
@@ -325,8 +335,9 @@ export const computeTeamDragPreview = ({ pools, teams, activeTeamId, overId }) =
       if (sourceContainerId === targetContainerId) {
         return null;
       } else {
-        if (targetPool.teamIds.length >= MAX_PHASE1_POOL_SIZE) {
-          return { error: 'A pool can include at most 3 teams. Move one out first.' };
+        const maxTeams = getPoolCapacity(targetPool);
+        if (targetPool.teamIds.length >= maxTeams) {
+          return { error: `A pool can include at most ${maxTeams} teams. Move one out first.` };
         }
 
         const [team] = sourcePool.teamIds.splice(sourceTeamIndex, 1);
@@ -334,8 +345,9 @@ export const computeTeamDragPreview = ({ pools, teams, activeTeamId, overId }) =
         touchedPoolIds.push(sourceContainerId, targetContainerId);
       }
     } else {
-      if (targetPool.teamIds.length >= MAX_PHASE1_POOL_SIZE) {
-        return { error: 'A pool can include at most 3 teams. Move one out first.' };
+      const maxTeams = getPoolCapacity(targetPool);
+      if (targetPool.teamIds.length >= maxTeams) {
+        return { error: `A pool can include at most ${maxTeams} teams. Move one out first.` };
       }
 
       targetPool.teamIds.push(draggedTeam);

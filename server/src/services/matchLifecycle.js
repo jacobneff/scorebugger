@@ -9,6 +9,8 @@ const {
 } = require('./tournamentRealtime');
 
 const MATCH_STATUSES = ['scheduled', 'live', 'final'];
+const normalizeBracket = (value) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
 
 function toIdString(value) {
   if (!value) {
@@ -62,6 +64,7 @@ function serializeMatch(match) {
     _id: toIdString(match?._id),
     tournamentId: toIdString(match?.tournamentId),
     phase: match?.phase ?? null,
+    stageKey: match?.stageKey ?? null,
     poolId: toIdString(match?.poolId),
     bracket: match?.bracket ?? null,
     bracketRound: match?.bracketRound ?? null,
@@ -181,11 +184,20 @@ async function finalizeMatchAndEmit({ match, userId, io, tournamentCode }) {
   let playoffProgression = null;
 
   if (match.phase === 'playoffs' && match.bracket) {
-    playoffProgression = await Promise.all(
-      PLAYOFF_BRACKETS.map((bracket) =>
-        recomputePlayoffBracketProgression(match.tournamentId, bracket)
-      )
-    );
+    const normalizedBracket = normalizeBracket(match.bracket);
+    const isLegacyBracket = PLAYOFF_BRACKETS.includes(normalizedBracket);
+
+    playoffProgression = isLegacyBracket
+      ? await Promise.all(
+          PLAYOFF_BRACKETS.map((bracket) =>
+            recomputePlayoffBracketProgression(match.tournamentId, bracket)
+          )
+        )
+      : [
+          await recomputePlayoffBracketProgression(match.tournamentId, normalizedBracket, {
+            allowUnknownBracket: true,
+          }),
+        ];
   }
 
   const refreshedMatch = await Match.findById(match._id).lean();
@@ -226,11 +238,20 @@ async function unfinalizeMatchAndEmit({ match, io, tournamentCode }) {
   let playoffProgression = null;
 
   if (match.phase === 'playoffs' && match.bracket) {
-    playoffProgression = await Promise.all(
-      PLAYOFF_BRACKETS.map((bracket) =>
-        recomputePlayoffBracketProgression(match.tournamentId, bracket)
-      )
-    );
+    const normalizedBracket = normalizeBracket(match.bracket);
+    const isLegacyBracket = PLAYOFF_BRACKETS.includes(normalizedBracket);
+
+    playoffProgression = isLegacyBracket
+      ? await Promise.all(
+          PLAYOFF_BRACKETS.map((bracket) =>
+            recomputePlayoffBracketProgression(match.tournamentId, bracket)
+          )
+        )
+      : [
+          await recomputePlayoffBracketProgression(match.tournamentId, normalizedBracket, {
+            allowUnknownBracket: true,
+          }),
+        ];
   }
 
   const refreshedMatch = await Match.findById(match._id).lean();

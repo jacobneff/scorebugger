@@ -6,6 +6,7 @@ const Tournament = require('../models/Tournament');
 const TournamentTeam = require('../models/TournamentTeam');
 const { requireAuth } = require('../middleware/auth');
 const { recomputePhase2RematchWarnings } = require('../services/phase2');
+const { normalizeCourtCode } = require('../services/phase1');
 const {
   TOURNAMENT_EVENT_TYPES,
   emitTournamentEvent,
@@ -30,8 +31,13 @@ const serializePool = (pool) => ({
   _id: toIdString(pool?._id),
   tournamentId: toIdString(pool?.tournamentId),
   phase: pool?.phase ?? null,
+  stageKey: pool?.stageKey ?? null,
   name: pool?.name ?? '',
   homeCourt: pool?.homeCourt ?? null,
+  requiredTeamCount:
+    Number.isFinite(Number(pool?.requiredTeamCount)) && Number(pool.requiredTeamCount) > 0
+      ? Math.floor(Number(pool.requiredTeamCount))
+      : null,
   teamIds: Array.isArray(pool?.teamIds) ? pool.teamIds.map(serializeTeam) : [],
   rematchWarnings: Array.isArray(pool?.rematchWarnings)
     ? pool.rematchWarnings
@@ -49,27 +55,40 @@ const serializePool = (pool) => ({
 router.patch('/:poolId', requireAuth, async (req, res, next) => {
   try {
     const { poolId } = req.params;
+    const hasTeamIds = Object.prototype.hasOwnProperty.call(req.body || {}, 'teamIds');
+    const hasHomeCourt = Object.prototype.hasOwnProperty.call(req.body || {}, 'homeCourt');
 
     if (!isObjectId(poolId)) {
       return res.status(400).json({ message: 'Invalid pool id' });
     }
 
-    if (!Array.isArray(req.body?.teamIds)) {
+    if (!hasTeamIds && !hasHomeCourt) {
+      return res.status(400).json({ message: 'Provide teamIds and/or homeCourt' });
+    }
+
+    if (hasTeamIds && !Array.isArray(req.body?.teamIds)) {
       return res.status(400).json({ message: 'teamIds must be an array' });
     }
 
-    const nextTeamIds = req.body.teamIds.map((teamId) => String(teamId));
+    const nextTeamIds = hasTeamIds ? req.body.teamIds.map((teamId) => String(teamId)) : null;
 
-    if (nextTeamIds.length > 3) {
-      return res.status(400).json({ message: 'A pool can include at most 3 teams' });
-    }
-
-    if (new Set(nextTeamIds).size !== nextTeamIds.length) {
+    if (hasTeamIds && new Set(nextTeamIds).size !== nextTeamIds.length) {
       return res.status(400).json({ message: 'Duplicate team id in pool payload' });
     }
 
-    if (nextTeamIds.some((teamId) => !isObjectId(teamId))) {
+    if (hasTeamIds && nextTeamIds.some((teamId) => !isObjectId(teamId))) {
       return res.status(400).json({ message: 'Invalid team id in teamIds payload' });
+    }
+
+    let nextHomeCourt = null;
+    if (hasHomeCourt) {
+      if (req.body.homeCourt === null || req.body.homeCourt === '') {
+        nextHomeCourt = null;
+      } else if (typeof req.body.homeCourt !== 'string') {
+        return res.status(400).json({ message: 'homeCourt must be a string or null' });
+      } else {
+        nextHomeCourt = normalizeCourtCode(req.body.homeCourt);
+      }
     }
 
     const pool = await Pool.findById(poolId).lean();
@@ -78,18 +97,44 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
       return res.status(404).json({ message: 'Pool not found' });
     }
 
+    const requiredTeamCount =
+      Number.isFinite(Number(pool?.requiredTeamCount)) && Number(pool.requiredTeamCount) > 0
+        ? Math.floor(Number(pool.requiredTeamCount))
+        : 3;
+
+    if (hasTeamIds && nextTeamIds.length > requiredTeamCount) {
+      return res.status(400).json({
+        message: `A pool can include at most ${requiredTeamCount} teams`,
+      });
+    }
+
     const ownedTournament = await Tournament.findOne({
       _id: pool.tournamentId,
       createdByUserId: req.user.id,
     })
-      .select('_id publicCode')
+      .select('_id publicCode facilities')
       .lean();
 
     if (!ownedTournament) {
       return res.status(404).json({ message: 'Pool not found or unauthorized' });
     }
 
-    if (nextTeamIds.length > 0) {
+    const availableCourtSet = new Set(
+      [
+        ...(Array.isArray(ownedTournament?.facilities?.SRC) ? ownedTournament.facilities.SRC : []),
+        ...(Array.isArray(ownedTournament?.facilities?.VC) ? ownedTournament.facilities.VC : []),
+      ]
+        .map((entry) => normalizeCourtCode(entry))
+        .filter(Boolean)
+    );
+
+    if (hasHomeCourt && nextHomeCourt && !availableCourtSet.has(nextHomeCourt)) {
+      return res.status(400).json({
+        message: 'homeCourt must be one of the configured tournament facilities',
+      });
+    }
+
+    if (hasTeamIds && nextTeamIds.length > 0) {
       const teams = await TournamentTeam.find({
         _id: { $in: nextTeamIds },
         tournamentId: pool.tournamentId,
@@ -101,27 +146,45 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
         return res.status(400).json({ message: 'All teams must belong to the same tournament' });
       }
 
+      const sameStageFilter = pool.stageKey
+        ? { stageKey: pool.stageKey }
+        : {
+            phase: pool.phase,
+            $or: [{ stageKey: null }, { stageKey: { $exists: false } }],
+          };
+
       const conflictingPool = await Pool.findOne({
         _id: { $ne: pool._id },
         tournamentId: pool.tournamentId,
-        phase: pool.phase,
         teamIds: { $in: nextTeamIds },
+        ...sameStageFilter,
       })
         .select('_id name')
         .lean();
 
       if (conflictingPool) {
         return res.status(400).json({
-          message: `A team cannot appear in multiple ${pool.phase} pools`,
+          message: `A team cannot appear in multiple ${pool.stageKey || pool.phase} pools`,
           conflictingPoolId: conflictingPool._id.toString(),
           conflictingPoolName: conflictingPool.name,
         });
       }
     }
 
+    const updates = {};
+    if (hasTeamIds) {
+      updates.teamIds = nextTeamIds;
+      // Keep requiredTeamCount on the same update so query validators enforce
+      // the pool's configured capacity instead of falling back to legacy size 3.
+      updates.requiredTeamCount = requiredTeamCount;
+    }
+    if (hasHomeCourt) {
+      updates.homeCourt = nextHomeCourt;
+    }
+
     const updatedPool = await Pool.findByIdAndUpdate(
       pool._id,
-      { teamIds: nextTeamIds },
+      { $set: updates },
       {
         new: true,
         runValidators: true,
@@ -144,6 +207,7 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
       TOURNAMENT_EVENT_TYPES.POOLS_UPDATED,
       {
         phase: pool.phase,
+        stageKey: pool.stageKey || null,
         poolIds: [toIdString(finalizedPool._id)].filter(Boolean),
       }
     );

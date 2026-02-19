@@ -1094,7 +1094,14 @@ function TournamentPhase1Admin() {
               {tournament?.name || 'Tournament'} • Create pools, drag teams from Team Bank, then
               generate the fixed Pool Play 1 schedule.
             </p>
-            <TournamentSchedulingTabs tournamentId={id} activeTab="phase1" />
+            <TournamentSchedulingTabs
+              tournamentId={id}
+              activeTab="phase1"
+              showPhase2={
+                !tournament?.settings?.format?.formatId ||
+                tournament?.settings?.format?.formatId === 'odu_15_5courts_v1'
+              }
+            />
           </div>
           <div className="phase1-admin-actions">
             <a className="secondary-button" href={`/tournaments/${id}/teams`}>

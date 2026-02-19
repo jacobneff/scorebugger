@@ -399,7 +399,14 @@ function TournamentPlayoffsAdmin() {
               {tournament?.name || 'Tournament'} • Generate Gold/Silver/Bronze brackets and run
               the fixed ops schedule.
             </p>
-            <TournamentSchedulingTabs tournamentId={id} activeTab="playoffs" />
+            <TournamentSchedulingTabs
+              tournamentId={id}
+              activeTab="playoffs"
+              showPhase2={
+                !tournament?.settings?.format?.formatId ||
+                tournament?.settings?.format?.formatId === 'odu_15_5courts_v1'
+              }
+            />
           </div>
           <div className="phase1-admin-actions">
             <button

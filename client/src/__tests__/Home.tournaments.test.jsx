@@ -111,7 +111,7 @@ describe("Home tournaments tab", () => {
     expect(screen.queryByRole("button", { name: "Create tournament" })).not.toBeInTheDocument();
   });
 
-  it("creates a tournament and navigates to Pool Play 1", async () => {
+  it("creates a tournament and navigates to Format setup", async () => {
     mockUseAuth.mockReturnValue(createSignedInAuth());
     const user = userEvent.setup();
 
@@ -173,7 +173,7 @@ describe("Home tournaments tab", () => {
     });
 
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith("/tournaments/tour-1/phase1");
+      expect(mockNavigate).toHaveBeenCalledWith("/tournaments/tour-1/format");
     });
   });
 

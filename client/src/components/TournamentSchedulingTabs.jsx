@@ -1,4 +1,4 @@
-function TournamentSchedulingTabs({ tournamentId, activeTab }) {
+function TournamentSchedulingTabs({ tournamentId, activeTab, showPhase2 = true }) {
   const id = typeof tournamentId === 'string' ? tournamentId.trim() : '';
 
   if (!id) {
@@ -7,14 +7,14 @@ function TournamentSchedulingTabs({ tournamentId, activeTab }) {
 
   const tabs = [
     {
+      key: 'format',
+      label: 'Format',
+      href: `/tournaments/${id}/format`,
+    },
+    {
       key: 'phase1',
       label: 'Pool Play 1',
       href: `/tournaments/${id}/phase1`,
-    },
-    {
-      key: 'phase2',
-      label: 'Pool Play 2',
-      href: `/tournaments/${id}/phase2`,
     },
     {
       key: 'playoffs',
@@ -22,6 +22,14 @@ function TournamentSchedulingTabs({ tournamentId, activeTab }) {
       href: `/tournaments/${id}/playoffs`,
     },
   ];
+
+  if (showPhase2) {
+    tabs.splice(2, 0, {
+      key: 'phase2',
+      label: 'Pool Play 2',
+      href: `/tournaments/${id}/phase2`,
+    });
+  }
 
   return (
     <div className="tournament-scheduling-nav">

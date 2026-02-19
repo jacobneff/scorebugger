@@ -44,7 +44,7 @@ function TournamentTeamsAdmin() {
             <a className="secondary-button" href={`/tournaments/${tournamentId}/details`}>
               Tournament Details
             </a>
-            <a className="secondary-button" href={`/tournaments/${tournamentId}/phase1`}>
+            <a className="secondary-button" href={`/tournaments/${tournamentId}/format`}>
               Scheduling
             </a>
             <a className="secondary-button" href={`/tournaments/${tournamentId}/quick-scores`}>

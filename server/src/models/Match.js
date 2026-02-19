@@ -90,6 +90,11 @@ const MatchSchema = new mongoose.Schema(
       enum: ['phase1', 'phase2', 'playoffs'],
       required: true,
     },
+    stageKey: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     poolId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Pool',
@@ -97,13 +102,13 @@ const MatchSchema = new mongoose.Schema(
     },
     bracket: {
       type: String,
-      enum: ['gold', 'silver', 'bronze'],
       default: null,
+      trim: true,
     },
     bracketRound: {
       type: String,
-      enum: ['R1', 'R2', 'R3'],
       default: null,
+      trim: true,
     },
     bracketMatchKey: {
       type: String,
@@ -114,13 +119,13 @@ const MatchSchema = new mongoose.Schema(
       type: Number,
       default: null,
       min: 1,
-      max: 5,
+      max: 64,
     },
     seedB: {
       type: Number,
       default: null,
       min: 1,
-      max: 5,
+      max: 64,
     },
     teamAFromMatchId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -245,6 +250,8 @@ const MatchSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+MatchSchema.index({ tournamentId: 1, stageKey: 1, phase: 1, roundBlock: 1, court: 1 });
 
 const Match = mongoose.model('Match', MatchSchema);
 

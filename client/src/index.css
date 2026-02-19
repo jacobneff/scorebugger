@@ -2756,6 +2756,45 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
+.phase1-pool-court-control {
+  display: grid;
+  gap: 0.25rem;
+  justify-items: start;
+}
+
+.phase1-pool-court-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #475569;
+}
+
+.phase1-pool-court-select {
+  width: 100%;
+  min-height: 2.2rem;
+  border-radius: 10px;
+  border: 1px solid #cbd5f5;
+  padding: 0.4rem 0.55rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #0f172a;
+  background: #f8fafc;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.phase1-pool-court-select:focus {
+  outline: 2px solid #2563eb;
+  border-color: transparent;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  background: #ffffff;
+}
+
+.phase1-pool-court-select:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
 .phase1-pool-header--swap-target {
   border-radius: 10px;
   padding: 0.3rem;

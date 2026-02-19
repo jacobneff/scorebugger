@@ -26,6 +26,19 @@ const TOURNAMENT_DETAILS_DEFAULTS = {
   mapImageUrls: [],
 };
 
+const toNormalizedCourtCode = (value) =>
+  typeof value === 'string' ? value.trim().toUpperCase() : '';
+
+const flattenFacilityCourts = (facilities) => {
+  const source = facilities && typeof facilities === 'object' ? facilities : {};
+  const srcCourts = Array.isArray(source.SRC) ? source.SRC : FACILITY_DEFAULTS.SRC;
+  const vcCourts = Array.isArray(source.VC) ? source.VC : FACILITY_DEFAULTS.VC;
+
+  return [...srcCourts, ...vcCourts]
+    .map((court) => toNormalizedCourtCode(court))
+    .filter(Boolean);
+};
+
 const StandingsPhaseOverridesSchema = new mongoose.Schema(
   {
     poolOrderOverrides: {
@@ -126,6 +139,48 @@ const TournamentSchema = new mongoose.Schema(
         lunchDurationMinutes: {
           type: Number,
           default: SCHEDULE_DEFAULTS.lunchDurationMinutes,
+        },
+      },
+      format: {
+        formatId: {
+          type: String,
+          default: null,
+          trim: true,
+        },
+        activeCourts: {
+          type: [String],
+          default: function resolveDefaultActiveCourts() {
+            return flattenFacilityCourts(this?.facilities);
+          },
+          set: (value) =>
+            Array.isArray(value)
+              ? Array.from(
+                  new Set(
+                    value
+                      .map((entry) => toNormalizedCourtCode(entry))
+                      .filter(Boolean)
+                  )
+                )
+              : [],
+          validate: {
+            validator(value) {
+              if (!Array.isArray(value)) {
+                return false;
+              }
+
+              if (value.length === 0) {
+                return false;
+              }
+
+              const availableCourts = new Set(flattenFacilityCourts(this?.facilities));
+              if (availableCourts.size === 0) {
+                return false;
+              }
+
+              return value.every((court) => availableCourts.has(toNormalizedCourtCode(court)));
+            },
+            message: 'activeCourts must be a non-empty subset of the tournament facilities.',
+          },
         },
       },
     },

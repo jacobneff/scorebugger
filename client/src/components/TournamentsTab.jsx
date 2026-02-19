@@ -1110,7 +1110,7 @@ function TournamentsTab({
       onShowToast?.("success", "Tournament created");
 
       if (createdId) {
-        navigate(`/tournaments/${createdId}/phase1`);
+        navigate(`/tournaments/${createdId}/format`);
       }
     } catch (error) {
       const message = error?.message || "Unable to create tournament";
@@ -1384,7 +1384,7 @@ function TournamentsTab({
                       <a className="secondary-button" href={`/tournaments/${id}/teams`}>
                         Team Setup
                       </a>
-                      <a className="secondary-button" href={`/tournaments/${id}/phase1`}>
+                      <a className="secondary-button" href={`/tournaments/${id}/format`}>
                         Scheduling
                       </a>
                       <a className="secondary-button" href={`/tournaments/${id}/quick-scores`}>

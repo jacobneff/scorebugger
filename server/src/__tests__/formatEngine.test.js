@@ -4,7 +4,7 @@ const {
 } = require('../tournamentEngine/formatEngine');
 
 describe('formatEngine round robin + scheduling', () => {
-  test('pool size 3 round robin keeps legacy order and off-team refs', () => {
+  test('pool size 3 round robin uses spec order: 1v3, 2v3, 1v2 with correct refs', () => {
     const teams = [
       { _id: 'team-1', orderIndex: 1 },
       { _id: 'team-2', orderIndex: 2 },
@@ -14,16 +14,19 @@ describe('formatEngine round robin + scheduling', () => {
     const matches = generateRoundRobinMatches(teams, 3);
 
     expect(matches).toHaveLength(3);
+    // Spec: 1v3 ref 2 | 2v3 ref 1 | 1v2 ref 3
     expect(matches.map((match) => [match.teamAId, match.teamBId])).toEqual([
-      ['team-1', 'team-2'],
-      ['team-2', 'team-3'],
       ['team-1', 'team-3'],
+      ['team-2', 'team-3'],
+      ['team-1', 'team-2'],
     ]);
     expect(matches.map((match) => match.refTeamIds)).toEqual([
-      ['team-3'],
-      ['team-1'],
       ['team-2'],
+      ['team-1'],
+      ['team-3'],
     ]);
+    // No byes for 3-team pools
+    expect(matches.every((match) => match.byeTeamId === null)).toBe(true);
   });
 
   test('pool size 4 round robin is deterministic and refs are selected from off teams', () => {

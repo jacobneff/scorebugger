@@ -492,4 +492,405 @@ describe('tournament format routes + apply-format flow', () => {
     expect(phase2Count).toBe(15);
     expect(playoffCount).toBe(12);
   });
+
+  // ── PR12 regression tests ────────────────────────────────────────────────
+
+  async function applyFormatAndSeedPools(tournament, teams, poolAssignments) {
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({ formatId: FORMAT_14_ID });
+    expect(apply.statusCode).toBe(200);
+
+    await Pool.bulkWrite(
+      poolAssignments.map((entry) => ({
+        updateOne: {
+          filter: { tournamentId: tournament._id, phase: 'phase1', name: entry.name },
+          update: {
+            $set: {
+              stageKey: 'poolPlay1',
+              requiredTeamCount: entry.teamIds.length,
+              teamIds: entry.teamIds,
+              homeCourt: entry.homeCourt,
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: true }
+    );
+  }
+
+  test('init pools is idempotent — does not clear teamIds on second call', async () => {
+    const tournament = await createOwnedTournament('init-idempotent');
+    const teams = await seedTeams(tournament._id, 14);
+    const teamIds = teams.map((team) => team._id);
+
+    await applyFormatAndSeedPools(tournament, teams, [
+      { name: 'A', teamIds: teamIds.slice(0, 4), homeCourt: 'SRC-1' },
+      { name: 'B', teamIds: teamIds.slice(4, 8), homeCourt: 'SRC-2' },
+      { name: 'C', teamIds: teamIds.slice(8, 11), homeCourt: 'VC-1' },
+      { name: 'D', teamIds: teamIds.slice(11, 14), homeCourt: 'VC-2' },
+    ]);
+
+    // Second init call without ?force=true should preserve teamIds
+    const secondInit = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools/init`)
+      .set(authHeader());
+
+    expect(secondInit.statusCode).toBe(200);
+    const poolA = secondInit.body.find((p) => p.name === 'A');
+    expect(poolA.teamIds).toHaveLength(4);
+  });
+
+  test('init pools with ?force=true clears teamIds', async () => {
+    const tournament = await createOwnedTournament('init-force');
+    const teams = await seedTeams(tournament._id, 14);
+    const teamIds = teams.map((team) => team._id);
+
+    await applyFormatAndSeedPools(tournament, teams, [
+      { name: 'A', teamIds: teamIds.slice(0, 4), homeCourt: 'SRC-1' },
+      { name: 'B', teamIds: teamIds.slice(4, 8), homeCourt: 'SRC-2' },
+      { name: 'C', teamIds: teamIds.slice(8, 11), homeCourt: 'VC-1' },
+      { name: 'D', teamIds: teamIds.slice(11, 14), homeCourt: 'VC-2' },
+    ]);
+
+    const forceInit = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools/init?force=true`)
+      .set(authHeader());
+
+    expect(forceInit.statusCode).toBe(200);
+    expect(forceInit.body.every((p) => Array.isArray(p.teamIds) && p.teamIds.length === 0)).toBe(true);
+  });
+
+  test('3-team RR generates exact match order: 1v3, 2v3, 1v2 with correct refs', async () => {
+    const tournament = await createOwnedTournament('rr3');
+    const teams = await seedTeams(tournament._id, 14);
+    const teamIds = teams.map((team) => team._id.toString());
+
+    await applyFormatAndSeedPools(tournament, teams, [
+      { name: 'A', teamIds: teams.slice(0, 4).map((t) => t._id), homeCourt: 'SRC-1' },
+      { name: 'B', teamIds: teams.slice(4, 8).map((t) => t._id), homeCourt: 'SRC-2' },
+      // Pool C is 3-team pool (positions 0=C1, 1=C2, 2=C3)
+      { name: 'C', teamIds: teams.slice(8, 11).map((t) => t._id), homeCourt: 'VC-1' },
+      { name: 'D', teamIds: teams.slice(11, 14).map((t) => t._id), homeCourt: 'VC-2' },
+    ]);
+
+    const generate = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+
+    expect(generate.statusCode).toBe(201);
+
+    // Filter to Pool C matches only (3-team pool)
+    const poolCMatches = generate.body
+      .filter((m) => m.poolName === 'C')
+      .sort((a, b) => a.roundBlock - b.roundBlock);
+
+    expect(poolCMatches).toHaveLength(3);
+
+    const c1 = teamIds[8];
+    const c2 = teamIds[9];
+    const c3 = teamIds[10];
+
+    // Match 1: 1v3 (c1 vs c3), ref = c2
+    expect(poolCMatches[0].teamAId).toBe(c1);
+    expect(poolCMatches[0].teamBId).toBe(c3);
+    expect(poolCMatches[0].refTeamIds).toEqual([c2]);
+
+    // Match 2: 2v3 (c2 vs c3), ref = c1
+    expect(poolCMatches[1].teamAId).toBe(c2);
+    expect(poolCMatches[1].teamBId).toBe(c3);
+    expect(poolCMatches[1].refTeamIds).toEqual([c1]);
+
+    // Match 3: 1v2 (c1 vs c2), ref = c3
+    expect(poolCMatches[2].teamAId).toBe(c1);
+    expect(poolCMatches[2].teamBId).toBe(c2);
+    expect(poolCMatches[2].refTeamIds).toEqual([c3]);
+  });
+
+  test('4-team RR generates exact match order with correct refs and byeTeamIds', async () => {
+    const FORMAT_12_ID_LOCAL = 'classic_12_3x4_gold8_silver4_v1';
+    const tournament = await createOwnedTournament('rr4');
+    const teams = await seedTeams(tournament._id, 12);
+
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({ formatId: FORMAT_12_ID_LOCAL });
+    expect(apply.statusCode).toBe(200);
+
+    const poolTeams = teams.slice(0, 4); // Pool A
+    const poolTeamIds = poolTeams.map((t) => t._id.toString());
+
+    await Pool.bulkWrite(
+      [
+        { name: 'A', teamIds: poolTeams.map((t) => t._id), homeCourt: 'SRC-1' },
+        { name: 'B', teamIds: teams.slice(4, 8).map((t) => t._id), homeCourt: 'SRC-2' },
+        { name: 'C', teamIds: teams.slice(8, 12).map((t) => t._id), homeCourt: 'SRC-3' },
+      ].map((entry) => ({
+        updateOne: {
+          filter: { tournamentId: tournament._id, phase: 'phase1', name: entry.name },
+          update: {
+            $set: {
+              stageKey: 'poolPlay1',
+              requiredTeamCount: 4,
+              teamIds: entry.teamIds,
+              homeCourt: entry.homeCourt,
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: true }
+    );
+
+    const generate = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+
+    expect(generate.statusCode).toBe(201);
+
+    const poolAMatches = generate.body
+      .filter((m) => m.poolName === 'A')
+      .sort((a, b) => a.roundBlock - b.roundBlock);
+
+    expect(poolAMatches).toHaveLength(6);
+
+    const [p1, p2, p3, p4] = poolTeamIds;
+
+    // Spec: 1v3, ref 2, bye 4
+    expect(poolAMatches[0].teamAId).toBe(p1);
+    expect(poolAMatches[0].teamBId).toBe(p3);
+    expect(poolAMatches[0].refTeamIds).toEqual([p2]);
+    expect(poolAMatches[0].byeTeamId).toBe(p4);
+
+    // Spec: 2v4, ref 1, bye 3
+    expect(poolAMatches[1].teamAId).toBe(p2);
+    expect(poolAMatches[1].teamBId).toBe(p4);
+    expect(poolAMatches[1].refTeamIds).toEqual([p1]);
+    expect(poolAMatches[1].byeTeamId).toBe(p3);
+
+    // Spec: 1v4, ref 3, bye 2
+    expect(poolAMatches[2].teamAId).toBe(p1);
+    expect(poolAMatches[2].teamBId).toBe(p4);
+    expect(poolAMatches[2].refTeamIds).toEqual([p3]);
+    expect(poolAMatches[2].byeTeamId).toBe(p2);
+
+    // Spec: 2v3, ref 1, bye 4
+    expect(poolAMatches[3].teamAId).toBe(p2);
+    expect(poolAMatches[3].teamBId).toBe(p3);
+    expect(poolAMatches[3].refTeamIds).toEqual([p1]);
+    expect(poolAMatches[3].byeTeamId).toBe(p4);
+
+    // Spec: 3v4, ref 2, bye 1
+    expect(poolAMatches[4].teamAId).toBe(p3);
+    expect(poolAMatches[4].teamBId).toBe(p4);
+    expect(poolAMatches[4].refTeamIds).toEqual([p2]);
+    expect(poolAMatches[4].byeTeamId).toBe(p1);
+
+    // Spec: 1v2, ref 4, bye 3
+    expect(poolAMatches[5].teamAId).toBe(p1);
+    expect(poolAMatches[5].teamBId).toBe(p2);
+    expect(poolAMatches[5].refTeamIds).toEqual([p4]);
+    expect(poolAMatches[5].byeTeamId).toBe(p3);
+  });
+
+  test('crossover with >= 2 courts schedules matches 0+1 concurrently, match 2 in next block', async () => {
+    const tournament = await createOwnedTournament('crossover-concurrent');
+    const teams = await seedTeams(tournament._id, 14);
+    const teamIds = teams.map((team) => team._id);
+
+    await applyFormatAndSeedPools(tournament, teams, [
+      { name: 'A', teamIds: teamIds.slice(0, 4), homeCourt: 'SRC-1' },
+      { name: 'B', teamIds: teamIds.slice(4, 8), homeCourt: 'SRC-2' },
+      { name: 'C', teamIds: teamIds.slice(8, 11), homeCourt: 'VC-1' },
+      { name: 'D', teamIds: teamIds.slice(11, 14), homeCourt: 'VC-2' },
+    ]);
+
+    const phase1 = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+    expect(phase1.statusCode).toBe(201);
+
+    // activeCourts has 4 courts (VC-1 and VC-2 both active) → courtsForCrossover.length >= 2
+    const crossover = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/crossover/matches/generate`)
+      .set(authHeader());
+
+    expect(crossover.statusCode).toBe(201);
+    expect(crossover.body).toHaveLength(3);
+
+    const roundBlocks = crossover.body.map((m) => m.roundBlock).sort((a, b) => a - b);
+    // With 2 VC courts: M0 and M1 share same block, M2 is next block
+    expect(roundBlocks[0]).toBe(roundBlocks[1]);
+    expect(roundBlocks[2]).toBeGreaterThan(roundBlocks[1]);
+  });
+
+  test('crossover with 1 court schedules matches sequentially', async () => {
+    const tournament = await createOwnedTournament('crossover-sequential');
+    const teams = await seedTeams(tournament._id, 14);
+    const teamIds = teams.map((team) => team._id);
+
+    // Pool C (VC-1) and D (SRC-3): source facility counts VC=1, SRC=1 → tie → preferred = VC
+    // Active VC courts = only VC-1 (VC-2 not in activeCourts) → 1 court → sequential scheduling.
+    // All 4 pools have unique courts → no court conflict on pool play generation.
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({
+        formatId: FORMAT_14_ID,
+        activeCourts: ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1'],
+      });
+    expect(apply.statusCode).toBe(200);
+
+    await Pool.bulkWrite(
+      [
+        { name: 'A', teamIds: teamIds.slice(0, 4), homeCourt: 'SRC-1' },
+        { name: 'B', teamIds: teamIds.slice(4, 8), homeCourt: 'SRC-2' },
+        // C on VC-1, D on SRC-3: unique courts, source pools split between facilities
+        { name: 'C', teamIds: teamIds.slice(8, 11), homeCourt: 'VC-1' },
+        { name: 'D', teamIds: teamIds.slice(11, 14), homeCourt: 'SRC-3' },
+      ].map((entry) => ({
+        updateOne: {
+          filter: { tournamentId: tournament._id, phase: 'phase1', name: entry.name },
+          update: {
+            $set: {
+              stageKey: 'poolPlay1',
+              requiredTeamCount: entry.teamIds.length,
+              teamIds: entry.teamIds,
+              homeCourt: entry.homeCourt,
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: true }
+    );
+
+    const phase1 = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+    expect(phase1.statusCode).toBe(201);
+
+    // Only VC-1 available for crossover → 1 court
+    const crossover = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/crossover/matches/generate`)
+      .set(authHeader());
+
+    expect(crossover.statusCode).toBe(201);
+    expect(crossover.body).toHaveLength(3);
+
+    const roundBlocks = crossover.body.map((m) => m.roundBlock).sort((a, b) => a - b);
+    // All three should have distinct round blocks (sequential)
+    expect(new Set(roundBlocks).size).toBe(3);
+  });
+
+  test('crossover assigns correct refs per match template', async () => {
+    const tournament = await createOwnedTournament('crossover-refs');
+    const teams = await seedTeams(tournament._id, 14);
+    const teamIds = teams.map((team) => team._id);
+
+    await applyFormatAndSeedPools(tournament, teams, [
+      { name: 'A', teamIds: teamIds.slice(0, 4), homeCourt: 'SRC-1' },
+      { name: 'B', teamIds: teamIds.slice(4, 8), homeCourt: 'SRC-2' },
+      { name: 'C', teamIds: teamIds.slice(8, 11), homeCourt: 'VC-1' },
+      { name: 'D', teamIds: teamIds.slice(11, 14), homeCourt: 'VC-2' },
+    ]);
+
+    const phase1 = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+    expect(phase1.statusCode).toBe(201);
+
+    const crossover = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/crossover/matches/generate`)
+      .set(authHeader());
+
+    expect(crossover.statusCode).toBe(201);
+    const matches = crossover.body.sort((a, b) => {
+      // Sort by round block first, then by court to get consistent order
+      if (a.roundBlock !== b.roundBlock) return a.roundBlock - b.roundBlock;
+      return String(a.court || '').localeCompare(String(b.court || ''));
+    });
+
+    // Get standings to know who ranks where in pools C and D
+    const standings = await request(app)
+      .get(`/api/tournaments/${tournament._id}/standings?phase=phase1`)
+      .set(authHeader());
+    expect(standings.statusCode).toBe(200);
+
+    const poolC = standings.body.pools?.find((p) => p.poolName === 'C');
+    const poolD = standings.body.pools?.find((p) => p.poolName === 'D');
+
+    const c1 = poolC?.teams[0]?.teamId?.toString();
+    const c2 = poolC?.teams[1]?.teamId?.toString();
+    const d2 = poolD?.teams[1]?.teamId?.toString();
+    const d3 = poolD?.teams[2]?.teamId?.toString();
+
+    // Match 0 (C#1 vs D#1): ref = C#2 (leftTeams[1])
+    const m0 = matches.find((m) => m.teamAId === c1 || m.teamBId === c1);
+    expect(m0?.refTeamIds?.[0]).toBe(c2);
+
+    // Match 2 (C#3 vs D#3): ref = D#2 (rightTeams[1])
+    const m2 = matches.find(
+      (m, _idx) =>
+        m.roundBlock > matches[0].roundBlock ||
+        (m.teamAId !== c1 && m.teamBId !== c1 && m.refTeamIds?.[0] === d2)
+    );
+    if (m2) {
+      expect(m2.refTeamIds?.[0]).toBe(d2);
+    }
+
+    // Match 1 (C#2 vs D#2): ref = D#3 (rightTeams[2])
+    const m1 = matches.find(
+      (m) => m.teamAId !== c1 && m.teamBId !== c1 && m.refTeamIds?.[0] !== d2
+    );
+    if (m1 && d3) {
+      expect(m1.refTeamIds?.[0]).toBe(d3);
+    }
+  });
+
+  test('court conflict on same pool home court returns 400 on match generate', async () => {
+    const tournament = await createOwnedTournament('court-conflict');
+    const teams = await seedTeams(tournament._id, 14);
+    const teamIds = teams.map((team) => team._id);
+
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({ formatId: FORMAT_14_ID });
+    expect(apply.statusCode).toBe(200);
+
+    // Assign SAME court to pools A and B
+    await Pool.bulkWrite(
+      [
+        { name: 'A', teamIds: teamIds.slice(0, 4), homeCourt: 'SRC-1' },
+        { name: 'B', teamIds: teamIds.slice(4, 8), homeCourt: 'SRC-1' }, // same court!
+        { name: 'C', teamIds: teamIds.slice(8, 11), homeCourt: 'VC-1' },
+        { name: 'D', teamIds: teamIds.slice(11, 14), homeCourt: 'VC-2' },
+      ].map((entry) => ({
+        updateOne: {
+          filter: { tournamentId: tournament._id, phase: 'phase1', name: entry.name },
+          update: {
+            $set: {
+              stageKey: 'poolPlay1',
+              requiredTeamCount: entry.teamIds.length,
+              teamIds: entry.teamIds,
+              homeCourt: entry.homeCourt,
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: true }
+    );
+
+    const generate = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+
+    expect(generate.statusCode).toBe(400);
+    expect(generate.body.message).toMatch(/share the same home court/i);
+  });
 });

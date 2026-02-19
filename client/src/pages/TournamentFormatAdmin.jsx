@@ -19,7 +19,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { API_URL } from '../config/env.js';
 import TournamentSchedulingTabs from '../components/TournamentSchedulingTabs.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { formatRoundBlockStartTime, mapCourtLabel } from '../utils/phase1.js';
+import { mapCourtLabel } from '../utils/phase1.js';
 import {
   TEAM_BANK_CONTAINER_ID,
   buildTeamBankFromPools,
@@ -31,15 +31,23 @@ import {
 
 const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 const FIRST_STAGE_KEY = 'poolPlay1';
-const EMPTY_STANDINGS = Object.freeze({
-  pools: [],
-  overall: [],
-});
-const EMPTY_PLAYOFF_PAYLOAD = Object.freeze({
-  matches: [],
-  brackets: {},
-  opsSchedule: [],
-  bracketOrder: [],
+// RR schedule templates (0-based position indices into ordered pool teams)
+// Pool 3: 1v3/ref2 | 2v3/ref1 | 1v2/ref3
+// Pool 4: 1v3/ref2/bye4 | 2v4/ref1/bye3 | 1v4/ref3/bye2 | 2v3/ref1/bye4 | 3v4/ref2/bye1 | 1v2/ref4/bye3
+const RR_PREVIEW_TEMPLATES = Object.freeze({
+  3: [
+    { a: 0, b: 2, ref: 1, bye: null },
+    { a: 1, b: 2, ref: 0, bye: null },
+    { a: 0, b: 1, ref: 2, bye: null },
+  ],
+  4: [
+    { a: 0, b: 2, ref: 1, bye: 3 },
+    { a: 1, b: 3, ref: 0, bye: 2 },
+    { a: 0, b: 3, ref: 2, bye: 1 },
+    { a: 1, b: 2, ref: 0, bye: 3 },
+    { a: 2, b: 3, ref: 1, bye: 0 },
+    { a: 0, b: 1, ref: 3, bye: 2 },
+  ],
 });
 
 const normalizeCourtCode = (courtCode) =>
@@ -93,20 +101,6 @@ const normalizePool = (pool) => ({
     : [],
 });
 
-const normalizeMatch = (match) => ({
-  ...match,
-  _id: String(match?._id || ''),
-  teamA: match?.teamA ? normalizeTeam(match.teamA) : null,
-  teamB: match?.teamB ? normalizeTeam(match.teamB) : null,
-  roundBlock: Number.isFinite(Number(match?.roundBlock)) ? Number(match.roundBlock) : null,
-});
-
-const normalizePlayoffPayload = (payload) => ({
-  matches: Array.isArray(payload?.matches) ? payload.matches.map((match) => normalizeMatch(match)) : [],
-  brackets: payload?.brackets && typeof payload.brackets === 'object' ? payload.brackets : {},
-  opsSchedule: Array.isArray(payload?.opsSchedule) ? payload.opsSchedule : [],
-  bracketOrder: Array.isArray(payload?.bracketOrder) ? payload.bracketOrder : [],
-});
 
 const toIdString = (value) => {
   if (!value) {
@@ -130,33 +124,6 @@ const toTitleCase = (value) =>
     .filter(Boolean)
     .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`)
     .join(' ');
-
-const parseRoundRank = (roundKey) => {
-  const normalized = String(roundKey || '').trim().toUpperCase();
-  const matched = /^R(\d+)$/.exec(normalized);
-  if (!matched) {
-    return Number.MAX_SAFE_INTEGER;
-  }
-
-  return Number(matched[1]);
-};
-
-const sortMatchesByRoundCourt = (matches) =>
-  [...(Array.isArray(matches) ? matches : [])].sort((left, right) => {
-    const leftRound = Number.isFinite(Number(left?.roundBlock)) ? Number(left.roundBlock) : Number.MAX_SAFE_INTEGER;
-    const rightRound = Number.isFinite(Number(right?.roundBlock)) ? Number(right.roundBlock) : Number.MAX_SAFE_INTEGER;
-
-    if (leftRound !== rightRound) {
-      return leftRound - rightRound;
-    }
-
-    const byCourt = String(left?.court || '').localeCompare(String(right?.court || ''));
-    if (byCourt !== 0) {
-      return byCourt;
-    }
-
-    return String(left?._id || '').localeCompare(String(right?._id || ''));
-  });
 
 const getPoolStages = (formatDef) =>
   Array.isArray(formatDef?.stages)
@@ -248,10 +215,6 @@ function TournamentFormatAdmin() {
   const [tournament, setTournament] = useState(null);
   const [teams, setTeams] = useState([]);
   const [pools, setPools] = useState([]);
-  const [firstStageMatches, setFirstStageMatches] = useState([]);
-  const [crossoverMatches, setCrossoverMatches] = useState([]);
-  const [phase1Standings, setPhase1Standings] = useState(EMPTY_STANDINGS);
-  const [playoffsPayload, setPlayoffsPayload] = useState(EMPTY_PLAYOFF_PAYLOAD);
   const [suggestedFormats, setSuggestedFormats] = useState([]);
   const [appliedFormatDef, setAppliedFormatDef] = useState(null);
   const [selectedFormatId, setSelectedFormatId] = useState('');
@@ -261,9 +224,6 @@ function TournamentFormatAdmin() {
   const [savingPools, setSavingPools] = useState(false);
   const [updatingPoolCourtId, setUpdatingPoolCourtId] = useState('');
   const [initializingPools, setInitializingPools] = useState(false);
-  const [generatingMatches, setGeneratingMatches] = useState(false);
-  const [generatingCrossoverMatches, setGeneratingCrossoverMatches] = useState(false);
-  const [generatingPlayoffs, setGeneratingPlayoffs] = useState(false);
   const [activeDragTeamId, setActiveDragTeamId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -336,46 +296,6 @@ function TournamentFormatAdmin() {
     [fetchJson, id, token]
   );
 
-  const loadStageMatches = useCallback(
-    async (stageKey) => {
-      const normalizedStageKey = typeof stageKey === 'string' ? stageKey.trim() : '';
-      if (!normalizedStageKey) {
-        return [];
-      }
-
-      const payload = await fetchJson(
-        `${API_URL}/api/tournaments/${id}/stages/${normalizedStageKey}/matches`,
-        {
-          headers: authHeaders(token),
-        }
-      );
-
-      return sortMatchesByRoundCourt(
-        Array.isArray(payload) ? payload.map((match) => normalizeMatch(match)) : []
-      );
-    },
-    [fetchJson, id, token]
-  );
-
-  const loadPhase1Standings = useCallback(async () => {
-    const payload = await fetchJson(`${API_URL}/api/tournaments/${id}/standings?phase=phase1`, {
-      headers: authHeaders(token),
-    });
-
-    return {
-      pools: Array.isArray(payload?.pools) ? payload.pools : [],
-      overall: Array.isArray(payload?.overall) ? payload.overall : [],
-    };
-  }, [fetchJson, id, token]);
-
-  const loadPlayoffs = useCallback(async () => {
-    const payload = await fetchJson(`${API_URL}/api/tournaments/${id}/playoffs`, {
-      headers: authHeaders(token),
-    });
-
-    return normalizePlayoffPayload(payload);
-  }, [fetchJson, id, token]);
-
   const loadData = useCallback(async () => {
     if (!token || !id) {
       return;
@@ -419,41 +339,15 @@ function TournamentFormatAdmin() {
       if (!tournamentFormatId) {
         setAppliedFormatDef(null);
         setPools([]);
-        setFirstStageMatches([]);
-        setCrossoverMatches([]);
-        setPhase1Standings(EMPTY_STANDINGS);
-        setPlayoffsPayload(EMPTY_PLAYOFF_PAYLOAD);
         return;
       }
 
       const formatDef = await loadFormatDef(tournamentFormatId);
       const poolStages = getPoolStages(formatDef);
       const firstPoolStage = poolStages[0] || null;
-      const crossoverStage = getStageByType(formatDef, 'crossover');
-      const playoffStage = getStageByType(formatDef, 'playoffs');
 
-      const [nextPools, nextFirstStageMatches, nextCrossoverMatches, nextStandings, nextPlayoffs] =
-        await Promise.all([
-          firstPoolStage ? loadPools(firstPoolStage.key) : Promise.resolve([]),
-          firstPoolStage
-            ? loadStageMatches(firstPoolStage.key).catch(() => [])
-            : Promise.resolve([]),
-          crossoverStage
-            ? loadStageMatches(crossoverStage.key).catch(() => [])
-            : Promise.resolve([]),
-          firstPoolStage
-            ? loadPhase1Standings().catch(() => EMPTY_STANDINGS)
-            : Promise.resolve(EMPTY_STANDINGS),
-          playoffStage
-            ? loadPlayoffs().catch(() => EMPTY_PLAYOFF_PAYLOAD)
-            : Promise.resolve(EMPTY_PLAYOFF_PAYLOAD),
-        ]);
-
+      const nextPools = await (firstPoolStage ? loadPools(firstPoolStage.key) : Promise.resolve([]));
       setPools(nextPools);
-      setFirstStageMatches(nextFirstStageMatches);
-      setCrossoverMatches(nextCrossoverMatches);
-      setPhase1Standings(nextStandings);
-      setPlayoffsPayload(nextPlayoffs);
     } catch (loadError) {
       setError(loadError.message || 'Unable to load format setup');
     } finally {
@@ -463,10 +357,7 @@ function TournamentFormatAdmin() {
     fetchJson,
     id,
     loadFormatDef,
-    loadPhase1Standings,
-    loadPlayoffs,
     loadPools,
-    loadStageMatches,
     loadSuggestions,
     token,
   ]);
@@ -586,49 +477,88 @@ function TournamentFormatAdmin() {
       return [];
     }
 
-    const standingsByPool = new Map(
-      (Array.isArray(phase1Standings?.pools) ? phase1Standings.pools : []).map((pool) => [
-        String(pool?.poolName || ''),
-        pool,
-      ])
-    );
-    const leftPoolName = String(crossoverStage.fromPools[0] || '');
-    const rightPoolName = String(crossoverStage.fromPools[1] || '');
-    const leftTeams = Array.isArray(standingsByPool.get(leftPoolName)?.teams)
-      ? standingsByPool.get(leftPoolName).teams
-      : [];
-    const rightTeams = Array.isArray(standingsByPool.get(rightPoolName)?.teams)
-      ? standingsByPool.get(rightPoolName).teams
-      : [];
-    const pairingCount = Math.min(leftTeams.length, rightTeams.length);
+    const leftName = String(crossoverStage.fromPools[0] || '');
+    const rightName = String(crossoverStage.fromPools[1] || '');
+    const leftPool = pools.find((p) => p.name === leftName);
+    const rightPool = pools.find((p) => p.name === rightName);
+    const pairingCount = leftPool && rightPool
+      ? Math.min(leftPool.requiredTeamCount, rightPool.requiredTeamCount)
+      : 3;
 
-    return Array.from({ length: pairingCount }, (_, index) => {
-      const left = leftTeams[index];
-      const right = rightTeams[index];
-      const rank = index + 1;
-      const leftTeam = teamsById.get(toIdString(left?.teamId));
-      const rightTeam = teamsById.get(toIdString(right?.teamId));
+    const rank = (poolName, r) => `${poolName} (#${r})`;
 
-      return {
-        id: `${leftPoolName}-${rightPoolName}-${rank}`,
-        label: `${leftPoolName}${rank} vs ${rightPoolName}${rank}`,
-        leftTeamLabel: left?.shortName || left?.name || formatTeamLabel(leftTeam),
-        rightTeamLabel: right?.shortName || right?.name || formatTeamLabel(rightTeam),
-      };
+    // Ref assignment: M0=left#2, M1=right#last, M2=right#2 (matches server getCrossoverRefTeamId)
+    const getRef = (index) => {
+      if (index === 0) return rank(leftName, 2);
+      if (index === 1) return rank(rightName, pairingCount);
+      if (index === 2) return rank(rightName, 2);
+      return null;
+    };
+
+    // Round blocks: matches 0+1 concurrent (same round), match 2 is next round
+    const getRoundBlock = (index) => {
+      if (pairingCount >= 2 && index <= 1) return 1;
+      if (pairingCount >= 2) return 2;
+      return index + 1;
+    };
+
+    // Bye teams per round block for standard 3-pairing crossover
+    const getByeLabel = (index) => {
+      if (pairingCount === 3) {
+        if (index === 0) return rank(leftName, pairingCount);
+        if (index === 1) return null;
+        if (index === 2) return `${rank(leftName, 1)}, ${rank(leftName, 2)}, ${rank(rightName, 1)}`;
+      }
+      return null;
+    };
+
+    return Array.from({ length: pairingCount }, (_, index) => ({
+      id: `${leftName}-${rightName}-${index + 1}`,
+      roundBlock: getRoundBlock(index),
+      matchLabel: `${rank(leftName, index + 1)} vs ${rank(rightName, index + 1)}`,
+      refLabel: getRef(index),
+      byeLabel: getByeLabel(index),
+    }));
+  }, [crossoverStage, pools]);
+
+  const courtConflicts = useMemo(() => {
+    const counts = new Map();
+    pools.forEach((pool) => {
+      if (pool.homeCourt) {
+        counts.set(pool.homeCourt, (counts.get(pool.homeCourt) || 0) + 1);
+      }
     });
-  }, [crossoverStage, phase1Standings?.pools, teamsById]);
+    return pools
+      .filter((pool) => pool.homeCourt && (counts.get(pool.homeCourt) || 0) > 1)
+      .map((pool) => pool.name);
+  }, [pools]);
 
-  const playoffBracketOrder = useMemo(() => {
-    const explicitOrder = Array.isArray(playoffsPayload?.bracketOrder)
-      ? playoffsPayload.bracketOrder
-      : [];
-
-    if (explicitOrder.length > 0) {
-      return explicitOrder;
+  const poolPlayPreviewRows = useMemo(() => {
+    if (!firstPoolStage || pools.length === 0) {
+      return [];
     }
 
-    return Object.keys(playoffsPayload?.brackets || {});
-  }, [playoffsPayload?.bracketOrder, playoffsPayload?.brackets]);
+    const rows = [];
+    pools.forEach((pool) => {
+      const poolSize = pool.requiredTeamCount;
+      const template = RR_PREVIEW_TEMPLATES[poolSize];
+      if (!template) {
+        return;
+      }
+      template.forEach((entry, index) => {
+        rows.push({
+          id: `${pool._id}-match-${index + 1}`,
+          poolName: pool.name,
+          roundBlock: index + 1,
+          aLabel: `${pool.name}${entry.a + 1}`,
+          bLabel: `${pool.name}${entry.b + 1}`,
+          refLabel: `${pool.name}${entry.ref + 1}`,
+          byeLabel: entry.bye !== null ? `${pool.name}${entry.bye + 1}` : null,
+        });
+      });
+    });
+    return rows;
+  }, [firstPoolStage, pools]);
 
   const persistPoolChanges = useCallback(
     async ({ previousPools, nextPools, poolIdsToPersist }) => {
@@ -851,8 +781,6 @@ function TournamentFormatAdmin() {
         }
       );
       setPools(Array.isArray(payload) ? payload.map((pool) => normalizePool(pool)) : []);
-      setFirstStageMatches([]);
-      setPhase1Standings(EMPTY_STANDINGS);
       setMessage(`${firstPoolStage.displayName || 'Pool Play'} pools initialized.`);
     } catch (initError) {
       setError(initError.message || 'Unable to initialize pools');
@@ -860,223 +788,6 @@ function TournamentFormatAdmin() {
       setInitializingPools(false);
     }
   }, [fetchJson, firstPoolStage, id, initializingPools, token]);
-
-  const handleGenerateMatches = useCallback(async () => {
-    if (!firstPoolStage || generatingMatches) {
-      return;
-    }
-
-    setGeneratingMatches(true);
-    setError('');
-    setMessage('');
-
-    const runGenerate = async (force) => {
-      const suffix = force ? '?force=true' : '';
-      const response = await fetch(
-        `${API_URL}/api/tournaments/${id}/stages/${firstPoolStage.key}/matches/generate${suffix}`,
-        {
-          method: 'POST',
-          headers: authHeaders(token),
-        }
-      );
-      const payload = await response.json().catch(() => null);
-
-      if (response.status === 409 && !force) {
-        return {
-          requiresForce: true,
-          message: payload?.message || 'Stage matches already exist.',
-        };
-      }
-
-      if (!response.ok || !Array.isArray(payload)) {
-        throw new Error(payload?.message || 'Unable to generate matches');
-      }
-
-      return {
-        requiresForce: false,
-        payload,
-      };
-    };
-
-    try {
-      const firstAttempt = await runGenerate(false);
-
-      if (firstAttempt.requiresForce) {
-        const shouldForce = window.confirm(
-          `${firstAttempt.message}\n\nThis will delete and regenerate matches + scoreboards for this stage. Continue?`
-        );
-
-        if (!shouldForce) {
-          setMessage(firstAttempt.message);
-          return;
-        }
-
-        const forcedAttempt = await runGenerate(true);
-        setFirstStageMatches(sortMatchesByRoundCourt(forcedAttempt.payload.map((match) => normalizeMatch(match))));
-        const standings = await loadPhase1Standings().catch(() => EMPTY_STANDINGS);
-        setPhase1Standings(standings);
-        setMessage(`Generated ${forcedAttempt.payload.length} ${firstPoolStage.displayName || 'Pool Play'} matches.`);
-        return;
-      }
-
-      setFirstStageMatches(sortMatchesByRoundCourt(firstAttempt.payload.map((match) => normalizeMatch(match))));
-      const standings = await loadPhase1Standings().catch(() => EMPTY_STANDINGS);
-      setPhase1Standings(standings);
-      setMessage(`Generated ${firstAttempt.payload.length} ${firstPoolStage.displayName || 'Pool Play'} matches.`);
-    } catch (generateError) {
-      setError(generateError.message || 'Unable to generate matches');
-    } finally {
-      setGeneratingMatches(false);
-    }
-  }, [firstPoolStage, generatingMatches, id, loadPhase1Standings, token]);
-
-  const handleGenerateCrossoverMatches = useCallback(async () => {
-    if (!crossoverStage || generatingCrossoverMatches) {
-      return;
-    }
-
-    setGeneratingCrossoverMatches(true);
-    setError('');
-    setMessage('');
-
-    const runGenerate = async (force) => {
-      const suffix = force ? '?force=true' : '';
-      const response = await fetch(
-        `${API_URL}/api/tournaments/${id}/stages/${crossoverStage.key}/matches/generate${suffix}`,
-        {
-          method: 'POST',
-          headers: authHeaders(token),
-        }
-      );
-      const payload = await response.json().catch(() => null);
-
-      if (response.status === 409 && !force) {
-        return {
-          requiresForce: true,
-          message: payload?.message || 'Crossover matches already exist.',
-        };
-      }
-
-      if (!response.ok || !Array.isArray(payload)) {
-        throw new Error(payload?.message || 'Unable to generate crossover matches');
-      }
-
-      return {
-        requiresForce: false,
-        payload,
-      };
-    };
-
-    try {
-      const firstAttempt = await runGenerate(false);
-
-      if (firstAttempt.requiresForce) {
-        const shouldForce = window.confirm(
-          `${firstAttempt.message}\n\nThis will delete and regenerate matches + scoreboards for crossover. Continue?`
-        );
-
-        if (!shouldForce) {
-          setMessage(firstAttempt.message);
-          return;
-        }
-
-        const forcedAttempt = await runGenerate(true);
-        setCrossoverMatches(sortMatchesByRoundCourt(forcedAttempt.payload.map((match) => normalizeMatch(match))));
-        setMessage(`Generated ${forcedAttempt.payload.length} ${crossoverStage.displayName || 'crossover'} matches.`);
-        return;
-      }
-
-      setCrossoverMatches(sortMatchesByRoundCourt(firstAttempt.payload.map((match) => normalizeMatch(match))));
-      setMessage(`Generated ${firstAttempt.payload.length} ${crossoverStage.displayName || 'crossover'} matches.`);
-    } catch (generateError) {
-      setError(generateError.message || 'Unable to generate crossover matches');
-    } finally {
-      setGeneratingCrossoverMatches(false);
-    }
-  }, [crossoverStage, generatingCrossoverMatches, id, token]);
-
-  const handleGeneratePlayoffs = useCallback(async () => {
-    if (!playoffStage || generatingPlayoffs) {
-      return;
-    }
-
-    setGeneratingPlayoffs(true);
-    setError('');
-    setMessage('');
-
-    const runGenerate = async (force) => {
-      const suffix = force ? '?force=true' : '';
-      const response = await fetch(
-        `${API_URL}/api/tournaments/${id}/stages/${playoffStage.key}/matches/generate${suffix}`,
-        {
-          method: 'POST',
-          headers: authHeaders(token),
-        }
-      );
-      const payload = await response.json().catch(() => null);
-
-      if (response.status === 409 && !force) {
-        return {
-          requiresForce: true,
-          message: payload?.message || 'Playoff matches already exist.',
-        };
-      }
-
-      if (!response.ok) {
-        throw new Error(payload?.message || 'Unable to generate playoffs');
-      }
-
-      return {
-        requiresForce: false,
-        payload,
-      };
-    };
-
-    try {
-      const firstAttempt = await runGenerate(false);
-
-      if (firstAttempt.requiresForce) {
-        const shouldForce = window.confirm(
-          `${firstAttempt.message}\n\nThis will delete and regenerate playoff matches + scoreboards. Continue?`
-        );
-
-        if (!shouldForce) {
-          setMessage(firstAttempt.message);
-          return;
-        }
-
-        const forcedAttempt = await runGenerate(true);
-        if (forcedAttempt.payload?.matches && forcedAttempt.payload?.brackets) {
-          setPlayoffsPayload(normalizePlayoffPayload(forcedAttempt.payload));
-        } else {
-          setPlayoffsPayload(await loadPlayoffs());
-        }
-        const forcedCount = Array.isArray(forcedAttempt.payload)
-          ? forcedAttempt.payload.length
-          : Array.isArray(forcedAttempt.payload?.matches)
-            ? forcedAttempt.payload.matches.length
-            : 0;
-        setMessage(`Generated ${forcedCount} ${playoffStage.displayName || 'playoff'} matches.`);
-        return;
-      }
-
-      if (firstAttempt.payload?.matches && firstAttempt.payload?.brackets) {
-        setPlayoffsPayload(normalizePlayoffPayload(firstAttempt.payload));
-      } else {
-        setPlayoffsPayload(await loadPlayoffs());
-      }
-      const count = Array.isArray(firstAttempt.payload)
-        ? firstAttempt.payload.length
-        : Array.isArray(firstAttempt.payload?.matches)
-          ? firstAttempt.payload.matches.length
-          : 0;
-      setMessage(`Generated ${count} ${playoffStage.displayName || 'playoff'} matches.`);
-    } catch (generateError) {
-      setError(generateError.message || 'Unable to generate playoffs');
-    } finally {
-      setGeneratingPlayoffs(false);
-    }
-  }, [generatingPlayoffs, id, loadPlayoffs, playoffStage, token]);
 
   const handlePoolCourtChange = useCallback(
     async (poolId, nextCourtCode) => {
@@ -1162,7 +873,7 @@ function TournamentFormatAdmin() {
               activeTab="format"
               showPhase2={showLegacyPhase2}
               phase1Label={firstPoolStage?.displayName || (showLegacyPhase2 ? 'Pool Play 1' : 'Pool Play')}
-              phase1Href={showLegacyPhase2 ? `/tournaments/${id}/phase1` : `/tournaments/${id}/format`}
+              phase1Href={`/tournaments/${id}/phase1`}
               phase2Label={secondPoolStage?.displayName || 'Pool Play 2'}
               phase2Href={showLegacyPhase2 ? `/tournaments/${id}/phase2` : `/tournaments/${id}/format`}
               playoffsHref={`/tournaments/${id}/playoffs`}
@@ -1181,22 +892,6 @@ function TournamentFormatAdmin() {
               {initializingPools
                 ? 'Initializing...'
                 : `Init ${firstPoolStage?.displayName || 'Pool Play'} Pools`}
-            </button>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={handleGenerateMatches}
-              disabled={
-                generatingMatches ||
-                savingPools ||
-                !firstPoolStage ||
-                pools.length === 0 ||
-                poolIssues.length > 0
-              }
-            >
-              {generatingMatches
-                ? 'Generating...'
-                : `Generate ${firstPoolStage?.displayName || 'Pool Play'} Matches`}
             </button>
           </div>
         </div>
@@ -1261,6 +956,11 @@ function TournamentFormatAdmin() {
           </div>
         </section>
 
+        {courtConflicts.length > 0 && (
+          <p className="error">
+            Court conflict: Pools {courtConflicts.join(', ')} share the same home court. Assign unique courts before generating matches.
+          </p>
+        )}
         {poolIssues.length > 0 && (
           <p className="error">{poolIssues.join('; ')}</p>
         )}
@@ -1293,7 +993,7 @@ function TournamentFormatAdmin() {
                       <DraggableTeamCard
                         key={team._id}
                         team={team}
-                        disabled={savingPools || generatingMatches}
+                        disabled={savingPools}
                       />
                     ))}
                     {teamBank.length === 0 && <p className="subtle">No teams in bank.</p>}
@@ -1329,7 +1029,6 @@ function TournamentFormatAdmin() {
                               onChange={(event) => handlePoolCourtChange(pool._id, event.target.value)}
                               disabled={
                                 savingPools ||
-                                generatingMatches ||
                                 applying ||
                                 updatingPoolCourtId === pool._id
                               }
@@ -1358,7 +1057,7 @@ function TournamentFormatAdmin() {
                             <DraggableTeamCard
                               key={team._id}
                               team={team}
-                              disabled={savingPools || generatingMatches}
+                              disabled={savingPools}
                             />
                           ))}
                           {poolTeams.length === 0 && <p className="subtle">Drop teams here.</p>}
@@ -1375,28 +1074,29 @@ function TournamentFormatAdmin() {
           </DndContext>
         )}
 
-        {firstStageMatches.length > 0 && (
+        {poolPlayPreviewRows.length > 0 && (
           <section className="phase1-schedule">
-            <h2 className="secondary-title">{firstPoolStage?.displayName || 'Pool Play'} Schedule</h2>
+            <h2 className="secondary-title">{firstPoolStage?.displayName || 'Pool Play'} Match Template</h2>
+            <p className="subtle">Scheduled match order per pool. Generate matches on the Pool Play page.</p>
             <div className="phase1-table-wrap">
               <table className="phase1-schedule-table">
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Court</th>
+                    <th>Round</th>
                     <th>Pool</th>
                     <th>Match</th>
+                    <th>Ref</th>
+                    <th>Bye</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {firstStageMatches.map((match) => (
-                    <tr key={match._id}>
-                      <td>{formatRoundBlockStartTime(match.roundBlock, tournament) || '-'}</td>
-                      <td>{mapCourtLabel(match.court)}</td>
-                      <td>{match.poolName ? `Pool ${match.poolName}` : '-'}</td>
-                      <td>
-                        {formatTeamLabel(match.teamA)} vs {formatTeamLabel(match.teamB)}
-                      </td>
+                  {poolPlayPreviewRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.roundBlock}</td>
+                      <td>Pool {row.poolName}</td>
+                      <td>{row.aLabel} vs {row.bLabel}</td>
+                      <td>{row.refLabel}</td>
+                      <td>{row.byeLabel || '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1407,66 +1107,31 @@ function TournamentFormatAdmin() {
 
         {crossoverStage && (
           <section className="phase1-standings">
-            <div className="phase1-admin-header">
-              <div>
-                <h2 className="secondary-title">{crossoverStage.displayName || 'Crossover'}</h2>
-                <p className="subtle">
-                  Rank-to-rank crossover pairing preview.
-                </p>
-              </div>
-              <div className="phase1-admin-actions">
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={handleGenerateCrossoverMatches}
-                  disabled={generatingCrossoverMatches || crossoverPreviewRows.length === 0}
-                >
-                  {generatingCrossoverMatches ? 'Generating...' : 'Generate Crossover Matches'}
-                </button>
-              </div>
-            </div>
+            <h2 className="secondary-title">{crossoverStage.displayName || 'Crossover'}</h2>
+            <p className="subtle">
+              Rank-to-rank crossover pairing template. Rounds 1 and 2 run simultaneously on two courts. Generate matches on the Phase 2 page.
+            </p>
 
             {crossoverPreviewRows.length === 0 ? (
-              <p className="subtle">
-                Awaiting standings from {firstPoolStage?.displayName || 'Pool Play'}.
-              </p>
+              <p className="subtle">No crossover pairings defined in this format.</p>
             ) : (
               <div className="phase1-table-wrap">
-                <table className="phase1-standings-table">
+                <table className="phase1-schedule-table">
                   <thead>
                     <tr>
-                      <th>Pairing</th>
-                      <th>Teams</th>
+                      <th>Round</th>
+                      <th>Match</th>
+                      <th>Ref</th>
+                      <th>Bye</th>
                     </tr>
                   </thead>
                   <tbody>
                     {crossoverPreviewRows.map((row) => (
                       <tr key={row.id}>
-                        <td>{row.label}</td>
-                        <td>{row.leftTeamLabel} vs {row.rightTeamLabel}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {crossoverMatches.length > 0 && (
-              <div className="phase1-table-wrap">
-                <table className="phase1-schedule-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Court</th>
-                      <th>Match</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {crossoverMatches.map((match) => (
-                      <tr key={match._id}>
-                        <td>{formatRoundBlockStartTime(match.roundBlock, tournament) || '-'}</td>
-                        <td>{mapCourtLabel(match.court)}</td>
-                        <td>{formatTeamLabel(match.teamA)} vs {formatTeamLabel(match.teamB)}</td>
+                        <td>{row.roundBlock}</td>
+                        <td>{row.matchLabel}</td>
+                        <td>{row.refLabel || '—'}</td>
+                        <td>{row.byeLabel || '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1484,101 +1149,11 @@ function TournamentFormatAdmin() {
                 <p className="subtle">Playoff generation follows the selected format.</p>
               </div>
               <div className="phase1-admin-actions">
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={handleGeneratePlayoffs}
-                  disabled={generatingPlayoffs}
-                >
-                  {generatingPlayoffs ? 'Generating...' : 'Generate Playoffs'}
-                </button>
                 <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
                   Open Playoffs Page
                 </a>
               </div>
             </div>
-
-            {playoffsPayload.opsSchedule.length > 0 && (
-              <div className="phase1-table-wrap">
-                <table className="phase1-schedule-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Court</th>
-                      <th>Match</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {playoffsPayload.opsSchedule.flatMap((roundBlock) =>
-                      (Array.isArray(roundBlock?.slots) ? roundBlock.slots : []).map((slot) => (
-                        <tr key={`${roundBlock.roundBlock}-${slot.court}-${slot.matchId || 'slot'}`}>
-                          <td>{formatRoundBlockStartTime(roundBlock.roundBlock, tournament) || '-'}</td>
-                          <td>{mapCourtLabel(slot.court)}</td>
-                          <td>{slot.matchLabel || '-'}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {playoffBracketOrder.length > 0 && (
-              <div className="playoff-bracket-grid">
-                {playoffBracketOrder.map((bracketKey) => {
-                  const normalizedBracketKey = String(bracketKey || '').toLowerCase();
-                  const bracketData = playoffsPayload.brackets?.[normalizedBracketKey];
-                  if (!bracketData) {
-                    return null;
-                  }
-
-                  const roundOrder = Array.isArray(bracketData.roundOrder) && bracketData.roundOrder.length > 0
-                    ? bracketData.roundOrder
-                    : Object.keys(bracketData.rounds || {}).sort((left, right) => {
-                        const byRank = parseRoundRank(left) - parseRoundRank(right);
-                        if (byRank !== 0) {
-                          return byRank;
-                        }
-                        return left.localeCompare(right);
-                      });
-
-                  return (
-                    <article key={`playoff-bracket-${normalizedBracketKey}`} className="phase1-standings-card playoff-bracket-card">
-                      <h3>{bracketData.label || toTitleCase(normalizedBracketKey)}</h3>
-                      <div className="playoff-seed-list">
-                        {(Array.isArray(bracketData.seeds) ? bracketData.seeds : []).length > 0 ? (
-                          (bracketData.seeds || []).map((seedEntry) => (
-                            <p key={`${normalizedBracketKey}-seed-${seedEntry.seed || seedEntry.bracketSeed}`}>
-                              #
-                              {Number.isFinite(Number(seedEntry?.overallSeed))
-                                ? Number(seedEntry.overallSeed)
-                                : Number(seedEntry?.seed) || Number(seedEntry?.bracketSeed) || '?'}
-                              {' '}
-                              {formatTeamLabel(seedEntry?.team)}
-                            </p>
-                          ))
-                        ) : (
-                          <p className="subtle">Seeds not resolved</p>
-                        )}
-                      </div>
-                      {roundOrder.map((roundKey) => (
-                        <div key={`${normalizedBracketKey}-${roundKey}`} className="playoff-round-block">
-                          <h4>{roundKey}</h4>
-                          {(bracketData.rounds?.[roundKey] || []).map((match) => (
-                            <div key={match._id} className="playoff-round-match">
-                              <p>{formatTeamLabel(match.teamA)} vs {formatTeamLabel(match.teamB)}</p>
-                              <p className="subtle">
-                                {mapCourtLabel(match.court)} • {match.status || 'scheduled'}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </article>
-                  );
-                })}
-              </div>
-            )}
           </section>
         )}
       </section>

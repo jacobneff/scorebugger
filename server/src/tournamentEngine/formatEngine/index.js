@@ -225,6 +225,28 @@ function buildPoolTeamOrder(poolTeams) {
   };
 }
 
+// Deterministic RR templates: { left, right, ref, bye } — indices into orderedTeamIds (0-based positions)
+// Pool size 3 schedule (3 matches, no byes):
+//   1) 1v3, ref 2  |  2) 2v3, ref 1  |  3) 1v2, ref 3
+// Pool size 4 schedule (6 matches, 1 match per block; ref + bye each block):
+//   1) 1v3, ref 2, bye 4  |  2) 2v4, ref 1, bye 3  |  3) 1v4, ref 3, bye 2
+//   4) 2v3, ref 1, bye 4  |  5) 3v4, ref 2, bye 1  |  6) 1v2, ref 4, bye 3
+const RR_TEMPLATES = Object.freeze({
+  3: [
+    { left: 0, right: 2, ref: 1, bye: null },
+    { left: 1, right: 2, ref: 0, bye: null },
+    { left: 0, right: 1, ref: 2, bye: null },
+  ],
+  4: [
+    { left: 0, right: 2, ref: 1, bye: 3 },
+    { left: 1, right: 3, ref: 0, bye: 2 },
+    { left: 0, right: 3, ref: 2, bye: 1 },
+    { left: 1, right: 2, ref: 0, bye: 3 },
+    { left: 2, right: 3, ref: 1, bye: 0 },
+    { left: 0, right: 1, ref: 3, bye: 2 },
+  ],
+});
+
 function generateRoundRobinMatches(poolTeams, poolSize) {
   const normalizedPoolSize = toPositiveInteger(poolSize);
 
@@ -232,7 +254,7 @@ function generateRoundRobinMatches(poolTeams, poolSize) {
     throw new Error('Round robin generation currently supports pool sizes 3 and 4.');
   }
 
-  const { orderedTeamIds, orderIndexById } = buildPoolTeamOrder(poolTeams);
+  const { orderedTeamIds } = buildPoolTeamOrder(poolTeams);
 
   if (orderedTeamIds.length !== normalizedPoolSize) {
     throw new Error(
@@ -240,28 +262,13 @@ function generateRoundRobinMatches(poolTeams, poolSize) {
     );
   }
 
-  const pairingsByPoolSize = {
-    3: [
-      [0, 1],
-      [1, 2],
-      [0, 2],
-    ],
-    4: [
-      [0, 1],
-      [2, 3],
-      [0, 2],
-      [1, 3],
-      [0, 3],
-      [1, 2],
-    ],
-  };
-  const pairings = pairingsByPoolSize[normalizedPoolSize];
+  const templates = RR_TEMPLATES[normalizedPoolSize];
 
-  return pairings.map(([leftIndex, rightIndex], index) => {
-    const teamAId = orderedTeamIds[leftIndex];
-    const teamBId = orderedTeamIds[rightIndex];
+  return templates.map((template, index) => {
+    const teamAId = orderedTeamIds[template.left];
+    const teamBId = orderedTeamIds[template.right];
     const offTeamIds = orderedTeamIds.filter(
-      (_, teamIndex) => teamIndex !== leftIndex && teamIndex !== rightIndex
+      (_, teamIndex) => teamIndex !== template.left && teamIndex !== template.right
     );
 
     return {
@@ -269,7 +276,8 @@ function generateRoundRobinMatches(poolTeams, poolSize) {
       teamAId,
       teamBId,
       offTeamIds,
-      refTeamIds: resolveOffTeamRef([teamAId, teamBId], orderedTeamIds, orderIndexById),
+      refTeamIds: [orderedTeamIds[template.ref]],
+      byeTeamId: template.bye !== null ? orderedTeamIds[template.bye] : null,
     };
   });
 }

@@ -222,6 +222,11 @@ const MatchSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    byeTeamId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TournamentTeam',
+      default: null,
+    },
     scoreboardId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Scoreboard',

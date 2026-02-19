@@ -1167,6 +1167,7 @@ function serializeMatchResult(result) {
 function serializeMatch(match) {
   const teamA = match?.teamAId && typeof match.teamAId === 'object' ? match.teamAId : null;
   const teamB = match?.teamBId && typeof match.teamBId === 'object' ? match.teamBId : null;
+  const byeTeam = match?.byeTeamId && typeof match.byeTeamId === 'object' ? match.byeTeamId : null;
   const pool = match?.poolId && typeof match.poolId === 'object' ? match.poolId : null;
   const scoreboard =
     match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null;
@@ -1201,6 +1202,7 @@ function serializeMatch(match) {
     teamB: teamB ? serializeTeam(teamB) : null,
     refTeamIds: refTeams.map((team) => team.id),
     refTeams,
+    byeTeamId: byeTeam ? toIdString(byeTeam._id) : toIdString(match?.byeTeamId),
     scoreboardId: scoreboard ? toIdString(scoreboard._id) : toIdString(match?.scoreboardId),
     scoreboardCode: scoreboard?.code ?? null,
     status: match?.status ?? null,
@@ -1259,6 +1261,7 @@ async function loadMatchesForResponse(query) {
     .populate('teamAId', 'name shortName logoUrl orderIndex seed')
     .populate('teamBId', 'name shortName logoUrl orderIndex seed')
     .populate('refTeamIds', 'name shortName logoUrl orderIndex seed')
+    .populate('byeTeamId', 'name shortName logoUrl orderIndex seed')
     .populate('scoreboardId', 'code')
     .sort({ phase: 1, roundBlock: 1, court: 1, createdAt: 1 })
     .lean();
@@ -2232,6 +2235,21 @@ async function generatePoolPlayStageMatches({
     throw new Error(`Each ${stageDef.displayName || stageDef.key} team must appear in one pool only`);
   }
 
+  const homeCourtCounts = new Map();
+  stagePools.forEach((pool) => {
+    if (pool.homeCourt) {
+      homeCourtCounts.set(pool.homeCourt, (homeCourtCounts.get(pool.homeCourt) || 0) + 1);
+    }
+  });
+  const conflictingCourts = Array.from(homeCourtCounts.entries())
+    .filter(([, count]) => count > 1)
+    .map(([court]) => court);
+  if (conflictingCourts.length > 0) {
+    throw new Error(
+      `Pools share the same home court (${conflictingCourts.join(', ')}). Assign unique courts before generating matches.`
+    );
+  }
+
   const teamIds = uniqueValues(duplicateCheck);
   const teams = await TournamentTeam.find({
     _id: { $in: teamIds },
@@ -2296,6 +2314,7 @@ async function generatePoolPlayStageMatches({
         teamAId: scheduledMatch.teamAId,
         teamBId: scheduledMatch.teamBId,
         refTeamIds: scheduledMatch.refTeamIds || [],
+        byeTeamId: scheduledMatch.byeTeamId || null,
         scoreboardId: scoreboard._id,
         status: 'scheduled',
       });
@@ -2443,6 +2462,33 @@ async function generateCrossoverStageMatches({
     : [];
   const courtsForCrossover = crossoverCourts.length > 0 ? crossoverCourts : [normalizedActiveCourts[0]];
 
+  // Crossover ref template (0-based match index):
+  //   Match 0: X#1 vs Y#1, ref = X#2  (leftTeams[1])
+  //   Match 1: X#2 vs Y#2, ref = Y#3  (rightTeams[2])
+  //   Match 2: X#3 vs Y#3, ref = Y#2  (rightTeams[1])
+  const getCrossoverRefTeamId = (matchIndex) => {
+    if (matchIndex === 0) return toIdString(leftTeams[1]?.teamId) || null;
+    if (matchIndex === 1) return toIdString(rightTeams[2]?.teamId) || null;
+    if (matchIndex === 2) return toIdString(rightTeams[1]?.teamId) || null;
+    return null;
+  };
+
+  // Concurrent scheduling: if >= 2 courts, matches 0 and 1 share the same round block;
+  // match 2 is the next block.  With only 1 court, all three are sequential.
+  const getCrossoverRoundBlock = (matchIndex) => {
+    if (courtsForCrossover.length >= 2) {
+      return matchIndex <= 1 ? startRoundBlock : startRoundBlock + 1;
+    }
+    return startRoundBlock + matchIndex;
+  };
+
+  const getCrossoverCourt = (matchIndex) => {
+    if (courtsForCrossover.length >= 2) {
+      return courtsForCrossover[matchIndex <= 1 ? matchIndex : 0];
+    }
+    return courtsForCrossover[0];
+  };
+
   const scoring = normalizeScoringConfig(tournament?.settings?.scoring);
   const createdMatchIds = [];
   const createdScoreboardIds = [];
@@ -2459,8 +2505,10 @@ async function generateCrossoverStageMatches({
         throw new Error('Crossover teams are missing from tournament roster');
       }
 
-      const court = courtsForCrossover[index % courtsForCrossover.length];
-      const roundBlock = startRoundBlock + Math.floor(index / courtsForCrossover.length);
+      const court = getCrossoverCourt(index);
+      const roundBlock = getCrossoverRoundBlock(index);
+      const refTeamId = getCrossoverRefTeamId(index);
+      const refTeamIds = refTeamId ? [refTeamId] : [];
       const scoreboard = await createMatchScoreboard({
         ownerId: userId,
         title: `${stageDef.displayName || stageDef.key} #${index + 1}`,
@@ -2478,7 +2526,7 @@ async function generateCrossoverStageMatches({
         court,
         teamAId: leftTeamId,
         teamBId: rightTeamId,
-        refTeamIds: [],
+        refTeamIds,
         scoreboardId: scoreboard._id,
         status: 'scheduled',
       });
@@ -2806,14 +2854,17 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
         { teamAId: team._id },
         { teamBId: team._id },
         { refTeamIds: team._id },
+        { byeTeamId: team._id },
       ],
     })
       .select(
-        'phase bracket bracketRound roundBlock facility court teamAId teamBId refTeamIds status result scoreboardId createdAt'
+        'phase bracket bracketRound roundBlock facility court teamAId teamBId refTeamIds byeTeamId poolId status result scoreboardId createdAt'
       )
       .populate('teamAId', 'name shortName logoUrl')
       .populate('teamBId', 'name shortName logoUrl')
       .populate('refTeamIds', 'name shortName')
+      .populate('byeTeamId', 'name shortName')
+      .populate('poolId', 'name')
       .populate('scoreboardId', 'teams.score sets')
       .lean();
 
@@ -2844,6 +2895,22 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
     ).map((match) =>
       serializeMatchForTeamView(match, teamId, tournamentForTimeLabels, phaseLabels)
     );
+
+    const byeAssignments = sortMatchesForCourtSchedule(
+      relevantMatches.filter((match) => {
+        const byeId = toIdString(match?.byeTeamId?._id || match?.byeTeamId);
+        return byeId === teamId;
+      })
+    ).map((match) => ({
+      matchId: toIdString(match?._id),
+      phase: match?.phase ?? null,
+      phaseLabel: resolvePhaseLabel(match?.phase, phaseLabels),
+      roundBlock: match?.roundBlock ?? null,
+      timeLabel: formatRoundBlockStartTime(match?.roundBlock, tournamentForTimeLabels),
+      courtCode: match?.court ?? null,
+      courtLabel: mapCourtDisplayLabel(match?.court),
+      poolName: match?.poolId && typeof match.poolId === 'object' ? (match.poolId.name || null) : null,
+    }));
 
     const nextUp = participantMatches.find((match) => match.status !== 'final') || null;
 
@@ -2879,6 +2946,7 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
       nextUp,
       matches: participantMatches,
       refs: refAssignments,
+      byes: byeAssignments,
     });
   } catch (error) {
     return next(error);
@@ -3677,13 +3745,14 @@ router.post('/:id/stages/:stageKey/pools/init', requireAuth, async (req, res, ne
       });
     }
 
+    const forceInit = parseBooleanFlag(req.query?.force, false);
     const pools = await instantiatePools(
       id,
       formatContext.formatDef,
       stageDef.key,
       formatContext.activeCourts,
       {
-        clearTeamIds: true,
+        clearTeamIds: forceInit,
       }
     );
 
@@ -3819,7 +3888,7 @@ router.post('/:id/stages/:stageKey/matches/generate', requireAuth, async (req, r
 
     return res.status(201).json(generatedMatches);
   } catch (error) {
-    if (error?.message && /(must have exactly|missing|unknown|requires|unsupported|Unable)/i.test(error.message)) {
+    if (error?.message && /(must have exactly|missing|unknown|requires|unsupported|Unable|share the same)/i.test(error.message)) {
       return res.status(400).json({ message: error.message });
     }
 

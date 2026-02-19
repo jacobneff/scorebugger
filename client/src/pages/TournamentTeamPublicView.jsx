@@ -59,6 +59,7 @@ function TournamentTeamPublicView() {
   const [nextUp, setNextUp] = useState(null);
   const [matches, setMatches] = useState([]);
   const [refs, setRefs] = useState([]);
+  const [byes, setByes] = useState([]);
 
   const loadTeamData = useCallback(
     async ({ silent = false } = {}) => {
@@ -91,6 +92,7 @@ function TournamentTeamPublicView() {
         setNextUp(payload?.nextUp || null);
         setMatches(Array.isArray(payload?.matches) ? payload.matches : []);
         setRefs(Array.isArray(payload?.refs) ? payload.refs : []);
+        setByes(Array.isArray(payload?.byes) ? payload.byes : []);
       } catch (loadError) {
         setError(loadError?.message || 'Unable to load team page');
       } finally {
@@ -162,6 +164,24 @@ function TournamentTeamPublicView() {
 
     return grouped;
   }, [matches]);
+
+  const byesByPhase = useMemo(() => {
+    const grouped = {
+      phase1: [],
+      phase2: [],
+      playoffs: [],
+    };
+
+    (Array.isArray(byes) ? byes : []).forEach((bye) => {
+      const phase = typeof bye?.phase === 'string' ? bye.phase : '';
+      if (!grouped[phase]) {
+        return;
+      }
+      grouped[phase].push(bye);
+    });
+
+    return grouped;
+  }, [byes]);
 
   const formatId =
     typeof tournament?.settings?.format?.formatId === 'string'
@@ -280,10 +300,12 @@ function TournamentTeamPublicView() {
           <div className="team-public-phase-groups">
             {phaseSectionOrder.map((phase) => {
               const phaseMatches = matchesByPhase[phase] || [];
+              const phaseByes = byesByPhase[phase] || [];
+              const hasContent = phaseMatches.length > 0 || phaseByes.length > 0;
               return (
                 <article key={phase} className="team-public-phase-card">
                   <h3>{phaseSectionLabels[phase]}</h3>
-                  {phaseMatches.length === 0 ? (
+                  {!hasContent ? (
                     <p className="subtle">No matches yet.</p>
                   ) : (
                     <div className="team-public-list">
@@ -308,6 +330,20 @@ function TournamentTeamPublicView() {
                                 Ref: {match.refBy.map((refTeam) => refTeam.shortName).join(', ')}
                               </p>
                             ) : null}
+                          </div>
+                        </article>
+                      ))}
+                      {phaseByes.map((bye) => (
+                        <article key={`${phase}-bye-${bye.matchId}`} className="team-public-match-row team-public-match-row--bye">
+                          <div className="team-public-time">{bye.timeLabel || '-'}</div>
+                          <div className="team-public-body">
+                            <p className="team-public-opponent">
+                              BYE{bye.poolName ? ` — Pool ${bye.poolName}` : ''}
+                            </p>
+                            <div className="court-schedule-meta">
+                              <span className="court-schedule-status court-schedule-status--scheduled">BYE</span>
+                              <span>{bye.courtLabel || '-'}</span>
+                            </div>
                           </div>
                         </article>
                       ))}

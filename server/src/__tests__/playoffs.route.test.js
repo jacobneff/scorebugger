@@ -219,7 +219,7 @@ describe('playoff generation + progression routes', () => {
     await setScoreboardSets(goldR145.scoreboardId, true);
 
     const finalize = await request(app)
-      .post(`/api/matches/${goldR145._id}/finalize`)
+      .post(`/api/matches/${goldR145._id}/finalize?override=true`)
       .set(authHeader());
 
     expect(finalize.statusCode).toBe(200);
@@ -248,7 +248,7 @@ describe('playoff generation + progression routes', () => {
 
     await setScoreboardSets(goldR145.scoreboardId, true);
     const finalizeGold = await request(app)
-      .post(`/api/matches/${goldR145._id}/finalize`)
+      .post(`/api/matches/${goldR145._id}/finalize?override=true`)
       .set(authHeader());
     expect(finalizeGold.statusCode).toBe(200);
 
@@ -262,7 +262,7 @@ describe('playoff generation + progression routes', () => {
 
     await setScoreboardSets(silverR145.scoreboardId, false);
     const finalizeSilver = await request(app)
-      .post(`/api/matches/${silverR145._id}/finalize`)
+      .post(`/api/matches/${silverR145._id}/finalize?override=true`)
       .set(authHeader());
     expect(finalizeSilver.statusCode).toBe(200);
 
@@ -315,19 +315,19 @@ describe('playoff generation + progression routes', () => {
 
     await setScoreboardSets(bronzeR145.scoreboardId, true);
     const finalizeBronzeR145 = await request(app)
-      .post(`/api/matches/${bronzeR145._id}/finalize`)
+      .post(`/api/matches/${bronzeR145._id}/finalize?override=true`)
       .set(authHeader());
     expect(finalizeBronzeR145.statusCode).toBe(200);
 
     await setScoreboardSets(bronzeR123.scoreboardId, false);
     const finalizeBronzeR123 = await request(app)
-      .post(`/api/matches/${bronzeR123._id}/finalize`)
+      .post(`/api/matches/${bronzeR123._id}/finalize?override=true`)
       .set(authHeader());
     expect(finalizeBronzeR123.statusCode).toBe(200);
 
     await setScoreboardSets(bronzeR2.scoreboardId, false);
     const finalizeBronzeR2 = await request(app)
-      .post(`/api/matches/${bronzeR2._id}/finalize`)
+      .post(`/api/matches/${bronzeR2._id}/finalize?override=true`)
       .set(authHeader());
     expect(finalizeBronzeR2.statusCode).toBe(200);
 
@@ -362,17 +362,17 @@ describe('playoff generation + progression routes', () => {
     const goldFinal = byKey['gold:R3:final'];
 
     await setScoreboardSets(goldR145.scoreboardId, true);
-    await request(app).post(`/api/matches/${goldR145._id}/finalize`).set(authHeader());
+    await request(app).post(`/api/matches/${goldR145._id}/finalize?override=true`).set(authHeader());
 
     await setScoreboardSets(goldR123.scoreboardId, true);
-    await request(app).post(`/api/matches/${goldR123._id}/finalize`).set(authHeader());
+    await request(app).post(`/api/matches/${goldR123._id}/finalize?override=true`).set(authHeader());
 
     await setScoreboardSets(goldR2.scoreboardId, false);
-    await request(app).post(`/api/matches/${goldR2._id}/finalize`).set(authHeader());
+    await request(app).post(`/api/matches/${goldR2._id}/finalize?override=true`).set(authHeader());
 
     await setScoreboardSets(goldFinal.scoreboardId, true);
     const finalizeFinal = await request(app)
-      .post(`/api/matches/${goldFinal._id}/finalize`)
+      .post(`/api/matches/${goldFinal._id}/finalize?override=true`)
       .set(authHeader());
 
     expect(finalizeFinal.statusCode).toBe(200);

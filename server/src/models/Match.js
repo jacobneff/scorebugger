@@ -234,8 +234,16 @@ const MatchSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['scheduled', 'live', 'final'],
+      enum: ['scheduled', 'live', 'ended', 'final'],
       default: 'scheduled',
+    },
+    startedAt: {
+      type: Date,
+      default: null,
+    },
+    endedAt: {
+      type: Date,
+      default: null,
     },
     result: {
       type: MatchResultSchema,

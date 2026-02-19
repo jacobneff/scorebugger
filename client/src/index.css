@@ -3100,9 +3100,15 @@ textarea:focus {
 }
 
 .phase1-status-badge--live {
-  background: rgba(37, 99, 235, 0.16);
-  border: 1px solid rgba(37, 99, 235, 0.4);
-  color: #1d4ed8;
+  background: rgba(220, 38, 38, 0.14);
+  border: 1px solid rgba(220, 38, 38, 0.42);
+  color: #b91c1c;
+}
+
+.phase1-status-badge--ended {
+  background: rgba(249, 115, 22, 0.16);
+  border: 1px solid rgba(249, 115, 22, 0.45);
+  color: #9a3412;
 }
 
 .phase1-match-result {
@@ -3415,6 +3421,12 @@ textarea:focus {
   color: #334155;
 }
 
+.court-schedule-status--ended {
+  background: rgba(249, 115, 22, 0.16);
+  border: 1px solid rgba(249, 115, 22, 0.4);
+  color: #9a3412;
+}
+
 .court-schedule-status--scheduled {
   background: rgba(37, 99, 235, 0.14);
   border: 1px solid rgba(37, 99, 235, 0.32);
@@ -3668,6 +3680,11 @@ textarea:focus {
   align-items: center;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.tournament-match-control__timer {
+  font-weight: 700;
+  color: #b91c1c;
 }
 
 .tournament-score-grid {

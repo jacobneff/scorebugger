@@ -406,6 +406,9 @@ describe('tournament routes', () => {
         pointsB: 11,
       })
     );
+    expect(response.body[0].completedSetScores).toEqual([
+      { setNo: 1, a: 25, b: 22 },
+    ]);
   });
 
   test('DELETE /api/tournaments/:id removes owner tournament and related records', async () => {

@@ -189,6 +189,16 @@ function computeSetWins(sets) {
   );
 }
 
+function serializeCompletedSetScores(sets) {
+  return (Array.isArray(sets) ? sets : [])
+    .filter((set) => Array.isArray(set?.scores) && set.scores.length === 2)
+    .map((set, index) => ({
+      setNo: index + 1,
+      a: safeNonNegativeNumber(set.scores[0]),
+      b: safeNonNegativeNumber(set.scores[1]),
+    }));
+}
+
 function buildScoreboardSummaryPayload(matchContext, scoreboard) {
   const scoreboardId = toIdString(scoreboard?._id);
   const servingTeamIndex = scoreboard?.servingTeamIndex;
@@ -200,6 +210,7 @@ function buildScoreboardSummaryPayload(matchContext, scoreboard) {
     matchId: matchContext.matchId,
     scoreboardId,
     sets: computeSetWins(scoreboard?.sets),
+    completedSetScores: serializeCompletedSetScores(scoreboard?.sets),
     points: {
       a: safeNonNegativeNumber(scoreboard?.teams?.[0]?.score),
       b: safeNonNegativeNumber(scoreboard?.teams?.[1]?.score),
@@ -262,4 +273,5 @@ module.exports = {
   normalizeTournamentCode,
   resetTournamentRealtimeState,
   resolveTournamentMatchContextByScoreboard,
+  serializeCompletedSetScores,
 };

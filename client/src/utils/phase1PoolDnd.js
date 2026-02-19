@@ -399,7 +399,6 @@ export const computePoolSwapPreview = ({
   sourcePoolId,
   targetPoolId,
   requireFull = true,
-  maxTeamsPerPool = MAX_PHASE1_POOL_SIZE,
 }) => {
   const normalizedSourcePoolId = toIdString(sourcePoolId);
   const normalizedTargetPoolId = toIdString(targetPoolId);
@@ -419,13 +418,23 @@ export const computePoolSwapPreview = ({
     return null;
   }
 
+  const sourceCapacity = getPoolCapacity(sourcePool);
+  const targetCapacity = getPoolCapacity(targetPool);
+  const sourceTeamCount = toTeamIdList(sourcePool).length;
+  const targetTeamCount = toTeamIdList(targetPool).length;
+
+  if (sourceCapacity !== targetCapacity) {
+    return {
+      error: `Both pools must require the same team count to swap all teams (${sourceCapacity} vs ${targetCapacity}).`,
+    };
+  }
+
   if (
     requireFull &&
-    (toTeamIdList(sourcePool).length !== maxTeamsPerPool ||
-      toTeamIdList(targetPool).length !== maxTeamsPerPool)
+    (sourceTeamCount !== sourceCapacity || targetTeamCount !== targetCapacity)
   ) {
     return {
-      error: `Both pools must have exactly ${maxTeamsPerPool} teams to swap all ${maxTeamsPerPool} at once.`,
+      error: `Both pools must have exactly ${sourceCapacity} teams to swap all ${sourceCapacity} at once.`,
     };
   }
 

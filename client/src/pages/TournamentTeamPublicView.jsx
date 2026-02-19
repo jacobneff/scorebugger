@@ -3,6 +3,11 @@ import { useParams } from 'react-router-dom';
 
 import { API_URL } from '../config/env.js';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
+import {
+  formatSetSummaryWithScores,
+  resolveCompletedSetScores,
+  toSetSummaryFromScoreSummary,
+} from '../utils/matchSetSummary.js';
 
 const REFRESH_EVENT_TYPES = new Set([
   'MATCH_FINALIZED',
@@ -30,19 +35,24 @@ const getStatusMeta = (status) => {
     };
   }
 
+  if (status === 'ended') {
+    return {
+      label: 'ENDED',
+      className: 'court-schedule-status court-schedule-status--ended',
+    };
+  }
+
   return {
     label: 'Scheduled',
     className: 'court-schedule-status court-schedule-status--scheduled',
   };
 };
 
-const formatScoreSummary = (scoreSummary) => {
-  if (!scoreSummary) {
-    return '';
-  }
-
-  return `Sets ${scoreSummary.setsA ?? 0}-${scoreSummary.setsB ?? 0} • Pts ${scoreSummary.pointsA ?? 0}-${scoreSummary.pointsB ?? 0}`;
-};
+const formatScoreSummary = (match) =>
+  formatSetSummaryWithScores(
+    toSetSummaryFromScoreSummary(match?.scoreSummary),
+    resolveCompletedSetScores(match)
+  );
 
 const formatOpponentLabel = (match) => match?.opponent?.shortName || 'TBD';
 
@@ -210,7 +220,10 @@ function TournamentTeamPublicView() {
   );
 
   const nextRefAssignment = useMemo(
-    () => (Array.isArray(refs) ? refs.find((refMatch) => refMatch?.status !== 'final') || null : null),
+    () =>
+      Array.isArray(refs)
+        ? refs.find((refMatch) => !['ended', 'final'].includes(refMatch?.status)) || null
+        : null,
     [refs]
   );
 
@@ -268,8 +281,8 @@ function TournamentTeamPublicView() {
                 <p className="subtle">
                   {nextUp.facilityLabel || ''} {nextUp.courtLabel ? `• ${nextUp.courtLabel}` : ''}
                 </p>
-                {formatScoreSummary(nextUp.scoreSummary) ? (
-                  <p className="subtle">{formatScoreSummary(nextUp.scoreSummary)}</p>
+                {formatScoreSummary(nextUp) ? (
+                  <p className="subtle">{formatScoreSummary(nextUp)}</p>
                 ) : null}
                 {nextRefAssignment ? (
                   <p className="subtle">
@@ -322,8 +335,8 @@ function TournamentTeamPublicView() {
                               <span>{match.facilityLabel || ''}</span>
                               {match.roundLabel ? <span>{match.roundLabel}</span> : null}
                             </div>
-                            {formatScoreSummary(match.scoreSummary) ? (
-                              <p className="subtle">{formatScoreSummary(match.scoreSummary)}</p>
+                            {formatScoreSummary(match) ? (
+                              <p className="subtle">{formatScoreSummary(match)}</p>
                             ) : null}
                             {Array.isArray(match.refBy) && match.refBy.length > 0 ? (
                               <p className="subtle">
@@ -373,8 +386,8 @@ function TournamentTeamPublicView() {
                       <span>{match.phaseLabel || match.phase || ''}</span>
                       <span>{match.courtLabel || '-'}</span>
                     </div>
-                    {formatScoreSummary(match.scoreSummary) ? (
-                      <p className="subtle">{formatScoreSummary(match.scoreSummary)}</p>
+                    {formatScoreSummary(match) ? (
+                      <p className="subtle">{formatScoreSummary(match)}</p>
                     ) : null}
                   </div>
                 </article>
@@ -401,8 +414,8 @@ function TournamentTeamPublicView() {
                       <span>{match.courtLabel || '-'}</span>
                       <span>{match.phaseLabel || match.phase || ''}</span>
                     </div>
-                    {formatScoreSummary(match.scoreSummary) ? (
-                      <p className="subtle">{formatScoreSummary(match.scoreSummary)}</p>
+                    {formatScoreSummary(match) ? (
+                      <p className="subtle">{formatScoreSummary(match)}</p>
                     ) : null}
                   </div>
                 </article>

@@ -122,6 +122,80 @@ describe('phase1PoolDnd', () => {
     });
   });
 
+  it('allows adding a fourth team when pool requires four teams', () => {
+    const fixture = createFixture();
+    const pools = [
+      {
+        ...fixture.pools[0],
+        requiredTeamCount: 4,
+      },
+      fixture.pools[1],
+    ];
+
+    const result = computeTeamDragPreview({
+      pools,
+      teams: fixture.teams,
+      activeTeamId: 't7',
+      overId: 'pool-a',
+    });
+
+    expect(result?.poolIdsToPersist).toEqual(['pool-a']);
+    expect(idsForPool(result.nextPools, 'pool-a')).toEqual(['t1', 't2', 't3', 't7']);
+  });
+
+  it('supports swapping full four-team pools', () => {
+    const fixture = createFixture();
+    const pools = [
+      {
+        ...fixture.pools[0],
+        requiredTeamCount: 4,
+        teamIds: [...fixture.pools[0].teamIds, makeTeam('t7')],
+      },
+      {
+        ...fixture.pools[1],
+        requiredTeamCount: 4,
+        teamIds: [...fixture.pools[1].teamIds, makeTeam('t8')],
+      },
+    ];
+
+    const result = computePoolSwapPreview({
+      pools,
+      sourcePoolId: 'pool-a',
+      targetPoolId: 'pool-b',
+      requireFull: true,
+    });
+
+    expect(result?.poolIdsToPersist).toEqual(['pool-a', 'pool-b']);
+    expect(idsForPool(result.nextPools, 'pool-a')).toEqual(['t4', 't5', 't6', 't8']);
+    expect(idsForPool(result.nextPools, 'pool-b')).toEqual(['t1', 't2', 't3', 't7']);
+  });
+
+  it('blocks swapping pools with different required capacities', () => {
+    const fixture = createFixture();
+    const pools = [
+      {
+        ...fixture.pools[0],
+        requiredTeamCount: 4,
+        teamIds: [...fixture.pools[0].teamIds, makeTeam('t7')],
+      },
+      {
+        ...fixture.pools[1],
+        requiredTeamCount: 3,
+      },
+    ];
+
+    const result = computePoolSwapPreview({
+      pools,
+      sourcePoolId: 'pool-a',
+      targetPoolId: 'pool-b',
+      requireFull: true,
+    });
+
+    expect(result).toEqual({
+      error: 'Both pools must require the same team count to swap all teams (4 vs 3).',
+    });
+  });
+
   it('builds two-pass persistence updates for cross-pool swaps', () => {
     const fixture = createFixture();
     const swapResult = computeTeamDragPreview({

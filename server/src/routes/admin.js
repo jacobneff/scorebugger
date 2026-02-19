@@ -415,6 +415,7 @@ router.post('/matches/:matchId/score', requireAuth, async (req, res, next) => {
           userId: req.user.id,
           io,
           tournamentCode: tournamentContext.publicCode,
+          override: true,
         })
       : serializeMatch(match.toObject());
 
@@ -538,6 +539,11 @@ router.get('/tournaments/:id/matches/quick', requireAuth, async (req, res, next)
             ? match.scoreboardId
             : null;
         const resultSummary = buildScoreSummaryFromResult(match?.result);
+        const completedSetScores = buildSetScoresForQuickMatch(match, scoreboard).map((set, index) => ({
+          setNo: index + 1,
+          a: safeNonNegativeNumber(set?.a),
+          b: safeNonNegativeNumber(set?.b),
+        }));
 
         return {
           matchId: toIdString(match?._id),
@@ -550,9 +556,15 @@ router.get('/tournaments/:id/matches/quick', requireAuth, async (req, res, next)
           teamA: formatTeamSnippet(match?.teamAId),
           teamB: formatTeamSnippet(match?.teamBId),
           status: match?.status || 'scheduled',
+          startedAt: match?.startedAt || null,
+          endedAt: match?.endedAt || null,
           finalizedAt: match?.finalizedAt || null,
           scoreSummary: resultSummary || buildScoreSummaryFromScoreboard(scoreboard),
-          setScores: buildSetScoresForQuickMatch(match, scoreboard),
+          completedSetScores,
+          setScores: completedSetScores.map((set) => ({
+            a: set.a,
+            b: set.b,
+          })),
           scoreboardId: toIdString(scoreboard?._id || match?.scoreboardId),
           scoreboardCode: scoreboard?.code || null,
         };

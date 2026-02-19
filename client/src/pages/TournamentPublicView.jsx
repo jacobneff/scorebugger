@@ -13,6 +13,13 @@ import {
   mapCourtLabel,
   sortPhase1Pools,
 } from '../utils/phase1.js';
+import {
+  formatSetSummaryWithScores,
+  normalizeCompletedSetScores,
+  resolveCompletedSetScores,
+  toSetSummaryFromLiveSummary,
+  toSetSummaryFromScoreSummary,
+} from '../utils/matchSetSummary.js';
 
 const PLAYOFF_BRACKET_LABELS = {
   gold: 'Gold',
@@ -137,7 +144,10 @@ const formatLiveSummary = (summary) => {
     return '';
   }
 
-  return `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
+  return `Live: ${formatSetSummaryWithScores(
+    toSetSummaryFromLiveSummary(summary),
+    summary?.completedSetScores
+  )}`;
 };
 
 const getCourtMatchStatusMeta = (status) => {
@@ -157,19 +167,21 @@ const getCourtMatchStatusMeta = (status) => {
     };
   }
 
+  if (normalized === 'ended') {
+    return {
+      label: 'ENDED',
+      className: 'court-schedule-status court-schedule-status--ended',
+    };
+  }
+
   return {
     label: 'Scheduled',
     className: 'court-schedule-status court-schedule-status--scheduled',
   };
 };
 
-const formatCourtScoreSummary = (score) => {
-  if (!score) {
-    return '';
-  }
-
-  return `Sets ${score.setsA ?? 0}-${score.setsB ?? 0} • Pts ${score.pointsA ?? 0}-${score.pointsB ?? 0}`;
-};
+const formatCourtScoreSummary = (score) =>
+  formatSetSummaryWithScores(toSetSummaryFromScoreSummary(score), []);
 const normalizeText = (value) => (typeof value === 'string' ? value : '');
 const normalizeUrl = (value) => (typeof value === 'string' ? value.trim() : '');
 
@@ -198,36 +210,22 @@ const normalizeLiveScoreSummary = (summary) => {
     return null;
   }
 
-  const hasFlatFields =
-    summary.setsA !== undefined ||
-    summary.setsB !== undefined ||
-    summary.pointsA !== undefined ||
-    summary.pointsB !== undefined;
-  const sets = summary.sets && typeof summary.sets === 'object' ? summary.sets : {};
-  const points = summary.points && typeof summary.points === 'object' ? summary.points : {};
-
-  return hasFlatFields
-    ? {
-        setsA: Number(summary.setsA) || 0,
-        setsB: Number(summary.setsB) || 0,
-        pointsA: Number(summary.pointsA) || 0,
-        pointsB: Number(summary.pointsB) || 0,
-      }
-    : {
-        setsA: Number(sets.a) || 0,
-        setsB: Number(sets.b) || 0,
-        pointsA: Number(points.a) || 0,
-        pointsB: Number(points.b) || 0,
-      };
+  return {
+    ...toSetSummaryFromLiveSummary(summary),
+    completedSetScores: normalizeCompletedSetScores(summary?.completedSetScores),
+  };
 };
 
-const formatLiveCardScoreSummary = (summary) => {
-  const normalized = normalizeLiveScoreSummary(summary);
+const formatLiveCardScoreSummary = ({ summary, completedSetScores }) => {
+  const normalized = summary;
   if (!normalized) {
     return '';
   }
 
-  return `Sets ${normalized.setsA}-${normalized.setsB} • Pts ${normalized.pointsA}-${normalized.pointsB}`;
+  return formatSetSummaryWithScores(
+    toSetSummaryFromScoreSummary(normalized),
+    completedSetScores || normalized.completedSetScores
+  );
 };
 
 const isHttpUrl = (value) => /^https?:\/\//i.test(value || '');
@@ -651,7 +649,16 @@ function TournamentPublicView() {
           ...match,
           resolvedScoreSummary:
             normalizeLiveScoreSummary(liveSummariesByMatchId[match?.matchId]) ||
-            normalizeLiveScoreSummary(match?.scoreSummary),
+            normalizeLiveScoreSummary(match?.scoreSummary) ||
+            toSetSummaryFromScoreSummary(match?.scoreSummary),
+          resolvedCompletedSetScores: (() => {
+            const liveCompletedSetScores = normalizeCompletedSetScores(
+              liveSummariesByMatchId[match?.matchId]?.completedSetScores
+            );
+            return liveCompletedSetScores.length > 0
+              ? liveCompletedSetScores
+              : resolveCompletedSetScores(match);
+          })(),
         })),
     [liveMatches, liveSummariesByMatchId]
   );
@@ -749,7 +756,10 @@ function TournamentPublicView() {
                   const courtLabel = match?.courtLabel || mapCourtLabel(match?.courtCode) || 'Court TBD';
                   const facilityLabel =
                     match?.facilityLabel || match?.facility || (match?.courtCode ? courtLabel : 'Facility TBD');
-                  const scoreSummary = formatLiveCardScoreSummary(match?.resolvedScoreSummary);
+                  const scoreSummary = formatLiveCardScoreSummary({
+                    summary: match?.resolvedScoreSummary,
+                    completedSetScores: match?.resolvedCompletedSetScores,
+                  });
                   return (
                     <article key={match?.matchId || `${match?.roundBlock}-${match?.courtCode}`} className="tournament-live-card">
                       <div className="tournament-live-card-header">
@@ -1060,9 +1070,10 @@ function TournamentPublicView() {
                     const liveSummary = liveSummariesByMatchId[match.matchId] || null;
                     const statusMeta = getCourtMatchStatusMeta(match.status);
                     const liveScoreSummary = liveSummary
-                      ? `Sets ${liveSummary.sets?.a ?? 0}-${liveSummary.sets?.b ?? 0} • Pts ${
-                          liveSummary.points?.a ?? 0
-                        }-${liveSummary.points?.b ?? 0}`
+                      ? formatSetSummaryWithScores(
+                          toSetSummaryFromLiveSummary(liveSummary),
+                          liveSummary?.completedSetScores
+                        )
                       : '';
                     const scoreSummary = liveScoreSummary || formatCourtScoreSummary(match.score);
                     const timeLabel = formatRoundBlockStartTime(match.roundBlock, tournament) || '-';

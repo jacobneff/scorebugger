@@ -1171,6 +1171,9 @@ function serializeMatch(match) {
   const pool = match?.poolId && typeof match.poolId === 'object' ? match.poolId : null;
   const scoreboard =
     match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null;
+  const resultScoreSummary = serializeCourtScheduleScore(match?.result);
+  const scoreboardScoreSummary = serializeScoreSummaryFromScoreboard(scoreboard);
+  const completedSetScores = resolveCompletedSetScores(match?.result, scoreboard);
 
   const refTeams = Array.isArray(match?.refTeamIds)
     ? match.refTeamIds.map((team) =>
@@ -1206,6 +1209,10 @@ function serializeMatch(match) {
     scoreboardId: scoreboard ? toIdString(scoreboard._id) : toIdString(match?.scoreboardId),
     scoreboardCode: scoreboard?.code ?? null,
     status: match?.status ?? null,
+    startedAt: match?.startedAt ?? null,
+    endedAt: match?.endedAt ?? null,
+    scoreSummary: resultScoreSummary || scoreboardScoreSummary || null,
+    completedSetScores,
     result: serializeMatchResult(match?.result),
     finalizedAt: match?.finalizedAt ?? null,
     finalizedBy: toIdString(match?.finalizedBy),
@@ -1262,7 +1269,7 @@ async function loadMatchesForResponse(query) {
     .populate('teamBId', 'name shortName logoUrl orderIndex seed')
     .populate('refTeamIds', 'name shortName logoUrl orderIndex seed')
     .populate('byeTeamId', 'name shortName logoUrl orderIndex seed')
-    .populate('scoreboardId', 'code')
+    .populate('scoreboardId', 'code teams.score sets')
     .sort({ phase: 1, roundBlock: 1, court: 1, createdAt: 1 })
     .lean();
 
@@ -1984,6 +1991,41 @@ function serializeScoreSummaryFromScoreboard(scoreboard) {
   };
 }
 
+function serializeCompletedSetScoresFromResult(result) {
+  return Array.isArray(result?.setScores)
+    ? result.setScores
+        .slice()
+        .sort((left, right) => (left?.setNo ?? 0) - (right?.setNo ?? 0))
+        .map((set, index) => ({
+          setNo: Number.isFinite(Number(set?.setNo)) ? Number(set.setNo) : index + 1,
+          a: safeNonNegativeNumber(set?.a),
+          b: safeNonNegativeNumber(set?.b),
+        }))
+    : [];
+}
+
+function serializeCompletedSetScoresFromScoreboard(scoreboard) {
+  return Array.isArray(scoreboard?.sets)
+    ? scoreboard.sets
+        .filter((set) => Array.isArray(set?.scores) && set.scores.length === 2)
+        .map((set, index) => ({
+          setNo: index + 1,
+          a: safeNonNegativeNumber(set.scores[0]),
+          b: safeNonNegativeNumber(set.scores[1]),
+        }))
+    : [];
+}
+
+function resolveCompletedSetScores(result, scoreboard) {
+  const fromResult = serializeCompletedSetScoresFromResult(result);
+
+  if (fromResult.length > 0) {
+    return fromResult;
+  }
+
+  return serializeCompletedSetScoresFromScoreboard(scoreboard);
+}
+
 function normalizeMatchStatus(status) {
   const normalized = typeof status === 'string' ? status.trim().toLowerCase() : '';
 
@@ -1993,6 +2035,10 @@ function normalizeMatchStatus(status) {
 
   if (normalized === 'final') {
     return 'final';
+  }
+
+  if (normalized === 'ended') {
+    return 'ended';
   }
 
   return 'scheduled';
@@ -2021,6 +2067,7 @@ function serializeMatchForLiveView(match, tournament, phaseLabels = PHASE_LABELS
   const scoreboard = match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null;
   const resultScore = serializeCourtScheduleScore(match?.result);
   const scoreboardScore = serializeScoreSummaryFromScoreboard(scoreboard);
+  const completedSetScores = resolveCompletedSetScores(match?.result, scoreboard);
 
   return {
     matchId: toIdString(match?._id),
@@ -2036,7 +2083,10 @@ function serializeMatchForLiveView(match, tournament, phaseLabels = PHASE_LABELS
     teamA: formatPublicTeamSnippet(teamA),
     teamB: formatPublicTeamSnippet(teamB),
     status: normalizeMatchStatus(match?.status),
+    startedAt: match?.startedAt ?? null,
+    endedAt: match?.endedAt ?? null,
     scoreSummary: resultScore || scoreboardScore || null,
+    completedSetScores,
     scoreboardCode: scoreboard?.code ?? null,
   };
 }
@@ -2076,9 +2126,10 @@ function serializeMatchForTeamView(match, focusTeamId, tournament, phaseLabels =
   const opponentTeam = isTeamHome ? teamB : teamA;
   const status = normalizeMatchStatus(match?.status);
   const resultScore = serializeCourtScheduleScore(match?.result);
-  const scoreboardScore = serializeScoreSummaryFromScoreboard(
-    match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null
-  );
+  const scoreboard =
+    match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null;
+  const scoreboardScore = serializeScoreSummaryFromScoreboard(scoreboard);
+  const completedSetScores = resolveCompletedSetScores(match?.result, scoreboard);
 
   return {
     matchId: toIdString(match?._id),
@@ -2098,7 +2149,10 @@ function serializeMatchForTeamView(match, focusTeamId, tournament, phaseLabels =
     teamB: formatPublicTeamSnippet(teamB),
     isTeamHome: Boolean(isTeamHome),
     status,
+    startedAt: match?.startedAt ?? null,
+    endedAt: match?.endedAt ?? null,
     scoreSummary: resultScore || scoreboardScore,
+    completedSetScores,
     refBy: Array.isArray(match?.refTeamIds)
       ? match.refTeamIds
           .map((team) => (team && typeof team === 'object' ? { shortName: team.shortName || team.name || 'TBD' } : null))
@@ -2799,7 +2853,9 @@ router.get('/code/:publicCode/live', async (req, res, next) => {
       tournamentId: tournament._id,
       status: 'live',
     })
-      .select('phase bracket roundBlock facility court teamAId teamBId status result scoreboardId')
+      .select(
+        'phase bracket roundBlock facility court teamAId teamBId status startedAt endedAt result scoreboardId'
+      )
       .populate('teamAId', 'name shortName logoUrl')
       .populate('teamBId', 'name shortName logoUrl')
       .populate('scoreboardId', 'code teams.score sets')
@@ -2858,7 +2914,7 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
       ],
     })
       .select(
-        'phase bracket bracketRound roundBlock facility court teamAId teamBId refTeamIds byeTeamId poolId status result scoreboardId createdAt'
+        'phase bracket bracketRound roundBlock facility court teamAId teamBId refTeamIds byeTeamId poolId status startedAt endedAt result scoreboardId createdAt'
       )
       .populate('teamAId', 'name shortName logoUrl')
       .populate('teamBId', 'name shortName logoUrl')
@@ -2912,7 +2968,9 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
       poolName: match?.poolId && typeof match.poolId === 'object' ? (match.poolId.name || null) : null,
     }));
 
-    const nextUp = participantMatches.find((match) => match.status !== 'final') || null;
+    const nextUp = participantMatches.find(
+      (match) => !['ended', 'final'].includes(match.status)
+    ) || null;
 
     return res.json({
       tournament: {

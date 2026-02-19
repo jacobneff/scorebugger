@@ -267,6 +267,10 @@ describe('team links routes', () => {
           pointsA: 11,
           pointsB: 9,
         },
+        completedSetScores: [
+          { setNo: 1, a: 25, b: 18 },
+          { setNo: 2, a: 22, b: 25 },
+        ],
       })
     );
     expect(typeof liveMatchCard.timeLabel).toBe('string');

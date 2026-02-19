@@ -37,6 +37,13 @@ import {
   buildTournamentMatchControlHref,
   getMatchStatusMeta,
 } from '../utils/tournamentMatchControl.js';
+import { formatElapsedTimer } from '../utils/matchTimer.js';
+import {
+  formatSetSummaryWithScores,
+  resolveCompletedSetScores,
+  toSetSummaryFromLiveSummary,
+  toSetSummaryFromScoreSummary,
+} from '../utils/matchSetSummary.js';
 import {
   TEAM_BANK_CONTAINER_ID,
   buildPoolSwapDragId,
@@ -129,7 +136,7 @@ function TeamCardPreview({ team }) {
   );
 }
 
-function PoolSwapHandle({ poolId, disabled }) {
+function PoolSwapHandle({ poolId, disabled, teamCount }) {
   const {
     attributes,
     listeners,
@@ -154,11 +161,11 @@ function PoolSwapHandle({ poolId, disabled }) {
       className={`phase1-pool-swap-handle ${isDragging ? 'is-dragging' : ''}`}
       disabled={disabled}
       style={style}
-      aria-label="Swap all 3 teams with another pool"
+      aria-label={`Swap all ${teamCount} teams with another pool`}
       {...attributes}
       {...listeners}
     >
-      Swap 3 Teams
+      Swap {teamCount} Teams
     </button>
   );
 }
@@ -226,18 +233,30 @@ const formatPointDiff = (value) => {
   const parsed = Number(value) || 0;
   return parsed > 0 ? `+${parsed}` : `${parsed}`;
 };
-const formatLiveSummary = (summary) =>
-  `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
-const formatResultSetScores = (result) => {
-  if (!Array.isArray(result?.setScores) || result.setScores.length === 0) {
-    return '';
-  }
 
-  return result.setScores
-    .slice()
-    .sort((left, right) => (left?.setNo ?? 0) - (right?.setNo ?? 0))
-    .map((set) => `${set?.a ?? 0}-${set?.b ?? 0}`)
-    .join(', ');
+const getPoolRequiredTeamCount = (pool, fallback = 3) => {
+  const parsed = Number(pool?.requiredTeamCount);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+};
+
+const formatLiveSummary = (summary) =>
+  `Live: ${formatSetSummaryWithScores(
+    toSetSummaryFromLiveSummary(summary),
+    summary?.completedSetScores
+  )}`;
+const formatMatchSetSummary = (match) => {
+  const fallbackScoreSummary = {
+    setsA: Number(match?.result?.setsWonA) || 0,
+    setsB: Number(match?.result?.setsWonB) || 0,
+  };
+
+  return formatSetSummaryWithScores(
+    toSetSummaryFromScoreSummary(match?.scoreSummary || fallbackScoreSummary),
+    resolveCompletedSetScores(match)
+  );
 };
 
 function TournamentPhase1Admin() {
@@ -261,6 +280,7 @@ function TournamentPhase1Admin() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
+  const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now());
   const [dragPreviewPools, setDragPreviewPools] = useState(null);
   const [activeDrag, setActiveDrag] = useState(null);
   const dragOriginPoolsRef = useRef(null);
@@ -354,11 +374,6 @@ function TournamentPhase1Admin() {
         loadStandings(),
       ]);
 
-      const formatId =
-        typeof tournamentData?.settings?.format?.formatId === 'string'
-          ? tournamentData.settings.format.formatId.trim()
-          : '';
-
       setTournament(tournamentData);
       setPools(poolData);
       setTeams(teamData);
@@ -399,6 +414,26 @@ function TournamentPhase1Admin() {
   useEffect(() => {
     setLiveSummariesByMatchId({});
   }, [id]);
+
+  const hasLiveTimers = useMemo(
+    () =>
+      matches.some(
+        (match) => match?.status === 'live' && typeof match?.startedAt === 'string' && match.startedAt
+      ),
+    [matches]
+  );
+
+  useEffect(() => {
+    if (!hasLiveTimers) {
+      return undefined;
+    }
+
+    const timerId = window.setInterval(() => {
+      setElapsedNowMs(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [hasLiveTimers]);
 
   const handleTournamentRealtimeEvent = useCallback(
     (event) => {
@@ -461,14 +496,15 @@ function TournamentPhase1Admin() {
   const poolIssues = useMemo(
     () =>
       pools
-        .filter((pool) => pool.teamIds.length !== 3)
+        .filter((pool) => pool.teamIds.length !== getPoolRequiredTeamCount(pool))
         .map((pool) => {
-          if (pool.teamIds.length < 3) {
-            const missing = 3 - pool.teamIds.length;
+          const requiredTeamCount = getPoolRequiredTeamCount(pool);
+          if (pool.teamIds.length < requiredTeamCount) {
+            const missing = requiredTeamCount - pool.teamIds.length;
             return `Pool ${pool.name} needs ${missing} more team${missing === 1 ? '' : 's'}`;
           }
 
-          const extra = pool.teamIds.length - 3;
+          const extra = pool.teamIds.length - requiredTeamCount;
           return `Pool ${pool.name} has ${extra} extra team${extra === 1 ? '' : 's'}`;
         }),
     [pools]
@@ -646,6 +682,7 @@ function TournamentPhase1Admin() {
           id: activeId,
           poolId: sourcePoolId,
           poolName: sourcePool?.name || '',
+          teamCount: getPoolRequiredTeamCount(sourcePool),
         });
         setDragPreviewPools(originPools);
         return;
@@ -1160,7 +1197,7 @@ function TournamentPhase1Admin() {
         )}
         {poolIssues.length > 0 && (
           <p className="error">
-            Each pool must have exactly 3 teams before generating matches. {poolIssues.join('; ')}.
+            Each pool must have its required team count before generating matches. {poolIssues.join('; ')}.
           </p>
         )}
         {courtIssues.length > 0 && (
@@ -1215,12 +1252,13 @@ function TournamentPhase1Admin() {
             <div className="phase1-pool-grid">
               {displayedPools.map((pool) => {
                 const poolTeams = getPoolTeams(pool);
+                const requiredTeamCount = getPoolRequiredTeamCount(pool);
 
                 return (
                   <section
                     key={pool._id}
                     className={`phase1-pool-column ${
-                      poolTeams.length === 3 ? '' : 'phase1-pool-column--invalid'
+                      poolTeams.length === requiredTeamCount ? '' : 'phase1-pool-column--invalid'
                     }`}
                   >
                     <PoolHeaderDropTarget poolId={pool._id} activeSwapPoolId={activeSwapPoolId}>
@@ -1228,6 +1266,7 @@ function TournamentPhase1Admin() {
                         <h2>Pool {pool.name}</h2>
                         <PoolSwapHandle
                           poolId={pool._id}
+                          teamCount={requiredTeamCount}
                           disabled={
                             savingPools ||
                             savingCourtAssignments ||
@@ -1238,7 +1277,7 @@ function TournamentPhase1Admin() {
                         />
                       </div>
                       <p>{pool.homeCourt ? mapCourtLabel(pool.homeCourt) : 'No home court'}</p>
-                      <p className="phase1-pool-count">{poolTeams.length}/3</p>
+                      <p className="phase1-pool-count">{poolTeams.length}/{requiredTeamCount}</p>
                     </PoolHeaderDropTarget>
 
                     <SortableContext
@@ -1273,7 +1312,7 @@ function TournamentPhase1Admin() {
             {activeDrag?.type === 'pool-swap' ? (
               <article className="phase1-pool-swap-overlay">
                 <strong>Pool {activeDrag.poolName || '?'}</strong>
-                <span>Swap 3 Teams</span>
+                <span>Swap {activeDrag.teamCount || 3} Teams</span>
               </article>
             ) : null}
           </DragOverlay>
@@ -1301,11 +1340,20 @@ function TournamentPhase1Admin() {
                         const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
                         const refLabel = formatShortTeamLabel(match?.refTeams?.[0]);
                         const matchStatusMeta = getMatchStatusMeta(match?.status);
-                        const resultSetScores = formatResultSetScores(match?.result);
+                        const liveSummary = match ? liveSummariesByMatchId[match._id] : null;
+                        const setSummaryLine = liveSummary
+                          ? formatLiveSummary(liveSummary)
+                          : formatMatchSetSummary(match);
+                        const liveTimerLabel =
+                          match?.status === 'live' && match?.startedAt
+                            ? formatElapsedTimer(match.startedAt, elapsedNowMs)
+                            : '';
                         const controlPanelHref = buildTournamentMatchControlHref({
                           matchId: match?._id,
                           scoreboardKey,
                           status: match?.status,
+                          startedAt: match?.startedAt,
+                          endedAt: match?.endedAt,
                         });
 
                         return (
@@ -1319,11 +1367,7 @@ function TournamentPhase1Admin() {
                                   )}`}
                                 </p>
                                 <p>Ref: {refLabel}</p>
-                                {liveSummariesByMatchId[match._id] && (
-                                  <p className="subtle">
-                                    {formatLiveSummary(liveSummariesByMatchId[match._id])}
-                                  </p>
-                                )}
+                                <p className="subtle">{setSummaryLine}</p>
                                 {controlPanelHref ? (
                                   <a
                                     href={controlPanelHref}
@@ -1343,12 +1387,9 @@ function TournamentPhase1Admin() {
                                   >
                                     {matchStatusMeta.label}
                                   </span>
-                                  {match.result && (
-                                    <span className="phase1-match-result">
-                                      Sets {match.result.setsWonA}-{match.result.setsWonB}
-                                      {resultSetScores ? ` • ${resultSetScores}` : ''}
-                                    </span>
-                                  )}
+                                  {liveTimerLabel ? (
+                                    <span className="phase1-match-result">LIVE {liveTimerLabel}</span>
+                                  ) : null}
                                 </div>
                                 <div className="phase1-match-actions">
                                   {match.status === 'final' ? (

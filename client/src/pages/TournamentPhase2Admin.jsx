@@ -38,6 +38,13 @@ import {
   buildTournamentMatchControlHref,
   getMatchStatusMeta,
 } from '../utils/tournamentMatchControl.js';
+import { formatElapsedTimer } from '../utils/matchTimer.js';
+import {
+  formatSetSummaryWithScores,
+  resolveCompletedSetScores,
+  toSetSummaryFromLiveSummary,
+  toSetSummaryFromScoreSummary,
+} from '../utils/matchSetSummary.js';
 import {
   buildPoolSwapDragId,
   buildPoolSwapTargetId,
@@ -88,17 +95,20 @@ const formatPointDiff = (value) => {
   return parsed > 0 ? `+${parsed}` : `${parsed}`;
 };
 const formatLiveSummary = (summary) =>
-  `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
-const formatResultSetScores = (result) => {
-  if (!Array.isArray(result?.setScores) || result.setScores.length === 0) {
-    return '';
-  }
+  `Live: ${formatSetSummaryWithScores(
+    toSetSummaryFromLiveSummary(summary),
+    summary?.completedSetScores
+  )}`;
+const formatMatchSetSummary = (match) => {
+  const fallbackScoreSummary = {
+    setsA: Number(match?.result?.setsWonA) || 0,
+    setsB: Number(match?.result?.setsWonB) || 0,
+  };
 
-  return result.setScores
-    .slice()
-    .sort((left, right) => (left?.setNo ?? 0) - (right?.setNo ?? 0))
-    .map((set) => `${set?.a ?? 0}-${set?.b ?? 0}`)
-    .join(', ');
+  return formatSetSummaryWithScores(
+    toSetSummaryFromScoreSummary(match?.scoreSummary || fallbackScoreSummary),
+    resolveCompletedSetScores(match)
+  );
 };
 
 const normalizeStandingsPayload = (payload) => ({
@@ -307,6 +317,7 @@ function TournamentPhase2Admin() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
+  const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now());
 
   const applyPhase1SeedsToPools = useCallback((poolsToSeed, seedLookup) => {
     if (!Array.isArray(poolsToSeed)) {
@@ -477,6 +488,26 @@ function TournamentPhase2Admin() {
   useEffect(() => {
     setLiveSummariesByMatchId({});
   }, [id]);
+
+  const hasLiveTimers = useMemo(
+    () =>
+      matches.some(
+        (match) => match?.status === 'live' && typeof match?.startedAt === 'string' && match.startedAt
+      ),
+    [matches]
+  );
+
+  useEffect(() => {
+    if (!hasLiveTimers) {
+      return undefined;
+    }
+
+    const timerId = window.setInterval(() => {
+      setElapsedNowMs(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [hasLiveTimers]);
 
   const handleTournamentRealtimeEvent = useCallback(
     (event) => {
@@ -1301,11 +1332,20 @@ function TournamentPhase2Admin() {
                         const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
                         const refLabel = formatTeamLabel(match?.refTeams?.[0]);
                         const matchStatusMeta = getMatchStatusMeta(match?.status);
-                        const resultSetScores = formatResultSetScores(match?.result);
+                        const liveSummary = liveSummariesByMatchId[match._id];
+                        const setSummaryLine = liveSummary
+                          ? formatLiveSummary(liveSummary)
+                          : formatMatchSetSummary(match);
+                        const liveTimerLabel =
+                          match?.status === 'live' && match?.startedAt
+                            ? formatElapsedTimer(match.startedAt, elapsedNowMs)
+                            : '';
                         const controlPanelHref = buildTournamentMatchControlHref({
                           matchId: match?._id,
                           scoreboardKey,
                           status: match?.status,
+                          startedAt: match?.startedAt,
+                          endedAt: match?.endedAt,
                         });
 
                         return (
@@ -1317,11 +1357,7 @@ function TournamentPhase2Admin() {
                                   {`: ${formatTeamLabel(match.teamA)} vs ${formatTeamLabel(match.teamB)}`}
                                 </p>
                                 <p>Ref: {refLabel}</p>
-                                {liveSummariesByMatchId[match._id] && (
-                                  <p className="subtle">
-                                    {formatLiveSummary(liveSummariesByMatchId[match._id])}
-                                  </p>
-                                )}
+                                <p className="subtle">{setSummaryLine}</p>
                                 {controlPanelHref ? (
                                   <a
                                     href={controlPanelHref}
@@ -1341,12 +1377,9 @@ function TournamentPhase2Admin() {
                                   >
                                     {matchStatusMeta.label}
                                   </span>
-                                  {match.result && (
-                                    <span className="phase1-match-result">
-                                      Sets {match.result.setsWonA}-{match.result.setsWonB}
-                                      {resultSetScores ? ` • ${resultSetScores}` : ''}
-                                    </span>
-                                  )}
+                                  {liveTimerLabel ? (
+                                    <span className="phase1-match-result">LIVE {liveTimerLabel}</span>
+                                  ) : null}
                                 </div>
                                 <div className="phase1-match-actions">
                                   {match.status === 'final' ? (

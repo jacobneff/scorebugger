@@ -118,13 +118,6 @@ const toIdString = (value) => {
   return String(value);
 };
 
-const toTitleCase = (value) =>
-  String(value || '')
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`)
-    .join(' ');
-
 const getPoolStages = (formatDef) =>
   Array.isArray(formatDef?.stages)
     ? formatDef.stages.filter((stage) => stage?.type === 'poolPlay')

@@ -486,6 +486,8 @@ function TournamentPlayoffsAdmin() {
                           matchId: match?._id,
                           scoreboardKey,
                           status: match?.status,
+                          startedAt: match?.startedAt,
+                          endedAt: match?.endedAt,
                         });
                         const matchStatusMeta = getMatchStatusMeta(match?.status);
                         const refReferenceLabel = getPlayoffRefReferenceLabel(match);

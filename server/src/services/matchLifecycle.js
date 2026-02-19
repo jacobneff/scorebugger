@@ -8,7 +8,7 @@ const {
   emitTournamentEvent,
 } = require('./tournamentRealtime');
 
-const MATCH_STATUSES = ['scheduled', 'live', 'final'];
+const MATCH_STATUSES = ['scheduled', 'live', 'ended', 'final'];
 const normalizeBracket = (value) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
 
@@ -83,6 +83,8 @@ function serializeMatch(match) {
     refTeamIds: Array.isArray(match?.refTeamIds) ? match.refTeamIds.map(toIdString) : [],
     scoreboardId: toIdString(match?.scoreboardId),
     status: match?.status ?? null,
+    startedAt: match?.startedAt ?? null,
+    endedAt: match?.endedAt ?? null,
     result: serializeResult(match?.result),
     finalizedAt: match?.finalizedAt ?? null,
     finalizedBy: toIdString(match?.finalizedBy),
@@ -103,6 +105,8 @@ async function findOwnedTournamentContext(tournamentId, userId) {
 function emitMatchStatusUpdated(io, tournamentCode, match) {
   const matchId = toIdString(match?._id);
   const status = match?.status;
+  const startedAt = match?.startedAt ?? null;
+  const endedAt = match?.endedAt ?? null;
 
   if (!io || !tournamentCode || !matchId || !MATCH_STATUSES.includes(status)) {
     return;
@@ -115,6 +119,8 @@ function emitMatchStatusUpdated(io, tournamentCode, match) {
     {
       matchId,
       status,
+      startedAt,
+      endedAt,
     }
   );
 }
@@ -127,7 +133,7 @@ async function emitAffectedMatchStatusUpdates(io, tournamentCode, matchIds) {
   }
 
   const affectedMatches = await Match.find({ _id: { $in: uniqueIds } })
-    .select('_id status')
+    .select('_id status startedAt endedAt')
     .lean();
 
   affectedMatches.forEach((affectedMatch) => {
@@ -152,9 +158,13 @@ function normalizeAffectedMatchIds(playoffProgression) {
   ];
 }
 
-async function finalizeMatchAndEmit({ match, userId, io, tournamentCode }) {
+async function finalizeMatchAndEmit({ match, userId, io, tournamentCode, override = false }) {
   if (!match?.scoreboardId) {
     throw createHttpError(400, 'Match has no linked scoreboard');
+  }
+
+  if (!override && match.status !== 'ended') {
+    throw createHttpError(409, 'Match must be ended before finalizing');
   }
 
   const scoreboard = await Scoreboard.findById(match.scoreboardId).lean();
@@ -176,6 +186,9 @@ async function finalizeMatchAndEmit({ match, userId, io, tournamentCode }) {
 
   match.result = resultSnapshot;
   match.status = 'final';
+  if (!match.endedAt) {
+    match.endedAt = new Date();
+  }
   match.finalizedAt = new Date();
   match.finalizedBy = userId;
 
@@ -231,7 +244,10 @@ async function unfinalizeMatchAndEmit({ match, io, tournamentCode }) {
   match.result = null;
   match.finalizedAt = null;
   match.finalizedBy = null;
-  match.status = 'scheduled';
+  match.status = 'ended';
+  if (!match.endedAt) {
+    match.endedAt = new Date();
+  }
 
   await match.save();
 
@@ -284,6 +300,7 @@ async function unfinalizeMatchAndEmit({ match, io, tournamentCode }) {
 module.exports = {
   MATCH_STATUSES,
   createHttpError,
+  emitMatchStatusUpdated,
   finalizeMatchAndEmit,
   findOwnedTournamentContext,
   serializeMatch,

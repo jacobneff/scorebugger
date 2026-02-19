@@ -151,6 +151,7 @@ describe('TournamentPublicView', () => {
           teamB: { teamId: 'team-b', shortName: 'BRV', logoUrl: null },
           status: 'live',
           scoreSummary: { setsA: 1, setsB: 0, pointsA: 14, pointsB: 11 },
+          completedSetScores: [{ setNo: 1, a: 25, b: 22 }],
           scoreboardCode: 'ZXC123',
         },
       ],
@@ -161,7 +162,8 @@ describe('TournamentPublicView', () => {
 
     expect(await screen.findByText('LIVE')).toBeInTheDocument();
     expect(screen.getByText('ALP vs BRV')).toBeInTheDocument();
-    expect(screen.getByText('Sets 1-0 • Pts 14-11')).toBeInTheDocument();
+    expect(screen.getByText('Sets 1-0 • 25-22')).toBeInTheDocument();
+    expect(screen.queryByText(/Pts/)).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View match' })).toHaveAttribute(
       'href',
       '/board/ZXC123/display'

@@ -123,6 +123,10 @@ describe('tournament routes', () => {
         lunchStartTime: null,
         lunchDurationMinutes: 45,
       },
+      format: {
+        formatId: null,
+        activeCourts: ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1', 'VC-2'],
+      },
     });
     expect(response.body.teams).toHaveLength(1);
     expect(response.body.teams[0]).toEqual(

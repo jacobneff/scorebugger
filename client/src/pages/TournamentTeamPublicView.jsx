@@ -13,11 +13,7 @@ const REFRESH_EVENT_TYPES = new Set([
 ]);
 
 const PHASE_SECTION_ORDER = ['phase1', 'phase2', 'playoffs'];
-const PHASE_SECTION_LABELS = {
-  phase1: 'Pool Play 1',
-  phase2: 'Pool Play 2',
-  playoffs: 'Playoffs',
-};
+const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 
 const getStatusMeta = (status) => {
   if (status === 'live') {
@@ -167,6 +163,27 @@ function TournamentTeamPublicView() {
     return grouped;
   }, [matches]);
 
+  const formatId =
+    typeof tournament?.settings?.format?.formatId === 'string'
+      ? tournament.settings.format.formatId.trim()
+      : '';
+  const supportsPhase2 = !formatId || formatId === ODU_15_FORMAT_ID;
+  const phaseSectionOrder = useMemo(
+    () =>
+      PHASE_SECTION_ORDER.filter(
+        (phase) => phase !== 'phase2' || supportsPhase2 || (matchesByPhase.phase2 || []).length > 0
+      ),
+    [matchesByPhase.phase2, supportsPhase2]
+  );
+  const phaseSectionLabels = useMemo(
+    () => ({
+      phase1: supportsPhase2 ? 'Pool Play 1' : 'Pool Play',
+      phase2: 'Pool Play 2',
+      playoffs: 'Playoffs',
+    }),
+    [supportsPhase2]
+  );
+
   const finalResults = useMemo(
     () => (Array.isArray(matches) ? matches.filter((match) => match?.status === 'final') : []),
     [matches]
@@ -261,11 +278,11 @@ function TournamentTeamPublicView() {
         <section className="team-public-section">
           <h2 className="secondary-title">My Schedule</h2>
           <div className="team-public-phase-groups">
-            {PHASE_SECTION_ORDER.map((phase) => {
+            {phaseSectionOrder.map((phase) => {
               const phaseMatches = matchesByPhase[phase] || [];
               return (
                 <article key={phase} className="team-public-phase-card">
-                  <h3>{PHASE_SECTION_LABELS[phase]}</h3>
+                  <h3>{phaseSectionLabels[phase]}</h3>
                   {phaseMatches.length === 0 ? (
                     <p className="subtle">No matches yet.</p>
                   ) : (

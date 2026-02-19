@@ -1,9 +1,22 @@
-function TournamentSchedulingTabs({ tournamentId, activeTab, showPhase2 = true }) {
+function TournamentSchedulingTabs({
+  tournamentId,
+  activeTab,
+  showPhase2 = true,
+  phase1Label = 'Pool Play 1',
+  phase1Href = '',
+  phase2Label = 'Pool Play 2',
+  phase2Href = '',
+  playoffsHref = '',
+}) {
   const id = typeof tournamentId === 'string' ? tournamentId.trim() : '';
 
   if (!id) {
     return null;
   }
+
+  const resolvedPhase1Href = phase1Href || `/tournaments/${id}/phase1`;
+  const resolvedPhase2Href = phase2Href || `/tournaments/${id}/phase2`;
+  const resolvedPlayoffsHref = playoffsHref || `/tournaments/${id}/playoffs`;
 
   const tabs = [
     {
@@ -13,21 +26,21 @@ function TournamentSchedulingTabs({ tournamentId, activeTab, showPhase2 = true }
     },
     {
       key: 'phase1',
-      label: 'Pool Play 1',
-      href: `/tournaments/${id}/phase1`,
+      label: phase1Label,
+      href: resolvedPhase1Href,
     },
     {
       key: 'playoffs',
       label: 'Playoffs',
-      href: `/tournaments/${id}/playoffs`,
+      href: resolvedPlayoffsHref,
     },
   ];
 
   if (showPhase2) {
     tabs.splice(2, 0, {
       key: 'phase2',
-      label: 'Pool Play 2',
-      href: `/tournaments/${id}/phase2`,
+      label: phase2Label,
+      href: resolvedPhase2Href,
     });
   }
 

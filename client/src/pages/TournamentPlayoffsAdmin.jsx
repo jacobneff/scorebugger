@@ -11,12 +11,12 @@ import {
   getMatchStatusMeta,
 } from '../utils/tournamentMatchControl.js';
 
-const PLAYOFF_BRACKET_ORDER = ['gold', 'silver', 'bronze'];
 const PLAYOFF_BRACKET_LABELS = {
   gold: 'Gold',
   silver: 'Silver',
   bronze: 'Bronze',
 };
+const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 const PLAYOFF_REF_REFERENCE_LABELS = Object.freeze({
   'gold:R2:1vW45': 'Loser of Gold 2v3',
   'silver:R2:1vW45': 'Loser of Silver 2v3',
@@ -26,6 +26,12 @@ const PLAYOFF_REF_REFERENCE_LABELS = Object.freeze({
   'silver:R3:final': 'Loser of Silver 1 vs W(4/5)',
   'bronze:R3:final': 'Closest loser to university from Bronze 2v3 / Bronze 1 vs W(4/5)',
 });
+const toTitleCase = (value) =>
+  String(value || '')
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`)
+    .join(' ');
 
 const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
@@ -35,6 +41,7 @@ const normalizePlayoffPayload = (payload) => ({
   matches: Array.isArray(payload?.matches) ? payload.matches : [],
   brackets: payload?.brackets && typeof payload.brackets === 'object' ? payload.brackets : {},
   opsSchedule: Array.isArray(payload?.opsSchedule) ? payload.opsSchedule : [],
+  bracketOrder: Array.isArray(payload?.bracketOrder) ? payload.bracketOrder : [],
 });
 
 const formatRefTeamLabel = (team) => team?.shortName || team?.name || 'TBD';
@@ -45,6 +52,15 @@ const PLAYOFF_OVERALL_SEED_OFFSETS = Object.freeze({
 });
 const normalizeBracket = (value) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
+const parseRoundRank = (roundKey) => {
+  const normalized = String(roundKey || '').trim().toUpperCase();
+  const matched = /^R(\d+)$/.exec(normalized);
+  if (!matched) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  return Number(matched[1]);
+};
 const toIdString = (value) => {
   if (!value) {
     return '';
@@ -234,10 +250,19 @@ function TournamentPlayoffsAdmin() {
     onEvent: handleTournamentRealtimeEvent,
   });
 
+  const formatId =
+    typeof tournament?.settings?.format?.formatId === 'string'
+      ? tournament.settings.format.formatId.trim()
+      : '';
+  const isLegacyOduFormat = !formatId || formatId === ODU_15_FORMAT_ID;
+
   const generatePlayoffs = useCallback(
     async (force = false) => {
       const suffix = force ? '?force=true' : '';
-      const response = await fetch(`${API_URL}/api/tournaments/${id}/generate/playoffs${suffix}`, {
+      const endpoint = isLegacyOduFormat
+        ? `${API_URL}/api/tournaments/${id}/generate/playoffs${suffix}`
+        : `${API_URL}/api/tournaments/${id}/stages/playoffs/matches/generate${suffix}`;
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: authHeaders(token),
       });
@@ -258,12 +283,20 @@ function TournamentPlayoffsAdmin() {
         throw new Error(`${payload?.message || 'Unable to generate playoffs'}${details}`);
       }
 
+      if (!isLegacyOduFormat) {
+        const refreshedPlayoffs = await loadPlayoffs();
+        return {
+          requiresForce: false,
+          playoffs: normalizePlayoffPayload(refreshedPlayoffs),
+        };
+      }
+
       return {
         requiresForce: false,
         playoffs: normalizePlayoffPayload(payload),
       };
     },
-    [id, token]
+    [id, isLegacyOduFormat, loadPlayoffs, token]
   );
 
   const handleGeneratePlayoffs = useCallback(async () => {
@@ -396,16 +429,15 @@ function TournamentPlayoffsAdmin() {
           <div>
             <h1 className="title">Playoffs</h1>
             <p className="subtitle">
-              {tournament?.name || 'Tournament'} • Generate Gold/Silver/Bronze brackets and run
-              the fixed ops schedule.
+              {tournament?.name || 'Tournament'} • Generate playoff brackets for the applied format.
             </p>
             <TournamentSchedulingTabs
               tournamentId={id}
               activeTab="playoffs"
-              showPhase2={
-                !tournament?.settings?.format?.formatId ||
-                tournament?.settings?.format?.formatId === 'odu_15_5courts_v1'
-              }
+              showPhase2={isLegacyOduFormat}
+              phase1Label={isLegacyOduFormat ? 'Pool Play 1' : 'Pool Play'}
+              phase1Href={isLegacyOduFormat ? `/tournaments/${id}/phase1` : `/tournaments/${id}/format`}
+              phase2Href={isLegacyOduFormat ? `/tournaments/${id}/phase2` : `/tournaments/${id}/format`}
             />
           </div>
           <div className="phase1-admin-actions">
@@ -553,23 +585,38 @@ function TournamentPlayoffsAdmin() {
           <section className="phase1-standings">
             <h2 className="secondary-title">Bracket View</h2>
             <div className="playoff-bracket-grid">
-              {PLAYOFF_BRACKET_ORDER.map((bracket) => {
+              {(Array.isArray(playoffs.bracketOrder) && playoffs.bracketOrder.length > 0
+                ? playoffs.bracketOrder
+                : Object.keys(playoffs.brackets || [])
+              ).map((bracketKey) => {
+                const bracket = normalizeBracket(bracketKey);
                 const bracketData = playoffs.brackets?.[bracket];
                 if (!bracketData) {
                   return null;
                 }
 
+                const roundOrder =
+                  Array.isArray(bracketData.roundOrder) && bracketData.roundOrder.length > 0
+                    ? bracketData.roundOrder
+                    : Object.keys(bracketData.rounds || {}).sort((left, right) => {
+                        const byRank = parseRoundRank(left) - parseRoundRank(right);
+                        if (byRank !== 0) {
+                          return byRank;
+                        }
+                        return left.localeCompare(right);
+                      });
+
                 return (
                   <article key={bracket} className="phase1-standings-card playoff-bracket-card">
-                    <h3>{PLAYOFF_BRACKET_LABELS[bracket]}</h3>
+                    <h3>{bracketData.label || PLAYOFF_BRACKET_LABELS[bracket] || toTitleCase(bracket)}</h3>
                     <div className="playoff-seed-list">
                       {Array.isArray(bracketData.seeds) && bracketData.seeds.length > 0 ? (
                         bracketData.seeds.map((seedEntry) => (
-                          <p key={`${bracket}-seed-${seedEntry.seed}`}>
+                          <p key={`${bracket}-seed-${seedEntry.seed || seedEntry.bracketSeed}`}>
                             #
                             {Number.isFinite(Number(seedEntry?.overallSeed))
                               ? Number(seedEntry.overallSeed)
-                              : seedEntry.seed}
+                              : seedEntry.seed || seedEntry.bracketSeed}
                             {' '}
                             {formatRefTeamLabel(teamsById[seedEntry.teamId] || seedEntry.team)}
                           </p>
@@ -598,36 +645,34 @@ function TournamentPlayoffsAdmin() {
                           .filter(Boolean)
                       );
 
-                      return ['R1', 'R2', 'R3'].map((roundKey) => {
-                        return (
-                          <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
-                            <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
-                            {(bracketData.rounds?.[roundKey] || []).map((match) => {
-                              const bracketStatusMeta = getMatchStatusMeta(match?.status);
+                      return roundOrder.map((roundKey) => (
+                        <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
+                          <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
+                          {(bracketData.rounds?.[roundKey] || []).map((match) => {
+                            const bracketStatusMeta = getMatchStatusMeta(match?.status);
 
-                              return (
-                                <div key={match._id} className="playoff-round-match">
-                                  <p>{formatBracketMatchSummary(match, seedByTeamId)}</p>
+                            return (
+                              <div key={match._id} className="playoff-round-match">
+                                <p>{formatBracketMatchSummary(match, seedByTeamId)}</p>
+                                <p className="subtle">
+                                  {mapCourtLabel(match.court)} • {bracketStatusMeta.label}
+                                </p>
+                                {liveSummariesByMatchId[match._id] && (
                                   <p className="subtle">
-                                    {mapCourtLabel(match.court)} • {bracketStatusMeta.label}
+                                    {formatLiveSummary(liveSummariesByMatchId[match._id])}
                                   </p>
-                                  {liveSummariesByMatchId[match._id] && (
-                                    <p className="subtle">
-                                      {formatLiveSummary(liveSummariesByMatchId[match._id])}
-                                    </p>
-                                  )}
-                                  {match.result && (
-                                    <p className="subtle">
-                                      Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
-                                      {match.result.pointsForA}-{match.result.pointsForB}
-                                    </p>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        );
-                      });
+                                )}
+                                {match.result && (
+                                  <p className="subtle">
+                                    Sets {match.result.setsWonA}-{match.result.setsWonB} • Pts{' '}
+                                    {match.result.pointsForA}-{match.result.pointsForB}
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ));
                     })()}
                   </article>
                 );

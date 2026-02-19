@@ -1,6 +1,7 @@
 const express = require('express');
 
 const {
+  getFormat,
   listFormats,
   suggestFormats,
 } = require('../tournamentFormats/formatRegistry');
@@ -50,6 +51,18 @@ router.get('/suggest', (req, res) => {
 
   const suggestions = suggestFormats(teamCount, courtCount);
   return res.json(suggestions.map(toFormatSummary));
+});
+
+// GET /api/tournament-formats/:formatId
+router.get('/:formatId', (req, res) => {
+  const formatId = typeof req.params?.formatId === 'string' ? req.params.formatId.trim() : '';
+  const formatDef = getFormat(formatId);
+
+  if (!formatDef) {
+    return res.status(404).json({ message: 'Format not found' });
+  }
+
+  return res.json(formatDef);
 });
 
 module.exports = router;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   DndContext,
   DragOverlay,
@@ -59,6 +59,8 @@ const jsonHeaders = (token) => ({
 const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
 });
+
+const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 
 const formatShortTeamLabel = (team) => team?.shortName || team?.name || 'TBD';
 
@@ -240,6 +242,7 @@ const formatResultSetScores = (result) => {
 
 function TournamentPhase1Admin() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const { token, user, initializing } = useAuth();
 
   const [tournament, setTournament] = useState(null);
@@ -352,6 +355,16 @@ function TournamentPhase1Admin() {
         loadStandings(),
       ]);
 
+      const formatId =
+        typeof tournamentData?.settings?.format?.formatId === 'string'
+          ? tournamentData.settings.format.formatId.trim()
+          : '';
+
+      if (formatId && formatId !== ODU_15_FORMAT_ID) {
+        navigate(`/tournaments/${id}/format`, { replace: true });
+        return;
+      }
+
       setTournament(tournamentData);
       setPools(poolData);
       setTeams(teamData);
@@ -362,7 +375,7 @@ function TournamentPhase1Admin() {
     } finally {
       setLoading(false);
     }
-  }, [fetchJson, id, loadMatches, loadPools, loadStandings, loadTeams, token]);
+  }, [fetchJson, id, loadMatches, loadPools, loadStandings, loadTeams, navigate, token]);
 
   const refreshMatchesAndStandings = useCallback(async () => {
     setStandingsLoading(true);

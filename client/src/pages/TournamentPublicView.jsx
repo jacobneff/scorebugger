@@ -14,7 +14,6 @@ import {
   sortPhase1Pools,
 } from '../utils/phase1.js';
 
-const PLAYOFF_BRACKET_ORDER = ['gold', 'silver', 'bronze'];
 const PLAYOFF_BRACKET_LABELS = {
   gold: 'Gold',
   silver: 'Silver',
@@ -35,6 +34,7 @@ const TOURNAMENT_DETAILS_DEFAULTS = Object.freeze({
   parkingInfo: '',
   mapImageUrls: [],
 });
+const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 
 const normalizePools = (pools) =>
   sortPhase1Pools(pools).map((pool) => ({
@@ -53,6 +53,7 @@ const normalizePlayoffPayload = (payload) => ({
   matches: Array.isArray(payload?.matches) ? payload.matches : [],
   brackets: payload?.brackets && typeof payload.brackets === 'object' ? payload.brackets : {},
   opsSchedule: Array.isArray(payload?.opsSchedule) ? payload.opsSchedule : [],
+  bracketOrder: Array.isArray(payload?.bracketOrder) ? payload.bracketOrder : [],
 });
 
 const formatPointDiff = (value) => {
@@ -78,6 +79,21 @@ const toIdString = (value) => {
 };
 const normalizeBracket = (value) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
+const parseRoundRank = (roundKey) => {
+  const normalized = String(roundKey || '').trim().toUpperCase();
+  const matched = /^R(\d+)$/.exec(normalized);
+  if (!matched) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  return Number(matched[1]);
+};
+const toTitleCase = (value) =>
+  String(value || '')
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`)
+    .join(' ');
 const toOverallSeed = (bracket, bracketSeed) => {
   const seed = Number(bracketSeed);
   const offset = PLAYOFF_OVERALL_SEED_OFFSETS[normalizeBracket(bracket)];
@@ -421,7 +437,12 @@ function TournamentPublicView() {
         if (!phase1StandingsResponse.ok) {
           throw new Error(phase1StandingsPayload?.message || 'Unable to load Pool Play 1 standings');
         }
-        if (!phase2StandingsResponse.ok) {
+        const tournamentFormatId =
+          typeof tournamentPayload?.tournament?.settings?.format?.formatId === 'string'
+            ? tournamentPayload.tournament.settings.format.formatId.trim()
+            : '';
+        const supportsPhase2 = !tournamentFormatId || tournamentFormatId === ODU_15_FORMAT_ID;
+        if (!phase2StandingsResponse.ok && supportsPhase2) {
           throw new Error(phase2StandingsPayload?.message || 'Unable to load Pool Play 2 standings');
         }
         if (!cumulativeStandingsResponse.ok) {
@@ -458,8 +479,14 @@ function TournamentPublicView() {
             overall: Array.isArray(phase1StandingsPayload?.overall) ? phase1StandingsPayload.overall : [],
           },
           phase2: {
-            pools: Array.isArray(phase2StandingsPayload?.pools) ? phase2StandingsPayload.pools : [],
-            overall: Array.isArray(phase2StandingsPayload?.overall) ? phase2StandingsPayload.overall : [],
+            pools:
+              supportsPhase2 && Array.isArray(phase2StandingsPayload?.pools)
+                ? phase2StandingsPayload.pools
+                : [],
+            overall:
+              supportsPhase2 && Array.isArray(phase2StandingsPayload?.overall)
+                ? phase2StandingsPayload.overall
+                : [],
           },
           cumulative: {
             pools: Array.isArray(cumulativeStandingsPayload?.pools)
@@ -589,6 +616,12 @@ function TournamentPublicView() {
   });
 
   const scheduleLookup = useMemo(() => buildPhase1ScheduleLookup(matches), [matches]);
+  const formatId =
+    typeof tournament?.settings?.format?.formatId === 'string'
+      ? tournament.settings.format.formatId.trim()
+      : '';
+  const supportsPhase2 = !formatId || formatId === ODU_15_FORMAT_ID;
+  const phase1Label = supportsPhase2 ? 'Pool Play 1' : 'Pool Play';
   const activeStandings =
     activeStandingsTab === 'phase2'
       ? standingsByPhase.phase2
@@ -631,6 +664,12 @@ function TournamentPublicView() {
   const hasMaps = Array.isArray(details?.mapImageUrls) && details.mapImageUrls.length > 0;
   const hasAnyDetails =
     hasSpecialNotes || hasFacilitiesInfo || hasParkingInfo || hasFood || hasMaps;
+
+  useEffect(() => {
+    if (!supportsPhase2 && activeStandingsTab === 'phase2') {
+      setActiveStandingsTab('phase1');
+    }
+  }, [activeStandingsTab, supportsPhase2]);
 
   if (loading) {
     return (
@@ -834,7 +873,7 @@ function TournamentPublicView() {
             </section>
 
             <section className="phase1-schedule">
-              <h2 className="secondary-title">Pool Play 1 Schedule</h2>
+              <h2 className="secondary-title">{phase1Label} Schedule</h2>
               <div className="phase1-table-wrap">
                 <table className="phase1-schedule-table">
                   <thead>
@@ -898,15 +937,17 @@ function TournamentPublicView() {
                   type="button"
                   onClick={() => setActiveStandingsTab('phase1')}
                 >
-                  Pool Play 1
+                  {phase1Label}
                 </button>
-                <button
-                  className={activeStandingsTab === 'phase2' ? 'primary-button' : 'secondary-button'}
-                  type="button"
-                  onClick={() => setActiveStandingsTab('phase2')}
-                >
-                  Pool Play 2
-                </button>
+                {supportsPhase2 && (
+                  <button
+                    className={activeStandingsTab === 'phase2' ? 'primary-button' : 'secondary-button'}
+                    type="button"
+                    onClick={() => setActiveStandingsTab('phase2')}
+                  >
+                    Pool Play 2
+                  </button>
+                )}
                 <button
                   className={activeStandingsTab === 'cumulative' ? 'primary-button' : 'secondary-button'}
                   type="button"
@@ -955,7 +996,7 @@ function TournamentPublicView() {
               <article className="phase1-standings-card phase1-standings-card--overall">
                 <h3>
                   {activeStandingsTab === 'phase1'
-                    ? 'Pool Play 1 Overall'
+                    ? `${phase1Label} Overall`
                     : activeStandingsTab === 'phase2'
                       ? 'Pool Play 2 Overall'
                       : 'Cumulative Overall'}
@@ -1116,22 +1157,37 @@ function TournamentPublicView() {
               <section className="phase1-standings">
                 <h2 className="secondary-title">Playoff Brackets</h2>
                 <div className="playoff-bracket-grid">
-                  {PLAYOFF_BRACKET_ORDER.map((bracket) => {
+                  {(Array.isArray(playoffs.bracketOrder) && playoffs.bracketOrder.length > 0
+                    ? playoffs.bracketOrder
+                    : Object.keys(playoffs.brackets || [])
+                  ).map((bracketKey) => {
+                    const bracket = normalizeBracket(bracketKey);
                     const bracketData = playoffs.brackets?.[bracket];
                     if (!bracketData) {
                       return null;
                     }
 
+                    const roundOrder =
+                      Array.isArray(bracketData.roundOrder) && bracketData.roundOrder.length > 0
+                        ? bracketData.roundOrder
+                        : Object.keys(bracketData.rounds || {}).sort((left, right) => {
+                            const byRank = parseRoundRank(left) - parseRoundRank(right);
+                            if (byRank !== 0) {
+                              return byRank;
+                            }
+                            return left.localeCompare(right);
+                          });
+
                     return (
                       <article key={bracket} className="phase1-standings-card playoff-bracket-card">
-                        <h3>{PLAYOFF_BRACKET_LABELS[bracket]}</h3>
+                        <h3>{bracketData.label || PLAYOFF_BRACKET_LABELS[bracket] || toTitleCase(bracket)}</h3>
                         <div className="playoff-seed-list">
                           {(bracketData.seeds || []).map((entry) => (
-                            <p key={`${bracket}-seed-${entry.seed}`}>
+                            <p key={`${bracket}-seed-${entry.seed || entry.bracketSeed}`}>
                               #
                               {Number.isFinite(Number(entry?.overallSeed))
                                 ? Number(entry.overallSeed)
-                                : entry.seed}{' '}
+                                : entry.seed || entry.bracketSeed}{' '}
                               {formatTeamName(entry.team)}
                             </p>
                           ))}
@@ -1157,7 +1213,7 @@ function TournamentPublicView() {
                               .filter(Boolean)
                           );
 
-                          return ['R1', 'R2', 'R3'].map((roundKey) => (
+                          return roundOrder.map((roundKey) => (
                             <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
                               <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
                               {(bracketData.rounds?.[roundKey] || []).map((match) => (

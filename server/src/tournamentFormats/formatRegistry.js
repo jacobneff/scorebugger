@@ -15,7 +15,7 @@ const FORMAT_DEFINITIONS = Object.freeze([
       {
         type: 'poolPlay',
         key: 'poolPlay1',
-        displayName: 'Pool Play 1',
+        displayName: 'Pool Play',
         pools: [
           { name: 'A', size: 4, preferredCourtGroup: 'ANY' },
           { name: 'B', size: 4, preferredCourtGroup: 'ANY' },
@@ -56,7 +56,7 @@ const FORMAT_DEFINITIONS = Object.freeze([
       {
         type: 'poolPlay',
         key: 'poolPlay1',
-        displayName: 'Pool Play 1',
+        displayName: 'Pool Play',
         pools: [
           { name: 'A', size: 4, preferredCourtGroup: 'ANY' },
           { name: 'B', size: 4, preferredCourtGroup: 'ANY' },
@@ -169,7 +169,7 @@ const FORMAT_DEFINITIONS = Object.freeze([
       {
         type: 'poolPlay',
         key: 'poolPlay1',
-        displayName: 'Pool Play 1',
+        displayName: 'Pool Play',
         pools: [
           { name: 'A', size: 4, preferredCourtGroup: 'ANY' },
           { name: 'B', size: 4, preferredCourtGroup: 'ANY' },

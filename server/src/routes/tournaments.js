@@ -571,6 +571,62 @@ function getFirstPoolPlayStage(formatDef) {
   return formatDef.stages.find((stage) => stage?.type === 'poolPlay') || null;
 }
 
+function getPoolPlayStages(formatDef) {
+  return Array.isArray(formatDef?.stages)
+    ? formatDef.stages.filter((stage) => stage?.type === 'poolPlay')
+    : [];
+}
+
+function getPlayoffStage(formatDef) {
+  if (!formatDef || !Array.isArray(formatDef.stages)) {
+    return null;
+  }
+
+  return formatDef.stages.find((stage) => stage?.type === 'playoffs') || null;
+}
+
+function toTitleCase(value) {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(' ');
+}
+
+function resolveBracketLabelFromKey(bracketKey) {
+  const normalized = normalizeBracket(bracketKey);
+  return BRACKET_LABELS[normalized] || toTitleCase(normalized) || 'Bracket';
+}
+
+function buildPhaseLabelLookup(formatDef) {
+  const labels = { ...PHASE_LABELS };
+  const poolStages = getPoolPlayStages(formatDef);
+
+  if (isNonEmptyString(poolStages?.[0]?.displayName)) {
+    labels.phase1 = poolStages[0].displayName.trim();
+  }
+
+  if (isNonEmptyString(poolStages?.[1]?.displayName)) {
+    labels.phase2 = poolStages[1].displayName.trim();
+  }
+
+  return labels;
+}
+
+function resolvePhaseLabel(phase, phaseLabels) {
+  const normalizedPhase = typeof phase === 'string' ? phase.trim() : '';
+  if (!normalizedPhase) {
+    return '';
+  }
+
+  return phaseLabels?.[normalizedPhase] || PHASE_LABELS[normalizedPhase] || normalizedPhase;
+}
+
 function buildStageOrderLookup(formatDef) {
   return new Map(
     (Array.isArray(formatDef?.stages) ? formatDef.stages : []).map((stage, index) => [
@@ -1476,48 +1532,330 @@ async function computePlayoffGenerationRanking(tournamentId) {
   };
 }
 
-function sortPlayoffMatches(matches) {
-  const bracketOrder = {
-    gold: 0,
-    silver: 1,
-    bronze: 2,
-  };
-  const roundOrder = {
-    R1: 0,
-    R2: 1,
-    R3: 2,
-  };
+const parseRoundRank = (roundLabel) => {
+  const normalized = typeof roundLabel === 'string' ? roundLabel.trim().toUpperCase() : '';
+  const matched = /^R(\d+)$/.exec(normalized);
+  if (!matched) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  return Number(matched[1]);
+};
+
+function buildBracketOrder(formatDef, matches) {
+  const fromFormat = (getPlayoffStage(formatDef)?.brackets || [])
+    .map((bracketDef) => normalizeBracket(bracketDef?.name))
+    .filter(Boolean);
+  const fromMatches = uniqueValues(
+    (Array.isArray(matches) ? matches : [])
+      .map((match) => normalizeBracket(match?.bracket))
+      .filter(Boolean)
+  );
+
+  return uniqueValues([...fromFormat, ...fromMatches]);
+}
+
+function sortPlayoffMatches(matches, options = {}) {
+  const bracketOrderList = Array.isArray(options?.bracketOrder)
+    ? options.bracketOrder.map((entry) => normalizeBracket(entry)).filter(Boolean)
+    : [];
+  const bracketOrderLookup = new Map(
+    bracketOrderList.map((bracketKey, index) => [bracketKey, index])
+  );
 
   return [...(Array.isArray(matches) ? matches : [])].sort((left, right) => {
+    const leftBracket = normalizeBracket(left?.bracket);
+    const rightBracket = normalizeBracket(right?.bracket);
     const byBracket =
-      (bracketOrder[normalizeBracket(left?.bracket)] ?? Number.MAX_SAFE_INTEGER) -
-      (bracketOrder[normalizeBracket(right?.bracket)] ?? Number.MAX_SAFE_INTEGER);
+      (bracketOrderLookup.get(leftBracket) ?? Number.MAX_SAFE_INTEGER) -
+      (bracketOrderLookup.get(rightBracket) ?? Number.MAX_SAFE_INTEGER);
     if (byBracket !== 0) {
       return byBracket;
     }
 
-    const byRound =
-      (roundOrder[left?.bracketRound] ?? Number.MAX_SAFE_INTEGER) -
-      (roundOrder[right?.bracketRound] ?? Number.MAX_SAFE_INTEGER);
+    const byBracketName = leftBracket.localeCompare(rightBracket);
+    if (byBracketName !== 0) {
+      return byBracketName;
+    }
+
+    const byRound = parseRoundRank(left?.bracketRound) - parseRoundRank(right?.bracketRound);
     if (byRound !== 0) {
       return byRound;
+    }
+
+    const byRoundLabel = String(left?.bracketRound || '').localeCompare(
+      String(right?.bracketRound || '')
+    );
+    if (byRoundLabel !== 0) {
+      return byRoundLabel;
     }
 
     if ((left?.roundBlock || 0) !== (right?.roundBlock || 0)) {
       return (left?.roundBlock || 0) - (right?.roundBlock || 0);
     }
 
-    return String(left?.court || '').localeCompare(String(right?.court || ''));
+    const byCourt = String(left?.court || '').localeCompare(String(right?.court || ''));
+    if (byCourt !== 0) {
+      return byCourt;
+    }
+
+    return String(toIdString(left?._id) || '').localeCompare(String(toIdString(right?._id) || ''));
   });
 }
 
-function buildPlayoffPayload(matches) {
-  const orderedMatches = sortPlayoffMatches(matches);
+function buildLegacyPlayoffPayload(matches) {
+  const bracketOrder = [...PLAYOFF_BRACKETS];
+  const orderedMatches = sortPlayoffMatches(matches, { bracketOrder });
+  const brackets = buildPlayoffBracketView(orderedMatches);
+
+  bracketOrder.forEach((bracketKey) => {
+    if (brackets?.[bracketKey] && !Array.isArray(brackets[bracketKey].roundOrder)) {
+      brackets[bracketKey].roundOrder = ['R1', 'R2', 'R3'];
+    }
+  });
+
   return {
     matches: orderedMatches,
-    brackets: buildPlayoffBracketView(orderedMatches),
+    brackets,
     opsSchedule: buildPlayoffOpsSchedule(orderedMatches),
+    bracketOrder,
   };
+}
+
+function createDynamicRoundLabel(match, bracketLabel) {
+  if (Number.isFinite(Number(match?.seedA)) && Number.isFinite(Number(match?.seedB))) {
+    return `${bracketLabel} ${Number(match.seedA)}v${Number(match.seedB)}`;
+  }
+
+  if (isNonEmptyString(match?.bracketRound)) {
+    return `${bracketLabel} ${match.bracketRound.trim()}`;
+  }
+
+  return bracketLabel;
+}
+
+function resolveTeamName(team) {
+  if (!team) {
+    return 'TBD';
+  }
+
+  if (typeof team === 'string') {
+    const trimmed = team.trim();
+    return trimmed || 'TBD';
+  }
+
+  if (typeof team === 'object') {
+    const shortName =
+      typeof team.shortName === 'string' ? team.shortName.trim() : '';
+    if (shortName) {
+      return shortName;
+    }
+
+    const name = typeof team.name === 'string' ? team.name.trim() : '';
+    if (name) {
+      return name;
+    }
+  }
+
+  return 'TBD';
+}
+
+function buildGenericPlayoffBracketView(matches, bracketOrder, formatDef) {
+  const orderedBracketKeys = uniqueValues(
+    (Array.isArray(bracketOrder) ? bracketOrder : []).map((entry) => normalizeBracket(entry)).filter(Boolean)
+  );
+  const playoffStage = getPlayoffStage(formatDef);
+  const bracketDefsByKey = new Map(
+    (Array.isArray(playoffStage?.brackets) ? playoffStage.brackets : [])
+      .map((bracketDef) => [normalizeBracket(bracketDef?.name), bracketDef])
+      .filter(([bracketKey]) => Boolean(bracketKey))
+  );
+  const bracketState = {};
+  const seedBuckets = new Map();
+
+  orderedBracketKeys.forEach((bracketKey) => {
+    bracketState[bracketKey] = {
+      bracket: bracketKey,
+      label: resolveBracketLabelFromKey(bracketKey),
+      seeds: [],
+      rounds: {},
+      roundOrder: [],
+    };
+    seedBuckets.set(bracketKey, new Map());
+  });
+
+  const ensureBracketState = (bracketKey) => {
+    if (!bracketState[bracketKey]) {
+      bracketState[bracketKey] = {
+        bracket: bracketKey,
+        label: resolveBracketLabelFromKey(bracketKey),
+        seeds: [],
+        rounds: {},
+        roundOrder: [],
+      };
+      seedBuckets.set(bracketKey, new Map());
+    }
+    return bracketState[bracketKey];
+  };
+
+  const addSeedEntry = (bracketKey, bracketSeed, teamId, team) => {
+    const normalizedBracketKey = normalizeBracket(bracketKey);
+    const parsedBracketSeed = Number(bracketSeed);
+    const normalizedTeamId = toIdString(teamId);
+
+    if (!Number.isFinite(parsedBracketSeed) || !normalizedTeamId) {
+      return;
+    }
+
+    const bucket = seedBuckets.get(normalizedBracketKey);
+    if (!bucket) {
+      return;
+    }
+
+    const bracketDef = bracketDefsByKey.get(normalizedBracketKey);
+    const seedsFromOverall = Array.isArray(bracketDef?.seedsFromOverall)
+      ? bracketDef.seedsFromOverall
+      : [];
+    const overallSeed = Number(seedsFromOverall[parsedBracketSeed - 1]);
+
+    bucket.set(parsedBracketSeed, {
+      seed: Number.isFinite(overallSeed) ? overallSeed : parsedBracketSeed,
+      bracketSeed: parsedBracketSeed,
+      overallSeed: Number.isFinite(overallSeed) ? overallSeed : null,
+      teamId: normalizedTeamId,
+      team,
+    });
+  };
+
+  (Array.isArray(matches) ? matches : []).forEach((match) => {
+    const bracketKey = normalizeBracket(match?.bracket);
+    if (!bracketKey) {
+      return;
+    }
+
+    const currentBracketState = ensureBracketState(bracketKey);
+    const roundKey = isNonEmptyString(match?.bracketRound) ? match.bracketRound.trim() : 'R1';
+
+    if (!Array.isArray(currentBracketState.rounds[roundKey])) {
+      currentBracketState.rounds[roundKey] = [];
+    }
+    currentBracketState.rounds[roundKey].push(match);
+
+    addSeedEntry(bracketKey, match?.seedA, match?.teamAId?._id || match?.teamAId, match?.teamA);
+    addSeedEntry(bracketKey, match?.seedB, match?.teamBId?._id || match?.teamBId, match?.teamB);
+  });
+
+  Object.keys(bracketState).forEach((bracketKey) => {
+    const bucket = seedBuckets.get(bracketKey);
+    const state = bracketState[bracketKey];
+    state.seeds = bucket
+      ? [...bucket.values()].sort(
+          (left, right) => (left?.bracketSeed ?? Number.MAX_SAFE_INTEGER) - (right?.bracketSeed ?? Number.MAX_SAFE_INTEGER)
+        )
+      : [];
+    state.roundOrder = Object.keys(state.rounds).sort((left, right) => {
+      const byRank = parseRoundRank(left) - parseRoundRank(right);
+      if (byRank !== 0) {
+        return byRank;
+      }
+      return left.localeCompare(right);
+    });
+    state.roundOrder.forEach((roundKey) => {
+      state.rounds[roundKey].sort((left, right) => {
+        const bySeedA = (Number(left?.seedA) || Number.MAX_SAFE_INTEGER) - (Number(right?.seedA) || Number.MAX_SAFE_INTEGER);
+        if (bySeedA !== 0) {
+          return bySeedA;
+        }
+
+        return String(left?.bracketMatchKey || '').localeCompare(String(right?.bracketMatchKey || ''));
+      });
+    });
+  });
+
+  return bracketState;
+}
+
+function buildGenericPlayoffOpsSchedule(matches, bracketView) {
+  const orderedRoundBlocks = uniqueValues(
+    (Array.isArray(matches) ? matches : [])
+      .map((match) => Number(match?.roundBlock))
+      .filter((roundBlock) => Number.isFinite(roundBlock))
+      .map((roundBlock) => Math.floor(roundBlock))
+      .sort((left, right) => left - right)
+  );
+  const labelByBracket = new Map(
+    Object.entries(bracketView || {}).map(([key, value]) => [
+      normalizeBracket(key),
+      value?.label || resolveBracketLabelFromKey(key),
+    ])
+  );
+
+  return orderedRoundBlocks.map((roundBlock, index) => {
+    const slots = (Array.isArray(matches) ? matches : [])
+      .filter((match) => Number(match?.roundBlock) === roundBlock)
+      .sort((left, right) => {
+        const byCourt = String(left?.court || '').localeCompare(String(right?.court || ''));
+        if (byCourt !== 0) {
+          return byCourt;
+        }
+
+        const byBracket = normalizeBracket(left?.bracket).localeCompare(normalizeBracket(right?.bracket));
+        if (byBracket !== 0) {
+          return byBracket;
+        }
+
+        return String(left?.bracketMatchKey || '').localeCompare(String(right?.bracketMatchKey || ''));
+      })
+      .map((match) => {
+        const bracketKey = normalizeBracket(match?.bracket);
+        const bracketLabel = labelByBracket.get(bracketKey) || resolveBracketLabelFromKey(bracketKey);
+        return {
+          roundBlock,
+          facility: match?.facility || getFacilityFromCourt(match?.court),
+          court: match?.court || null,
+          matchId: match?._id || null,
+          matchLabel: createDynamicRoundLabel(match, bracketLabel),
+          bracket: match?.bracket || null,
+          bracketRound: match?.bracketRound || null,
+          teams: {
+            a: resolveTeamName(match?.teamA),
+            b: resolveTeamName(match?.teamB),
+          },
+          refs:
+            Array.isArray(match?.refTeams) && match.refTeams.length > 0
+              ? match.refTeams.map((team) => resolveTeamName(team))
+              : [],
+          status: match?.status || null,
+        };
+      });
+
+    return {
+      roundBlock,
+      label: `Playoff Round ${index + 1}`,
+      slots,
+    };
+  });
+}
+
+function buildGenericPlayoffPayload(matches, formatDef) {
+  const bracketOrder = buildBracketOrder(formatDef, matches);
+  const orderedMatches = sortPlayoffMatches(matches, { bracketOrder });
+  const brackets = buildGenericPlayoffBracketView(orderedMatches, bracketOrder, formatDef);
+
+  return {
+    matches: orderedMatches,
+    brackets,
+    opsSchedule: buildGenericPlayoffOpsSchedule(orderedMatches, brackets),
+    bracketOrder,
+  };
+}
+
+function buildFormatAwarePlayoffPayload(matches, formatDef) {
+  if (!formatDef || formatDef?.id === DEFAULT_15_TEAM_FORMAT_ID) {
+    return buildLegacyPlayoffPayload(matches);
+  }
+
+  return buildGenericPlayoffPayload(matches, formatDef);
 }
 
 function getPhaseSortOrder(phase) {
@@ -1557,11 +1895,11 @@ function serializeCourtScheduleScore(result) {
   };
 }
 
-function serializeMatchForCourtSchedule(match) {
+function serializeMatchForCourtSchedule(match, phaseLabels = PHASE_LABELS) {
   return {
     matchId: toIdString(match?._id),
     phase: match?.phase ?? null,
-    phaseLabel: PHASE_LABELS[match?.phase] || match?.phase || '',
+    phaseLabel: resolvePhaseLabel(match?.phase, phaseLabels),
     roundBlock: match?.roundBlock ?? null,
     poolName: match?.poolId?.name ?? null,
     status: match?.status ?? 'scheduled',
@@ -1674,7 +2012,7 @@ function resolveFacilityLabel(match) {
   return FACILITY_LABELS[facilityCode] || facilityCode || '';
 }
 
-function serializeMatchForLiveView(match, tournament) {
+function serializeMatchForLiveView(match, tournament, phaseLabels = PHASE_LABELS) {
   const teamA = match?.teamAId && typeof match.teamAId === 'object' ? match.teamAId : null;
   const teamB = match?.teamBId && typeof match.teamBId === 'object' ? match.teamBId : null;
   const scoreboard = match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null;
@@ -1684,7 +2022,7 @@ function serializeMatchForLiveView(match, tournament) {
   return {
     matchId: toIdString(match?._id),
     phase: match?.phase ?? null,
-    phaseLabel: PHASE_LABELS[match?.phase] || match?.phase || '',
+    phaseLabel: resolvePhaseLabel(match?.phase, phaseLabels),
     bracket: match?.bracket ?? null,
     roundBlock: match?.roundBlock ?? null,
     timeLabel: formatRoundBlockStartTime(match?.roundBlock, tournament),
@@ -1725,7 +2063,7 @@ function sortLiveMatchCards(matchCards) {
   });
 }
 
-function serializeMatchForTeamView(match, focusTeamId, tournament) {
+function serializeMatchForTeamView(match, focusTeamId, tournament, phaseLabels = PHASE_LABELS) {
   const teamA = match?.teamAId && typeof match.teamAId === 'object' ? match.teamAId : null;
   const teamB = match?.teamBId && typeof match.teamBId === 'object' ? match.teamBId : null;
   const teamAId = toIdString(teamA?._id || match?.teamAId);
@@ -1742,7 +2080,7 @@ function serializeMatchForTeamView(match, focusTeamId, tournament) {
   return {
     matchId: toIdString(match?._id),
     phase: match?.phase ?? null,
-    phaseLabel: PHASE_LABELS[match?.phase] || match?.phase || '',
+    phaseLabel: resolvePhaseLabel(match?.phase, phaseLabels),
     bracket: match?.bracket ?? null,
     bracketLabel: BRACKET_LABELS[normalizeBracket(match?.bracket)] || null,
     roundLabel: match?.bracketRound ?? null,
@@ -2318,6 +2656,10 @@ router.get('/code/:publicCode', async (req, res, next) => {
       .lean();
     teams.sort(compareTeamsByTournamentOrder);
 
+    const tournamentWithDefaults = attachTournamentScheduleDefaults(tournament, {
+      teamCount: teams.length,
+    });
+
     return res.json({
       tournament: {
         id: tournament._id.toString(),
@@ -2328,6 +2670,14 @@ router.get('/code/:publicCode', async (req, res, next) => {
         facilities: tournament.facilities,
         settings: {
           schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+          format:
+            tournamentWithDefaults?.settings?.format &&
+            typeof tournamentWithDefaults.settings.format === 'object'
+              ? tournamentWithDefaults.settings.format
+              : {
+                  formatId: null,
+                  activeCourts: [],
+                },
         },
         publicCode: tournament.publicCode,
       },
@@ -2386,12 +2736,16 @@ router.get('/code/:publicCode/live', async (req, res, next) => {
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id timezone settings.schedule')
+      .select('_id timezone settings.schedule settings.format facilities')
       .lean();
 
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found' });
     }
+
+    const teamCount = await TournamentTeam.countDocuments({ tournamentId: tournament._id });
+    const formatContext = getTournamentFormatContext(tournament, teamCount);
+    const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
 
     const liveMatches = await Match.find({
       tournamentId: tournament._id,
@@ -2404,7 +2758,7 @@ router.get('/code/:publicCode/live', async (req, res, next) => {
       .lean();
 
     const cards = sortLiveMatchCards(
-      liveMatches.map((match) => serializeMatchForLiveView(match, tournament))
+      liveMatches.map((match) => serializeMatchForLiveView(match, tournament, phaseLabels))
     );
 
     return res.json(cards);
@@ -2424,12 +2778,16 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id name date timezone publicCode facilities settings.schedule')
+      .select('_id name date timezone publicCode facilities settings.schedule settings.format')
       .lean();
 
     if (!tournament) {
       return res.status(404).json({ message: 'Not found' });
     }
+
+    const teamCount = await TournamentTeam.countDocuments({ tournamentId: tournament._id });
+    const formatContext = getTournamentFormatContext(tournament, teamCount);
+    const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
 
     const team = await TournamentTeam.findOne({
       tournamentId: tournament._id,
@@ -2473,7 +2831,9 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
         const teamBId = toIdString(match?.teamBId?._id || match?.teamBId);
         return teamAId === teamId || teamBId === teamId;
       })
-    ).map((match) => serializeMatchForTeamView(match, teamId, tournamentForTimeLabels));
+    ).map((match) =>
+      serializeMatchForTeamView(match, teamId, tournamentForTimeLabels, phaseLabels)
+    );
 
     const refAssignments = sortMatchesForCourtSchedule(
       relevantMatches.filter((match) =>
@@ -2481,7 +2841,9 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
           ? match.refTeamIds.some((refTeam) => toIdString(refTeam?._id || refTeam) === teamId)
           : false
       )
-    ).map((match) => serializeMatchForTeamView(match, teamId, tournamentForTimeLabels));
+    ).map((match) =>
+      serializeMatchForTeamView(match, teamId, tournamentForTimeLabels, phaseLabels)
+    );
 
     const nextUp = participantMatches.find((match) => match.status !== 'final') || null;
 
@@ -2503,6 +2865,10 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
         }),
         settings: {
           schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+          format: {
+            formatId: formatContext.formatId,
+            activeCourts: formatContext.activeCourts,
+          },
         },
       },
       team: {
@@ -2528,7 +2894,9 @@ router.get('/code/:publicCode/courts', async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament code' });
     }
 
-    const tournament = await Tournament.findOne({ publicCode }).select('_id').lean();
+    const tournament = await Tournament.findOne({ publicCode })
+      .select('_id settings.format facilities')
+      .lean();
 
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found' });
@@ -2560,11 +2928,17 @@ router.get('/code/:publicCode/courts/:courtCode/schedule', async (req, res, next
       return res.status(400).json({ message: 'Invalid court code' });
     }
 
-    const tournament = await Tournament.findOne({ publicCode }).select('_id').lean();
+    const tournament = await Tournament.findOne({ publicCode })
+      .select('_id settings.format facilities')
+      .lean();
 
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found' });
     }
+
+    const teamCount = await TournamentTeam.countDocuments({ tournamentId: tournament._id });
+    const formatContext = getTournamentFormatContext(tournament, teamCount);
+    const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
 
     const matches = await Match.find({
       tournamentId: tournament._id,
@@ -2577,7 +2951,9 @@ router.get('/code/:publicCode/courts/:courtCode/schedule', async (req, res, next
       .populate('refTeamIds', 'name shortName')
       .lean();
 
-    const orderedMatches = sortMatchesForCourtSchedule(matches).map(serializeMatchForCourtSchedule);
+    const orderedMatches = sortMatchesForCourtSchedule(matches).map((match) =>
+      serializeMatchForCourtSchedule(match, phaseLabels)
+    );
 
     return res.json({
       court: {
@@ -2680,19 +3056,22 @@ router.get('/code/:publicCode/playoffs', async (req, res, next) => {
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id name timezone status publicCode settings.schedule')
+      .select('_id name timezone status publicCode settings.schedule settings.format facilities')
       .lean();
 
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found' });
     }
 
+    const teamCount = await TournamentTeam.countDocuments({ tournamentId: tournament._id });
+    const formatContext = getTournamentFormatContext(tournament, teamCount);
+
     const matches = await loadMatchesForResponse({
       tournamentId: tournament._id,
       phase: 'playoffs',
     });
     const sanitizedMatches = matches.map(sanitizePlayoffMatchForPublic);
-    const payload = buildPlayoffPayload(sanitizedMatches);
+    const payload = buildFormatAwarePlayoffPayload(sanitizedMatches, formatContext.formatDef);
 
     return res.json({
       tournament: {
@@ -2702,6 +3081,10 @@ router.get('/code/:publicCode/playoffs', async (req, res, next) => {
         status: tournament.status,
         settings: {
           schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+          format: {
+            formatId: formatContext.formatId,
+            activeCourts: formatContext.activeCourts,
+          },
         },
         publicCode: tournament.publicCode,
       },
@@ -3124,6 +3507,129 @@ router.post('/:id/apply-format', requireAuth, async (req, res, next) => {
       activeCourts,
       pools: serializedPools,
     });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/:id/stages/:stageKey/pools -> list pools for a format stage
+router.get('/:id/stages/:stageKey/pools', requireAuth, async (req, res, next) => {
+  try {
+    const { id, stageKey } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    if (!isNonEmptyString(stageKey)) {
+      return res.status(400).json({ message: 'stageKey is required' });
+    }
+
+    const ownedContext = await getOwnedTournamentAndTeamCount(
+      id,
+      req.user.id,
+      'settings facilities'
+    );
+
+    if (!ownedContext) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const formatContext = getTournamentFormatContext(
+      ownedContext.tournament,
+      ownedContext.teamCount
+    );
+
+    if (!formatContext.formatDef) {
+      return res.status(400).json({ message: 'No tournament format has been applied yet' });
+    }
+
+    const stageDef = resolveStage(formatContext.formatDef, stageKey.trim());
+
+    if (!stageDef) {
+      return res.status(404).json({ message: 'Unknown stageKey for current format' });
+    }
+
+    if (stageDef.type !== 'poolPlay') {
+      return res.status(400).json({
+        message: `Stage ${stageDef.key} does not define pools`,
+      });
+    }
+
+    const phase = resolvePoolPhase(formatContext.formatDef, stageDef.key, stageDef);
+    const stagePoolNames = Array.isArray(stageDef.pools)
+      ? stageDef.pools.map((poolDef) => poolDef.name).filter(Boolean)
+      : [];
+    const pools = await Pool.find({
+      tournamentId: id,
+      phase,
+      name: { $in: stagePoolNames },
+      $or: [{ stageKey: stageDef.key }, { stageKey: null }, { stageKey: { $exists: false } }],
+    })
+      .populate('teamIds', 'name shortName logoUrl orderIndex seed')
+      .lean();
+    const orderLookup = new Map(stagePoolNames.map((poolName, index) => [poolName, index]));
+
+    return res.json(
+      pools
+        .sort((left, right) => {
+          const leftOrder = orderLookup.get(String(left?.name || '')) ?? Number.MAX_SAFE_INTEGER;
+          const rightOrder =
+            orderLookup.get(String(right?.name || '')) ?? Number.MAX_SAFE_INTEGER;
+          if (leftOrder !== rightOrder) {
+            return leftOrder - rightOrder;
+          }
+          return String(left?.name || '').localeCompare(String(right?.name || ''));
+        })
+        .map(serializePool)
+    );
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/:id/stages/:stageKey/matches -> list matches for a format stage
+router.get('/:id/stages/:stageKey/matches', requireAuth, async (req, res, next) => {
+  try {
+    const { id, stageKey } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    if (!isNonEmptyString(stageKey)) {
+      return res.status(400).json({ message: 'stageKey is required' });
+    }
+
+    const ownedContext = await getOwnedTournamentAndTeamCount(
+      id,
+      req.user.id,
+      'settings facilities'
+    );
+
+    if (!ownedContext) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const formatContext = getTournamentFormatContext(
+      ownedContext.tournament,
+      ownedContext.teamCount
+    );
+
+    if (!formatContext.formatDef) {
+      return res.status(400).json({ message: 'No tournament format has been applied yet' });
+    }
+
+    const stageDef = resolveStage(formatContext.formatDef, stageKey.trim());
+
+    if (!stageDef) {
+      return res.status(404).json({ message: 'Unknown stageKey for current format' });
+    }
+
+    const stageMatchQuery = buildMatchQueryForStage(id, formatContext.formatDef, stageDef);
+    const matches = await loadMatchesForResponse(stageMatchQuery);
+
+    return res.json(matches);
   } catch (error) {
     return next(error);
   }
@@ -4348,7 +4854,7 @@ async function handleGenerateLegacyPlayoffs(req, res, next) {
     await ensureTournamentStatusAtLeast(id, 'playoffs');
 
     const createdMatches = await loadMatchesForResponse({ _id: { $in: createdMatchIds } });
-    const payload = buildPlayoffPayload(createdMatches);
+    const payload = buildLegacyPlayoffPayload(createdMatches);
     emitTournamentEventFromRequest(
       req,
       tournament.publicCode,
@@ -4401,18 +4907,26 @@ router.get('/:id/playoffs', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const ownedContext = await getOwnedTournamentAndTeamCount(
+      id,
+      req.user.id,
+      'settings facilities'
+    );
 
-    if (!ownedTournament) {
+    if (!ownedContext) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
+    const formatContext = getTournamentFormatContext(
+      ownedContext.tournament,
+      ownedContext.teamCount
+    );
 
     const playoffMatches = await loadMatchesForResponse({
       tournamentId: id,
       phase: 'playoffs',
     });
 
-    return res.json(buildPlayoffPayload(playoffMatches));
+    return res.json(buildFormatAwarePlayoffPayload(playoffMatches, formatContext.formatDef));
   } catch (error) {
     return next(error);
   }
@@ -4427,17 +4941,25 @@ router.get('/:id/playoffs/ops', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const ownedContext = await getOwnedTournamentAndTeamCount(
+      id,
+      req.user.id,
+      'settings facilities'
+    );
 
-    if (!ownedTournament) {
+    if (!ownedContext) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
+    const formatContext = getTournamentFormatContext(
+      ownedContext.tournament,
+      ownedContext.teamCount
+    );
 
     const playoffMatches = await loadMatchesForResponse({
       tournamentId: id,
       phase: 'playoffs',
     });
-    const payload = buildPlayoffPayload(playoffMatches);
+    const payload = buildFormatAwarePlayoffPayload(playoffMatches, formatContext.formatDef);
 
     return res.json({
       roundBlocks: payload.opsSchedule,

@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Pool = require('../models/Pool');
 const Tournament = require('../models/Tournament');
 const TournamentTeam = require('../models/TournamentTeam');
+const { DEFAULT_15_TEAM_FORMAT_ID, getFormat } = require('../tournamentFormats/formatRegistry');
 const { requireAuth } = require('../middleware/auth');
 const { recomputePhase2RematchWarnings } = require('../services/phase2');
 const { normalizeCourtCode } = require('../services/phase1');
@@ -17,6 +18,7 @@ const router = express.Router();
 const isObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
 const toIdString = (value) => (value ? value.toString() : null);
+const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 
 const serializeTeam = (team) => ({
   _id: toIdString(team?._id),
@@ -50,6 +52,62 @@ const serializePool = (pool) => ({
   createdAt: pool?.createdAt ?? null,
   updatedAt: pool?.updatedAt ?? null,
 });
+
+async function resolveRequiredTeamCountFromFormat(pool, tournament) {
+  if (!pool || !tournament) {
+    return null;
+  }
+
+  const explicitFormatId = isNonEmptyString(tournament?.settings?.format?.formatId)
+    ? tournament.settings.format.formatId.trim()
+    : '';
+  let formatId = explicitFormatId;
+
+  if (!formatId) {
+    const teamCount = await TournamentTeam.countDocuments({ tournamentId: pool.tournamentId });
+    if (Number(teamCount) === 15) {
+      formatId = DEFAULT_15_TEAM_FORMAT_ID;
+    }
+  }
+
+  if (!formatId) {
+    return null;
+  }
+
+  const formatDef = getFormat(formatId);
+  if (!formatDef || !Array.isArray(formatDef.stages)) {
+    return null;
+  }
+
+  const poolPlayStages = formatDef.stages.filter((stage) => stage?.type === 'poolPlay');
+  const normalizedStageKey = isNonEmptyString(pool?.stageKey) ? pool.stageKey.trim() : '';
+  let stageDef =
+    normalizedStageKey &&
+    poolPlayStages.find((stage) => isNonEmptyString(stage?.key) && stage.key === normalizedStageKey);
+
+  if (!stageDef) {
+    if (pool?.phase === 'phase2') {
+      stageDef = poolPlayStages[1] || null;
+    } else {
+      stageDef = poolPlayStages[0] || null;
+    }
+  }
+
+  if (!stageDef || !Array.isArray(stageDef.pools)) {
+    return null;
+  }
+
+  const poolDef = stageDef.pools.find(
+    (entry) => isNonEmptyString(entry?.name) && entry.name === pool?.name
+  );
+  const size = Number(poolDef?.size);
+
+  if (!Number.isFinite(size) || size <= 0) {
+    return null;
+  }
+
+  return Math.floor(size);
+}
 
 // PATCH /api/pools/:poolId -> update ordered teams in a pool
 router.patch('/:poolId', requireAuth, async (req, res, next) => {
@@ -97,26 +155,32 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
       return res.status(404).json({ message: 'Pool not found' });
     }
 
-    const requiredTeamCount =
+    const ownedTournament = await Tournament.findOne({
+      _id: pool.tournamentId,
+      createdByUserId: req.user.id,
+    })
+      .select('_id publicCode facilities settings.format')
+      .lean();
+
+    if (!ownedTournament) {
+      return res.status(404).json({ message: 'Pool not found or unauthorized' });
+    }
+
+    const requiredTeamCountFromPool =
       Number.isFinite(Number(pool?.requiredTeamCount)) && Number(pool.requiredTeamCount) > 0
         ? Math.floor(Number(pool.requiredTeamCount))
-        : 3;
+        : null;
+    const requiredTeamCountFromFormat = await resolveRequiredTeamCountFromFormat(
+      pool,
+      ownedTournament
+    );
+    const requiredTeamCount =
+      requiredTeamCountFromPool || requiredTeamCountFromFormat || 3;
 
     if (hasTeamIds && nextTeamIds.length > requiredTeamCount) {
       return res.status(400).json({
         message: `A pool can include at most ${requiredTeamCount} teams`,
       });
-    }
-
-    const ownedTournament = await Tournament.findOne({
-      _id: pool.tournamentId,
-      createdByUserId: req.user.id,
-    })
-      .select('_id publicCode facilities')
-      .lean();
-
-    if (!ownedTournament) {
-      return res.status(404).json({ message: 'Pool not found or unauthorized' });
     }
 
     const availableCourtSet = new Set(

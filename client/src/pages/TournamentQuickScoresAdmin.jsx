@@ -11,11 +11,20 @@ import {
   toSetScoreChips,
 } from '../utils/setScoreInput.js';
 
-const PHASE_OPTIONS = [
-  { value: 'phase1', label: 'Pool Play 1' },
-  { value: 'phase2', label: 'Pool Play 2' },
-  { value: 'playoffs', label: 'Playoffs' },
-];
+const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
+const buildPhaseOptions = (formatId) => {
+  const supportsPhase2 = !formatId || formatId === ODU_15_FORMAT_ID;
+  const options = [
+    { value: 'phase1', label: supportsPhase2 ? 'Pool Play 1' : 'Pool Play' },
+  ];
+
+  if (supportsPhase2) {
+    options.push({ value: 'phase2', label: 'Pool Play 2' });
+  }
+
+  options.push({ value: 'playoffs', label: 'Playoffs' });
+  return options;
+};
 
 const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
@@ -269,9 +278,24 @@ function TournamentQuickScoresAdmin() {
     onEvent: handleTournamentRealtimeEvent,
   });
 
+  const formatId =
+    typeof tournament?.settings?.format?.formatId === 'string'
+      ? tournament.settings.format.formatId.trim()
+      : '';
+  const phaseOptions = useMemo(() => buildPhaseOptions(formatId), [formatId]);
+
+  useEffect(() => {
+    const hasActivePhase = phaseOptions.some((option) => option.value === phase);
+    if (!hasActivePhase) {
+      setPhase(phaseOptions[0]?.value || 'phase1');
+      setRoundBlockFilter('');
+      setCourtFilter('');
+    }
+  }, [phase, phaseOptions]);
+
   const phaseLabel = useMemo(
-    () => PHASE_OPTIONS.find((option) => option.value === phase)?.label || 'Pool Play 1',
-    [phase]
+    () => phaseOptions.find((option) => option.value === phase)?.label || 'Pool Play',
+    [phase, phaseOptions]
   );
 
   const getNextEditableMatchId = useCallback(
@@ -521,12 +545,14 @@ function TournamentQuickScoresAdmin() {
             </p>
           </div>
           <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${id}/phase1`}>
-              Pool Play 1
+            <a className="secondary-button" href={`/tournaments/${id}/format`}>
+              {phaseOptions[0]?.label || 'Pool Play'}
             </a>
-            <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-              Pool Play 2
-            </a>
+            {phaseOptions.some((option) => option.value === 'phase2') && (
+              <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
+                Pool Play 2
+              </a>
+            )}
             <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
               Playoffs
             </a>
@@ -544,7 +570,7 @@ function TournamentQuickScoresAdmin() {
                 setCourtFilter('');
               }}
             >
-              {PHASE_OPTIONS.map((option) => (
+              {phaseOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>

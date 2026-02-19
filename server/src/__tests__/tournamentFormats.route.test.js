@@ -117,6 +117,17 @@ describe('tournament format routes + apply-format flow', () => {
     expect(sixteenTeamsResponse.body.map((entry) => entry.id)).toContain(FORMAT_16_ID);
   });
 
+  test('GET /api/tournament-formats/:formatId returns full format definition', async () => {
+    const response = await request(app).get(`/api/tournament-formats/${FORMAT_14_ID}`);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.id).toBe(FORMAT_14_ID);
+    expect(Array.isArray(response.body.stages)).toBe(true);
+    expect(response.body.stages.map((stage) => stage.key)).toEqual(
+      expect.arrayContaining(['poolPlay1', 'crossover', 'playoffs'])
+    );
+  });
+
   test.each([
     {
       label: '12-team format',
@@ -165,6 +176,28 @@ describe('tournament format routes + apply-format flow', () => {
     expect(response.body.pools.every((pool) => Array.isArray(pool.teamIds) && pool.teamIds.length === 0)).toBe(
       true
     );
+  });
+
+  test('stage pools endpoint returns ordered 14-team pool capacities', async () => {
+    const tournament = await createOwnedTournament('stage-pools');
+    await seedTeams(tournament._id, 14);
+
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({
+        formatId: FORMAT_14_ID,
+      });
+
+    expect(apply.statusCode).toBe(200);
+
+    const stagePools = await request(app)
+      .get(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools`)
+      .set(authHeader());
+
+    expect(stagePools.statusCode).toBe(200);
+    expect(stagePools.body.map((pool) => pool.name)).toEqual(['A', 'B', 'C', 'D']);
+    expect(stagePools.body.map((pool) => Number(pool.requiredTeamCount))).toEqual([4, 4, 3, 3]);
   });
 
   test('14-team crossover generation keeps all crossover matches in a single facility', async () => {
@@ -230,6 +263,134 @@ describe('tournament format routes + apply-format flow', () => {
     expect(
       crossoverGenerate.body.every((match) => String(match.court || '').startsWith('VC-'))
     ).toBe(true);
+
+    const crossoverList = await request(app)
+      .get(`/api/tournaments/${tournament._id}/stages/crossover/matches`)
+      .set(authHeader());
+
+    expect(crossoverList.statusCode).toBe(200);
+    expect(crossoverList.body).toHaveLength(3);
+  });
+
+  test('14-team playoffs payload includes Gold and Silver only', async () => {
+    const tournament = await createOwnedTournament('playoffs-14');
+    const teams = await seedTeams(tournament._id, 14);
+    const teamIds = teams.map((team) => team._id);
+
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({
+        formatId: FORMAT_14_ID,
+      });
+
+    expect(apply.statusCode).toBe(200);
+
+    await Pool.bulkWrite(
+      [
+        { name: 'A', teamIds: teamIds.slice(0, 4), homeCourt: 'SRC-1' },
+        { name: 'B', teamIds: teamIds.slice(4, 8), homeCourt: 'SRC-2' },
+        { name: 'C', teamIds: teamIds.slice(8, 11), homeCourt: 'VC-1' },
+        { name: 'D', teamIds: teamIds.slice(11, 14), homeCourt: 'VC-2' },
+      ].map((poolEntry) => ({
+        updateOne: {
+          filter: {
+            tournamentId: tournament._id,
+            phase: 'phase1',
+            name: poolEntry.name,
+          },
+          update: {
+            $set: {
+              stageKey: 'poolPlay1',
+              requiredTeamCount: poolEntry.teamIds.length,
+              teamIds: poolEntry.teamIds,
+              homeCourt: poolEntry.homeCourt,
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: true }
+    );
+
+    const phase1Generate = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+    expect(phase1Generate.statusCode).toBe(201);
+
+    const playoffsGenerate = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/playoffs/matches/generate`)
+      .set(authHeader());
+    expect(playoffsGenerate.statusCode).toBe(201);
+
+    const playoffs = await request(app)
+      .get(`/api/tournaments/${tournament._id}/playoffs`)
+      .set(authHeader());
+
+    expect(playoffs.statusCode).toBe(200);
+    const bracketOrder = Array.isArray(playoffs.body.bracketOrder) ? playoffs.body.bracketOrder : [];
+    expect(bracketOrder).toEqual(expect.arrayContaining(['gold', 'silver']));
+    expect(bracketOrder).not.toContain('bronze');
+  });
+
+  test('16-team playoffs payload uses single all bracket with R1-R4', async () => {
+    const tournament = await createOwnedTournament('playoffs-16');
+    const teams = await seedTeams(tournament._id, 16);
+    const teamIds = teams.map((team) => team._id);
+
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({
+        formatId: FORMAT_16_ID,
+      });
+
+    expect(apply.statusCode).toBe(200);
+
+    await Pool.bulkWrite(
+      [
+        { name: 'A', teamIds: teamIds.slice(0, 4), homeCourt: 'SRC-1' },
+        { name: 'B', teamIds: teamIds.slice(4, 8), homeCourt: 'SRC-2' },
+        { name: 'C', teamIds: teamIds.slice(8, 12), homeCourt: 'SRC-3' },
+        { name: 'D', teamIds: teamIds.slice(12, 16), homeCourt: 'VC-1' },
+      ].map((poolEntry) => ({
+        updateOne: {
+          filter: {
+            tournamentId: tournament._id,
+            phase: 'phase1',
+            name: poolEntry.name,
+          },
+          update: {
+            $set: {
+              stageKey: 'poolPlay1',
+              requiredTeamCount: 4,
+              teamIds: poolEntry.teamIds,
+              homeCourt: poolEntry.homeCourt,
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: true }
+    );
+
+    const phase1Generate = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+    expect(phase1Generate.statusCode).toBe(201);
+
+    const playoffsGenerate = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/playoffs/matches/generate`)
+      .set(authHeader());
+    expect(playoffsGenerate.statusCode).toBe(201);
+
+    const playoffs = await request(app)
+      .get(`/api/tournaments/${tournament._id}/playoffs`)
+      .set(authHeader());
+
+    expect(playoffs.statusCode).toBe(200);
+    expect(playoffs.body.bracketOrder).toEqual(['all']);
+    expect(playoffs.body.brackets?.all?.roundOrder).toEqual(['R1', 'R2', 'R3', 'R4']);
   });
 
   test('ODU 15-team stage endpoints preserve legacy phase1/phase2/playoff structure', async () => {

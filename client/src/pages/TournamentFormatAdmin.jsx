@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
   closestCenter,
   useDroppable,
@@ -18,7 +19,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { API_URL } from '../config/env.js';
 import TournamentSchedulingTabs from '../components/TournamentSchedulingTabs.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { mapCourtLabel } from '../utils/phase1.js';
+import { formatRoundBlockStartTime, mapCourtLabel } from '../utils/phase1.js';
 import {
   TEAM_BANK_CONTAINER_ID,
   buildTeamBankFromPools,
@@ -30,6 +31,16 @@ import {
 
 const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 const FIRST_STAGE_KEY = 'poolPlay1';
+const EMPTY_STANDINGS = Object.freeze({
+  pools: [],
+  overall: [],
+});
+const EMPTY_PLAYOFF_PAYLOAD = Object.freeze({
+  matches: [],
+  brackets: {},
+  opsSchedule: [],
+  bracketOrder: [],
+});
 
 const normalizeCourtCode = (courtCode) =>
   typeof courtCode === 'string' ? courtCode.trim().toUpperCase() : '';
@@ -82,6 +93,81 @@ const normalizePool = (pool) => ({
     : [],
 });
 
+const normalizeMatch = (match) => ({
+  ...match,
+  _id: String(match?._id || ''),
+  teamA: match?.teamA ? normalizeTeam(match.teamA) : null,
+  teamB: match?.teamB ? normalizeTeam(match.teamB) : null,
+  roundBlock: Number.isFinite(Number(match?.roundBlock)) ? Number(match.roundBlock) : null,
+});
+
+const normalizePlayoffPayload = (payload) => ({
+  matches: Array.isArray(payload?.matches) ? payload.matches.map((match) => normalizeMatch(match)) : [],
+  brackets: payload?.brackets && typeof payload.brackets === 'object' ? payload.brackets : {},
+  opsSchedule: Array.isArray(payload?.opsSchedule) ? payload.opsSchedule : [],
+  bracketOrder: Array.isArray(payload?.bracketOrder) ? payload.bracketOrder : [],
+});
+
+const toIdString = (value) => {
+  if (!value) {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'object' && value._id) {
+    return String(value._id);
+  }
+
+  return String(value);
+};
+
+const toTitleCase = (value) =>
+  String(value || '')
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`)
+    .join(' ');
+
+const parseRoundRank = (roundKey) => {
+  const normalized = String(roundKey || '').trim().toUpperCase();
+  const matched = /^R(\d+)$/.exec(normalized);
+  if (!matched) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  return Number(matched[1]);
+};
+
+const sortMatchesByRoundCourt = (matches) =>
+  [...(Array.isArray(matches) ? matches : [])].sort((left, right) => {
+    const leftRound = Number.isFinite(Number(left?.roundBlock)) ? Number(left.roundBlock) : Number.MAX_SAFE_INTEGER;
+    const rightRound = Number.isFinite(Number(right?.roundBlock)) ? Number(right.roundBlock) : Number.MAX_SAFE_INTEGER;
+
+    if (leftRound !== rightRound) {
+      return leftRound - rightRound;
+    }
+
+    const byCourt = String(left?.court || '').localeCompare(String(right?.court || ''));
+    if (byCourt !== 0) {
+      return byCourt;
+    }
+
+    return String(left?._id || '').localeCompare(String(right?._id || ''));
+  });
+
+const getPoolStages = (formatDef) =>
+  Array.isArray(formatDef?.stages)
+    ? formatDef.stages.filter((stage) => stage?.type === 'poolPlay')
+    : [];
+
+const getStageByType = (formatDef, stageType) =>
+  Array.isArray(formatDef?.stages)
+    ? formatDef.stages.find((stage) => stage?.type === stageType) || null
+    : null;
+
 const formatTeamLabel = (team) => team?.shortName || team?.name || 'TBD';
 
 function DraggableTeamCard({ team, disabled }) {
@@ -128,6 +214,24 @@ function DraggableTeamCard({ team, disabled }) {
   );
 }
 
+function TeamCardPreview({ team }) {
+  if (!team) {
+    return null;
+  }
+
+  return (
+    <article className="phase1-team-card phase1-team-card--overlay">
+      <div className="phase1-team-card-main">
+        {team.logoUrl ? (
+          <img className="phase1-team-card-logo" src={team.logoUrl} alt={`${formatTeamLabel(team)} logo`} />
+        ) : null}
+        <strong>{formatTeamLabel(team)}</strong>
+      </div>
+      <span className="phase1-team-drag-handle">Drag</span>
+    </article>
+  );
+}
+
 function TeamDropContainer({ containerId, className = '', children }) {
   const { setNodeRef, isOver } = useDroppable({ id: containerId });
 
@@ -144,7 +248,12 @@ function TournamentFormatAdmin() {
   const [tournament, setTournament] = useState(null);
   const [teams, setTeams] = useState([]);
   const [pools, setPools] = useState([]);
+  const [firstStageMatches, setFirstStageMatches] = useState([]);
+  const [crossoverMatches, setCrossoverMatches] = useState([]);
+  const [phase1Standings, setPhase1Standings] = useState(EMPTY_STANDINGS);
+  const [playoffsPayload, setPlayoffsPayload] = useState(EMPTY_PLAYOFF_PAYLOAD);
   const [suggestedFormats, setSuggestedFormats] = useState([]);
+  const [appliedFormatDef, setAppliedFormatDef] = useState(null);
   const [selectedFormatId, setSelectedFormatId] = useState('');
   const [activeCourts, setActiveCourts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -153,6 +262,9 @@ function TournamentFormatAdmin() {
   const [updatingPoolCourtId, setUpdatingPoolCourtId] = useState('');
   const [initializingPools, setInitializingPools] = useState(false);
   const [generatingMatches, setGeneratingMatches] = useState(false);
+  const [generatingCrossoverMatches, setGeneratingCrossoverMatches] = useState(false);
+  const [generatingPlayoffs, setGeneratingPlayoffs] = useState(false);
+  const [activeDragTeamId, setActiveDragTeamId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
@@ -188,13 +300,80 @@ function TournamentFormatAdmin() {
     [fetchJson]
   );
 
-  const loadPools = useCallback(async () => {
-    const poolPayload = await fetchJson(`${API_URL}/api/tournaments/${id}/phase1/pools`, {
+  const loadFormatDef = useCallback(
+    async (formatId) => {
+      const normalizedFormatId = typeof formatId === 'string' ? formatId.trim() : '';
+      if (!normalizedFormatId) {
+        setAppliedFormatDef(null);
+        return null;
+      }
+
+      const payload = await fetchJson(`${API_URL}/api/tournament-formats/${normalizedFormatId}`);
+      setAppliedFormatDef(payload);
+      return payload;
+    },
+    [fetchJson]
+  );
+
+  const loadPools = useCallback(
+    async (stageKey = FIRST_STAGE_KEY) => {
+      const normalizedStageKey = typeof stageKey === 'string' ? stageKey.trim() : '';
+      if (!normalizedStageKey) {
+        setPools([]);
+        return [];
+      }
+
+      const poolPayload = await fetchJson(
+        `${API_URL}/api/tournaments/${id}/stages/${normalizedStageKey}/pools`,
+        {
+          headers: authHeaders(token),
+        }
+      );
+      const nextPools = Array.isArray(poolPayload) ? poolPayload.map(normalizePool) : [];
+      setPools(nextPools);
+      return nextPools;
+    },
+    [fetchJson, id, token]
+  );
+
+  const loadStageMatches = useCallback(
+    async (stageKey) => {
+      const normalizedStageKey = typeof stageKey === 'string' ? stageKey.trim() : '';
+      if (!normalizedStageKey) {
+        return [];
+      }
+
+      const payload = await fetchJson(
+        `${API_URL}/api/tournaments/${id}/stages/${normalizedStageKey}/matches`,
+        {
+          headers: authHeaders(token),
+        }
+      );
+
+      return sortMatchesByRoundCourt(
+        Array.isArray(payload) ? payload.map((match) => normalizeMatch(match)) : []
+      );
+    },
+    [fetchJson, id, token]
+  );
+
+  const loadPhase1Standings = useCallback(async () => {
+    const payload = await fetchJson(`${API_URL}/api/tournaments/${id}/standings?phase=phase1`, {
       headers: authHeaders(token),
     });
-    const nextPools = Array.isArray(poolPayload) ? poolPayload.map(normalizePool) : [];
-    setPools(nextPools);
-    return nextPools;
+
+    return {
+      pools: Array.isArray(payload?.pools) ? payload.pools : [],
+      overall: Array.isArray(payload?.overall) ? payload.overall : [],
+    };
+  }, [fetchJson, id, token]);
+
+  const loadPlayoffs = useCallback(async () => {
+    const payload = await fetchJson(`${API_URL}/api/tournaments/${id}/playoffs`, {
+      headers: authHeaders(token),
+    });
+
+    return normalizePlayoffPayload(payload);
   }, [fetchJson, id, token]);
 
   const loadData = useCallback(async () => {
@@ -227,7 +406,7 @@ function TournamentFormatAdmin() {
       const nextActiveCourts = configuredCourts.length > 0 ? configuredCourts : availableCourts;
       const tournamentFormatId =
         typeof tournamentPayload?.settings?.format?.formatId === 'string'
-          ? tournamentPayload.settings.format.formatId
+          ? tournamentPayload.settings.format.formatId.trim()
           : '';
 
       setTournament(tournamentPayload);
@@ -235,16 +414,62 @@ function TournamentFormatAdmin() {
       setActiveCourts(nextActiveCourts);
       setSelectedFormatId(tournamentFormatId || '');
 
-      await Promise.all([
-        loadSuggestions(normalizedTeams.length, nextActiveCourts.length),
-        loadPools(),
-      ]);
+      await loadSuggestions(normalizedTeams.length, nextActiveCourts.length);
+
+      if (!tournamentFormatId) {
+        setAppliedFormatDef(null);
+        setPools([]);
+        setFirstStageMatches([]);
+        setCrossoverMatches([]);
+        setPhase1Standings(EMPTY_STANDINGS);
+        setPlayoffsPayload(EMPTY_PLAYOFF_PAYLOAD);
+        return;
+      }
+
+      const formatDef = await loadFormatDef(tournamentFormatId);
+      const poolStages = getPoolStages(formatDef);
+      const firstPoolStage = poolStages[0] || null;
+      const crossoverStage = getStageByType(formatDef, 'crossover');
+      const playoffStage = getStageByType(formatDef, 'playoffs');
+
+      const [nextPools, nextFirstStageMatches, nextCrossoverMatches, nextStandings, nextPlayoffs] =
+        await Promise.all([
+          firstPoolStage ? loadPools(firstPoolStage.key) : Promise.resolve([]),
+          firstPoolStage
+            ? loadStageMatches(firstPoolStage.key).catch(() => [])
+            : Promise.resolve([]),
+          crossoverStage
+            ? loadStageMatches(crossoverStage.key).catch(() => [])
+            : Promise.resolve([]),
+          firstPoolStage
+            ? loadPhase1Standings().catch(() => EMPTY_STANDINGS)
+            : Promise.resolve(EMPTY_STANDINGS),
+          playoffStage
+            ? loadPlayoffs().catch(() => EMPTY_PLAYOFF_PAYLOAD)
+            : Promise.resolve(EMPTY_PLAYOFF_PAYLOAD),
+        ]);
+
+      setPools(nextPools);
+      setFirstStageMatches(nextFirstStageMatches);
+      setCrossoverMatches(nextCrossoverMatches);
+      setPhase1Standings(nextStandings);
+      setPlayoffsPayload(nextPlayoffs);
     } catch (loadError) {
       setError(loadError.message || 'Unable to load format setup');
     } finally {
       setLoading(false);
     }
-  }, [fetchJson, id, loadPools, loadSuggestions, token]);
+  }, [
+    fetchJson,
+    id,
+    loadFormatDef,
+    loadPhase1Standings,
+    loadPlayoffs,
+    loadPools,
+    loadStageMatches,
+    loadSuggestions,
+    token,
+  ]);
 
   useEffect(() => {
     if (initializing) {
@@ -271,7 +496,22 @@ function TournamentFormatAdmin() {
     setSelectedFormatId(suggestedFormats[0].id);
   }, [selectedFormatId, suggestedFormats]);
 
+  const poolStages = useMemo(() => getPoolStages(appliedFormatDef), [appliedFormatDef]);
+  const firstPoolStage = poolStages[0] || null;
+  const secondPoolStage = poolStages[1] || null;
+  const crossoverStage = useMemo(
+    () => getStageByType(appliedFormatDef, 'crossover'),
+    [appliedFormatDef]
+  );
+  const playoffStage = useMemo(
+    () => getStageByType(appliedFormatDef, 'playoffs'),
+    [appliedFormatDef]
+  );
   const teamBank = useMemo(() => buildTeamBankFromPools(teams, pools), [pools, teams]);
+  const teamsById = useMemo(
+    () => new Map(teams.map((team) => [toIdString(team._id), team])),
+    [teams]
+  );
   const availableCourts = useMemo(() => flattenFacilityCourts(tournament?.facilities), [tournament?.facilities]);
   const selectablePoolCourts = useMemo(() => {
     const preferredCourts = activeCourts.length > 0 ? activeCourts : availableCourts;
@@ -304,8 +544,91 @@ function TournamentFormatAdmin() {
     [pools]
   );
 
-  const selectedFormat = suggestedFormats.find((entry) => entry.id === selectedFormatId) || null;
-  const showLegacyPhase2 = selectedFormatId === ODU_15_FORMAT_ID;
+  const selectedFormat =
+    suggestedFormats.find((entry) => entry.id === selectedFormatId) ||
+    (appliedFormatDef && selectedFormatId === appliedFormatDef.id
+      ? {
+          id: appliedFormatDef.id,
+          name: appliedFormatDef.name,
+          description: appliedFormatDef.description,
+          supportedTeamCounts: appliedFormatDef.supportedTeamCounts,
+          minCourts: appliedFormatDef.minCourts,
+        }
+      : null);
+  const activeFormatId = (appliedFormatDef?.id || selectedFormatId || '').trim();
+  const showLegacyPhase2 = activeFormatId === ODU_15_FORMAT_ID && Boolean(secondPoolStage);
+  const activeDragTeam = useMemo(() => {
+    if (!activeDragTeamId) {
+      return null;
+    }
+
+    const pooledTeam = pools
+      .flatMap((pool) => (Array.isArray(pool.teamIds) ? pool.teamIds : []))
+      .find((team) => toIdString(team?._id) === activeDragTeamId);
+    if (pooledTeam) {
+      return pooledTeam;
+    }
+
+    const bankTeam = teamBank.find((team) => toIdString(team?._id) === activeDragTeamId);
+    if (bankTeam) {
+      return bankTeam;
+    }
+
+    return teamsById.get(activeDragTeamId) || null;
+  }, [activeDragTeamId, pools, teamBank, teamsById]);
+
+  const crossoverPreviewRows = useMemo(() => {
+    if (
+      !crossoverStage ||
+      !Array.isArray(crossoverStage.fromPools) ||
+      crossoverStage.fromPools.length !== 2
+    ) {
+      return [];
+    }
+
+    const standingsByPool = new Map(
+      (Array.isArray(phase1Standings?.pools) ? phase1Standings.pools : []).map((pool) => [
+        String(pool?.poolName || ''),
+        pool,
+      ])
+    );
+    const leftPoolName = String(crossoverStage.fromPools[0] || '');
+    const rightPoolName = String(crossoverStage.fromPools[1] || '');
+    const leftTeams = Array.isArray(standingsByPool.get(leftPoolName)?.teams)
+      ? standingsByPool.get(leftPoolName).teams
+      : [];
+    const rightTeams = Array.isArray(standingsByPool.get(rightPoolName)?.teams)
+      ? standingsByPool.get(rightPoolName).teams
+      : [];
+    const pairingCount = Math.min(leftTeams.length, rightTeams.length);
+
+    return Array.from({ length: pairingCount }, (_, index) => {
+      const left = leftTeams[index];
+      const right = rightTeams[index];
+      const rank = index + 1;
+      const leftTeam = teamsById.get(toIdString(left?.teamId));
+      const rightTeam = teamsById.get(toIdString(right?.teamId));
+
+      return {
+        id: `${leftPoolName}-${rightPoolName}-${rank}`,
+        label: `${leftPoolName}${rank} vs ${rightPoolName}${rank}`,
+        leftTeamLabel: left?.shortName || left?.name || formatTeamLabel(leftTeam),
+        rightTeamLabel: right?.shortName || right?.name || formatTeamLabel(rightTeam),
+      };
+    });
+  }, [crossoverStage, phase1Standings?.pools, teamsById]);
+
+  const playoffBracketOrder = useMemo(() => {
+    const explicitOrder = Array.isArray(playoffsPayload?.bracketOrder)
+      ? playoffsPayload.bracketOrder
+      : [];
+
+    if (explicitOrder.length > 0) {
+      return explicitOrder;
+    }
+
+    return Object.keys(playoffsPayload?.brackets || {});
+  }, [playoffsPayload?.bracketOrder, playoffsPayload?.brackets]);
 
   const persistPoolChanges = useCallback(
     async ({ previousPools, nextPools, poolIdsToPersist }) => {
@@ -314,16 +637,18 @@ function TournamentFormatAdmin() {
         nextPools,
         poolIdsToPersist,
       });
+      const updatedByPoolId = new Map();
 
       const runPass = async (updates) => {
         for (const update of updates) {
-          await fetchJson(`${API_URL}/api/pools/${update.poolId}`, {
+          const payload = await fetchJson(`${API_URL}/api/pools/${update.poolId}`, {
             method: 'PATCH',
             headers: jsonHeaders(token),
             body: JSON.stringify({
               teamIds: update.teamIds,
             }),
           });
+          updatedByPoolId.set(String(update.poolId), normalizePool(payload));
         }
       };
 
@@ -334,12 +659,24 @@ function TournamentFormatAdmin() {
       if (plan.passTwo.length > 0) {
         await runPass(plan.passTwo);
       }
+
+      return updatedByPoolId;
     },
     [fetchJson, token]
   );
 
+  const handleDragStart = useCallback((event) => {
+    setActiveDragTeamId(String(event?.active?.id || ''));
+  }, []);
+
+  const handleDragCancel = useCallback(() => {
+    setActiveDragTeamId('');
+  }, []);
+
   const handleDragEnd = useCallback(
     async (event) => {
+      setActiveDragTeamId('');
+
       if (!event?.active?.id || !event?.over?.id || savingPools) {
         return;
       }
@@ -377,27 +714,22 @@ function TournamentFormatAdmin() {
       setMessage('');
 
       try {
-        await persistPoolChanges({
+        const updatedByPoolId = await persistPoolChanges({
           previousPools,
           nextPools: optimisticNextPools,
           poolIdsToPersist,
         });
+        setPools((currentPools) =>
+          currentPools.map((pool) => updatedByPoolId.get(String(pool._id)) || pool)
+        );
       } catch (persistError) {
         setPools(previousPools);
         setError(persistError.message || 'Unable to save pools');
-        return;
       } finally {
         setSavingPools(false);
       }
-
-      loadPools().catch((refreshError) => {
-        setError(
-          refreshError.message ||
-            'Pools were saved but could not be refreshed. Reload to confirm latest order.'
-        );
-      });
     },
-    [loadPools, persistPoolChanges, pools, savingPools, teams]
+    [persistPoolChanges, pools, savingPools, teams]
   );
 
   const toggleCourt = useCallback(
@@ -492,7 +824,7 @@ function TournamentFormatAdmin() {
           ? firstAttempt.payload.pools.map((pool) => normalizePool(pool))
           : []
       );
-      setMessage('Format applied. Assign teams to pools and generate matches.');
+      setMessage('Format applied. Assign teams to pools and generate stage matches.');
       await loadData();
     } catch (applyError) {
       setError(applyError.message || 'Unable to apply format');
@@ -502,7 +834,7 @@ function TournamentFormatAdmin() {
   }, [activeCourts, applying, id, loadData, selectedFormatId, token]);
 
   const handleInitializePools = useCallback(async () => {
-    if (initializingPools) {
+    if (!firstPoolStage || initializingPools) {
       return;
     }
 
@@ -512,23 +844,25 @@ function TournamentFormatAdmin() {
 
     try {
       const payload = await fetchJson(
-        `${API_URL}/api/tournaments/${id}/stages/${FIRST_STAGE_KEY}/pools/init`,
+        `${API_URL}/api/tournaments/${id}/stages/${firstPoolStage.key}/pools/init`,
         {
           method: 'POST',
           headers: authHeaders(token),
         }
       );
       setPools(Array.isArray(payload) ? payload.map((pool) => normalizePool(pool)) : []);
-      setMessage('Pool Play 1 pools initialized.');
+      setFirstStageMatches([]);
+      setPhase1Standings(EMPTY_STANDINGS);
+      setMessage(`${firstPoolStage.displayName || 'Pool Play'} pools initialized.`);
     } catch (initError) {
       setError(initError.message || 'Unable to initialize pools');
     } finally {
       setInitializingPools(false);
     }
-  }, [fetchJson, id, initializingPools, token]);
+  }, [fetchJson, firstPoolStage, id, initializingPools, token]);
 
   const handleGenerateMatches = useCallback(async () => {
-    if (generatingMatches) {
+    if (!firstPoolStage || generatingMatches) {
       return;
     }
 
@@ -539,7 +873,7 @@ function TournamentFormatAdmin() {
     const runGenerate = async (force) => {
       const suffix = force ? '?force=true' : '';
       const response = await fetch(
-        `${API_URL}/api/tournaments/${id}/stages/${FIRST_STAGE_KEY}/matches/generate${suffix}`,
+        `${API_URL}/api/tournaments/${id}/stages/${firstPoolStage.key}/matches/generate${suffix}`,
         {
           method: 'POST',
           headers: authHeaders(token),
@@ -578,17 +912,171 @@ function TournamentFormatAdmin() {
         }
 
         const forcedAttempt = await runGenerate(true);
-        setMessage(`Generated ${forcedAttempt.payload.length} Pool Play 1 matches.`);
+        setFirstStageMatches(sortMatchesByRoundCourt(forcedAttempt.payload.map((match) => normalizeMatch(match))));
+        const standings = await loadPhase1Standings().catch(() => EMPTY_STANDINGS);
+        setPhase1Standings(standings);
+        setMessage(`Generated ${forcedAttempt.payload.length} ${firstPoolStage.displayName || 'Pool Play'} matches.`);
         return;
       }
 
-      setMessage(`Generated ${firstAttempt.payload.length} Pool Play 1 matches.`);
+      setFirstStageMatches(sortMatchesByRoundCourt(firstAttempt.payload.map((match) => normalizeMatch(match))));
+      const standings = await loadPhase1Standings().catch(() => EMPTY_STANDINGS);
+      setPhase1Standings(standings);
+      setMessage(`Generated ${firstAttempt.payload.length} ${firstPoolStage.displayName || 'Pool Play'} matches.`);
     } catch (generateError) {
       setError(generateError.message || 'Unable to generate matches');
     } finally {
       setGeneratingMatches(false);
     }
-  }, [generatingMatches, id, token]);
+  }, [firstPoolStage, generatingMatches, id, loadPhase1Standings, token]);
+
+  const handleGenerateCrossoverMatches = useCallback(async () => {
+    if (!crossoverStage || generatingCrossoverMatches) {
+      return;
+    }
+
+    setGeneratingCrossoverMatches(true);
+    setError('');
+    setMessage('');
+
+    const runGenerate = async (force) => {
+      const suffix = force ? '?force=true' : '';
+      const response = await fetch(
+        `${API_URL}/api/tournaments/${id}/stages/${crossoverStage.key}/matches/generate${suffix}`,
+        {
+          method: 'POST',
+          headers: authHeaders(token),
+        }
+      );
+      const payload = await response.json().catch(() => null);
+
+      if (response.status === 409 && !force) {
+        return {
+          requiresForce: true,
+          message: payload?.message || 'Crossover matches already exist.',
+        };
+      }
+
+      if (!response.ok || !Array.isArray(payload)) {
+        throw new Error(payload?.message || 'Unable to generate crossover matches');
+      }
+
+      return {
+        requiresForce: false,
+        payload,
+      };
+    };
+
+    try {
+      const firstAttempt = await runGenerate(false);
+
+      if (firstAttempt.requiresForce) {
+        const shouldForce = window.confirm(
+          `${firstAttempt.message}\n\nThis will delete and regenerate matches + scoreboards for crossover. Continue?`
+        );
+
+        if (!shouldForce) {
+          setMessage(firstAttempt.message);
+          return;
+        }
+
+        const forcedAttempt = await runGenerate(true);
+        setCrossoverMatches(sortMatchesByRoundCourt(forcedAttempt.payload.map((match) => normalizeMatch(match))));
+        setMessage(`Generated ${forcedAttempt.payload.length} ${crossoverStage.displayName || 'crossover'} matches.`);
+        return;
+      }
+
+      setCrossoverMatches(sortMatchesByRoundCourt(firstAttempt.payload.map((match) => normalizeMatch(match))));
+      setMessage(`Generated ${firstAttempt.payload.length} ${crossoverStage.displayName || 'crossover'} matches.`);
+    } catch (generateError) {
+      setError(generateError.message || 'Unable to generate crossover matches');
+    } finally {
+      setGeneratingCrossoverMatches(false);
+    }
+  }, [crossoverStage, generatingCrossoverMatches, id, token]);
+
+  const handleGeneratePlayoffs = useCallback(async () => {
+    if (!playoffStage || generatingPlayoffs) {
+      return;
+    }
+
+    setGeneratingPlayoffs(true);
+    setError('');
+    setMessage('');
+
+    const runGenerate = async (force) => {
+      const suffix = force ? '?force=true' : '';
+      const response = await fetch(
+        `${API_URL}/api/tournaments/${id}/stages/${playoffStage.key}/matches/generate${suffix}`,
+        {
+          method: 'POST',
+          headers: authHeaders(token),
+        }
+      );
+      const payload = await response.json().catch(() => null);
+
+      if (response.status === 409 && !force) {
+        return {
+          requiresForce: true,
+          message: payload?.message || 'Playoff matches already exist.',
+        };
+      }
+
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Unable to generate playoffs');
+      }
+
+      return {
+        requiresForce: false,
+        payload,
+      };
+    };
+
+    try {
+      const firstAttempt = await runGenerate(false);
+
+      if (firstAttempt.requiresForce) {
+        const shouldForce = window.confirm(
+          `${firstAttempt.message}\n\nThis will delete and regenerate playoff matches + scoreboards. Continue?`
+        );
+
+        if (!shouldForce) {
+          setMessage(firstAttempt.message);
+          return;
+        }
+
+        const forcedAttempt = await runGenerate(true);
+        if (forcedAttempt.payload?.matches && forcedAttempt.payload?.brackets) {
+          setPlayoffsPayload(normalizePlayoffPayload(forcedAttempt.payload));
+        } else {
+          setPlayoffsPayload(await loadPlayoffs());
+        }
+        const forcedCount = Array.isArray(forcedAttempt.payload)
+          ? forcedAttempt.payload.length
+          : Array.isArray(forcedAttempt.payload?.matches)
+            ? forcedAttempt.payload.matches.length
+            : 0;
+        setMessage(`Generated ${forcedCount} ${playoffStage.displayName || 'playoff'} matches.`);
+        return;
+      }
+
+      if (firstAttempt.payload?.matches && firstAttempt.payload?.brackets) {
+        setPlayoffsPayload(normalizePlayoffPayload(firstAttempt.payload));
+      } else {
+        setPlayoffsPayload(await loadPlayoffs());
+      }
+      const count = Array.isArray(firstAttempt.payload)
+        ? firstAttempt.payload.length
+        : Array.isArray(firstAttempt.payload?.matches)
+          ? firstAttempt.payload.matches.length
+          : 0;
+      setMessage(`Generated ${count} ${playoffStage.displayName || 'playoff'} matches.`);
+    } catch (generateError) {
+      setError(generateError.message || 'Unable to generate playoffs');
+    } finally {
+      setGeneratingPlayoffs(false);
+    }
+  }, [generatingPlayoffs, id, loadPlayoffs, playoffStage, token]);
 
   const handlePoolCourtChange = useCallback(
     async (poolId, nextCourtCode) => {
@@ -614,15 +1102,17 @@ function TournamentFormatAdmin() {
       setMessage('');
 
       try {
-        await fetchJson(`${API_URL}/api/pools/${poolId}`, {
+        const payload = await fetchJson(`${API_URL}/api/pools/${poolId}`, {
           method: 'PATCH',
           headers: jsonHeaders(token),
           body: JSON.stringify({
             homeCourt: normalizedNextCourt,
           }),
         });
-
-        await loadPools();
+        const updatedPool = normalizePool(payload);
+        setPools((currentPools) =>
+          currentPools.map((pool) => (pool._id === updatedPool._id ? updatedPool : pool))
+        );
         setMessage(`Pool ${targetPool.name} home court updated to ${mapCourtLabel(normalizedNextCourt)}.`);
       } catch (courtError) {
         setError(courtError.message || 'Unable to update pool home court');
@@ -630,7 +1120,7 @@ function TournamentFormatAdmin() {
         setUpdatingPoolCourtId('');
       }
     },
-    [fetchJson, loadPools, pools, token, updatingPoolCourtId]
+    [fetchJson, pools, token, updatingPoolCourtId]
   );
 
   if (initializing || loading) {
@@ -665,12 +1155,17 @@ function TournamentFormatAdmin() {
             <h1 className="title">Tournament Format</h1>
             <p className="subtitle">
               {tournament?.name || 'Tournament'} • Select courts, apply a format, assign teams,
-              then generate Pool Play 1 matches.
+              and generate stage matches.
             </p>
             <TournamentSchedulingTabs
               tournamentId={id}
               activeTab="format"
               showPhase2={showLegacyPhase2}
+              phase1Label={firstPoolStage?.displayName || (showLegacyPhase2 ? 'Pool Play 1' : 'Pool Play')}
+              phase1Href={showLegacyPhase2 ? `/tournaments/${id}/phase1` : `/tournaments/${id}/format`}
+              phase2Label={secondPoolStage?.displayName || 'Pool Play 2'}
+              phase2Href={showLegacyPhase2 ? `/tournaments/${id}/phase2` : `/tournaments/${id}/format`}
+              playoffsHref={`/tournaments/${id}/playoffs`}
             />
           </div>
           <div className="phase1-admin-actions">
@@ -681,9 +1176,11 @@ function TournamentFormatAdmin() {
               className="secondary-button"
               type="button"
               onClick={handleInitializePools}
-              disabled={initializingPools || savingPools}
+              disabled={!firstPoolStage || initializingPools || savingPools}
             >
-              {initializingPools ? 'Initializing...' : 'Init Pool Play 1 Pools'}
+              {initializingPools
+                ? 'Initializing...'
+                : `Init ${firstPoolStage?.displayName || 'Pool Play'} Pools`}
             </button>
             <button
               className="primary-button"
@@ -692,11 +1189,14 @@ function TournamentFormatAdmin() {
               disabled={
                 generatingMatches ||
                 savingPools ||
+                !firstPoolStage ||
                 pools.length === 0 ||
                 poolIssues.length > 0
               }
             >
-              {generatingMatches ? 'Generating...' : 'Generate Pool Play 1 Matches'}
+              {generatingMatches
+                ? 'Generating...'
+                : `Generate ${firstPoolStage?.displayName || 'Pool Play'} Matches`}
             </button>
           </div>
         </div>
@@ -771,6 +1271,8 @@ function TournamentFormatAdmin() {
           <DndContext
             sensors={dragSensors}
             collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragCancel={handleDragCancel}
             onDragEnd={handleDragEnd}
           >
             <div className="phase1-pool-board">
@@ -867,21 +1369,217 @@ function TournamentFormatAdmin() {
                 })}
               </div>
             </div>
+            <DragOverlay>
+              {activeDragTeam ? <TeamCardPreview team={activeDragTeam} /> : null}
+            </DragOverlay>
           </DndContext>
         )}
 
-        {showLegacyPhase2 && (
-          <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${id}/phase1`}>
-              Legacy Pool Play 1
-            </a>
-            <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-              Pool Play 2
-            </a>
-            <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
-              Playoffs
-            </a>
-          </div>
+        {firstStageMatches.length > 0 && (
+          <section className="phase1-schedule">
+            <h2 className="secondary-title">{firstPoolStage?.displayName || 'Pool Play'} Schedule</h2>
+            <div className="phase1-table-wrap">
+              <table className="phase1-schedule-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Court</th>
+                    <th>Pool</th>
+                    <th>Match</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {firstStageMatches.map((match) => (
+                    <tr key={match._id}>
+                      <td>{formatRoundBlockStartTime(match.roundBlock, tournament) || '-'}</td>
+                      <td>{mapCourtLabel(match.court)}</td>
+                      <td>{match.poolName ? `Pool ${match.poolName}` : '-'}</td>
+                      <td>
+                        {formatTeamLabel(match.teamA)} vs {formatTeamLabel(match.teamB)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {crossoverStage && (
+          <section className="phase1-standings">
+            <div className="phase1-admin-header">
+              <div>
+                <h2 className="secondary-title">{crossoverStage.displayName || 'Crossover'}</h2>
+                <p className="subtle">
+                  Rank-to-rank crossover pairing preview.
+                </p>
+              </div>
+              <div className="phase1-admin-actions">
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={handleGenerateCrossoverMatches}
+                  disabled={generatingCrossoverMatches || crossoverPreviewRows.length === 0}
+                >
+                  {generatingCrossoverMatches ? 'Generating...' : 'Generate Crossover Matches'}
+                </button>
+              </div>
+            </div>
+
+            {crossoverPreviewRows.length === 0 ? (
+              <p className="subtle">
+                Awaiting standings from {firstPoolStage?.displayName || 'Pool Play'}.
+              </p>
+            ) : (
+              <div className="phase1-table-wrap">
+                <table className="phase1-standings-table">
+                  <thead>
+                    <tr>
+                      <th>Pairing</th>
+                      <th>Teams</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {crossoverPreviewRows.map((row) => (
+                      <tr key={row.id}>
+                        <td>{row.label}</td>
+                        <td>{row.leftTeamLabel} vs {row.rightTeamLabel}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {crossoverMatches.length > 0 && (
+              <div className="phase1-table-wrap">
+                <table className="phase1-schedule-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Court</th>
+                      <th>Match</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {crossoverMatches.map((match) => (
+                      <tr key={match._id}>
+                        <td>{formatRoundBlockStartTime(match.roundBlock, tournament) || '-'}</td>
+                        <td>{mapCourtLabel(match.court)}</td>
+                        <td>{formatTeamLabel(match.teamA)} vs {formatTeamLabel(match.teamB)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {playoffStage && (
+          <section className="phase1-standings">
+            <div className="phase1-admin-header">
+              <div>
+                <h2 className="secondary-title">{playoffStage.displayName || 'Playoffs'}</h2>
+                <p className="subtle">Playoff generation follows the selected format.</p>
+              </div>
+              <div className="phase1-admin-actions">
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={handleGeneratePlayoffs}
+                  disabled={generatingPlayoffs}
+                >
+                  {generatingPlayoffs ? 'Generating...' : 'Generate Playoffs'}
+                </button>
+                <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
+                  Open Playoffs Page
+                </a>
+              </div>
+            </div>
+
+            {playoffsPayload.opsSchedule.length > 0 && (
+              <div className="phase1-table-wrap">
+                <table className="phase1-schedule-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Court</th>
+                      <th>Match</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {playoffsPayload.opsSchedule.flatMap((roundBlock) =>
+                      (Array.isArray(roundBlock?.slots) ? roundBlock.slots : []).map((slot) => (
+                        <tr key={`${roundBlock.roundBlock}-${slot.court}-${slot.matchId || 'slot'}`}>
+                          <td>{formatRoundBlockStartTime(roundBlock.roundBlock, tournament) || '-'}</td>
+                          <td>{mapCourtLabel(slot.court)}</td>
+                          <td>{slot.matchLabel || '-'}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {playoffBracketOrder.length > 0 && (
+              <div className="playoff-bracket-grid">
+                {playoffBracketOrder.map((bracketKey) => {
+                  const normalizedBracketKey = String(bracketKey || '').toLowerCase();
+                  const bracketData = playoffsPayload.brackets?.[normalizedBracketKey];
+                  if (!bracketData) {
+                    return null;
+                  }
+
+                  const roundOrder = Array.isArray(bracketData.roundOrder) && bracketData.roundOrder.length > 0
+                    ? bracketData.roundOrder
+                    : Object.keys(bracketData.rounds || {}).sort((left, right) => {
+                        const byRank = parseRoundRank(left) - parseRoundRank(right);
+                        if (byRank !== 0) {
+                          return byRank;
+                        }
+                        return left.localeCompare(right);
+                      });
+
+                  return (
+                    <article key={`playoff-bracket-${normalizedBracketKey}`} className="phase1-standings-card playoff-bracket-card">
+                      <h3>{bracketData.label || toTitleCase(normalizedBracketKey)}</h3>
+                      <div className="playoff-seed-list">
+                        {(Array.isArray(bracketData.seeds) ? bracketData.seeds : []).length > 0 ? (
+                          (bracketData.seeds || []).map((seedEntry) => (
+                            <p key={`${normalizedBracketKey}-seed-${seedEntry.seed || seedEntry.bracketSeed}`}>
+                              #
+                              {Number.isFinite(Number(seedEntry?.overallSeed))
+                                ? Number(seedEntry.overallSeed)
+                                : Number(seedEntry?.seed) || Number(seedEntry?.bracketSeed) || '?'}
+                              {' '}
+                              {formatTeamLabel(seedEntry?.team)}
+                            </p>
+                          ))
+                        ) : (
+                          <p className="subtle">Seeds not resolved</p>
+                        )}
+                      </div>
+                      {roundOrder.map((roundKey) => (
+                        <div key={`${normalizedBracketKey}-${roundKey}`} className="playoff-round-block">
+                          <h4>{roundKey}</h4>
+                          {(bracketData.rounds?.[roundKey] || []).map((match) => (
+                            <div key={match._id} className="playoff-round-match">
+                              <p>{formatTeamLabel(match.teamA)} vs {formatTeamLabel(match.teamB)}</p>
+                              <p className="subtle">
+                                {mapCourtLabel(match.court)} • {match.status || 'scheduled'}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
         )}
       </section>
     </main>

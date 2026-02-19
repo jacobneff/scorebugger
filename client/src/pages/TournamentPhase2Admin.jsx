@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   DndContext,
   DragOverlay,
@@ -58,6 +58,8 @@ const jsonHeaders = (token) => ({
 const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
 });
+
+const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 
 const normalizePools = (pools) =>
   sortPhase2Pools(pools).map((pool) => ({
@@ -277,6 +279,7 @@ function PoolHeaderDropTarget({ poolId, activeSwapPoolId, children }) {
 
 function TournamentPhase2Admin() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const { token, user, initializing } = useAuth();
 
   const [tournament, setTournament] = useState(null);
@@ -407,6 +410,16 @@ function TournamentPhase2Admin() {
         loadStandings('cumulative'),
       ]);
 
+      const formatId =
+        typeof tournamentData?.settings?.format?.formatId === 'string'
+          ? tournamentData.settings.format.formatId.trim()
+          : '';
+
+      if (formatId && formatId !== ODU_15_FORMAT_ID) {
+        navigate(`/tournaments/${id}/format`, { replace: true });
+        return;
+      }
+
       const phase1SeedLookup = buildPhase1SeedLookup(phase1Standings);
 
       setTournament(tournamentData);
@@ -422,7 +435,7 @@ function TournamentPhase2Admin() {
     } finally {
       setLoading(false);
     }
-  }, [applyPhase1SeedsToPools, fetchJson, id, loadMatches, loadPools, loadStandings, token]);
+  }, [applyPhase1SeedsToPools, fetchJson, id, loadMatches, loadPools, loadStandings, navigate, token]);
 
   const refreshMatchesAndStandings = useCallback(async () => {
     setStandingsLoading(true);

@@ -4,7 +4,6 @@ const mongoose = require('mongoose');
 const { requireAuth } = require('../middleware/auth');
 const Match = require('../models/Match');
 const Scoreboard = require('../models/Scoreboard');
-const Tournament = require('../models/Tournament');
 const {
   emitScoreboardSummaryEvent,
 } = require('../services/tournamentRealtime');
@@ -13,6 +12,7 @@ const {
   findOwnedTournamentContext,
   serializeMatch,
 } = require('../services/matchLifecycle');
+const { requireTournamentAdminContext } = require('../services/tournamentAccess');
 const {
   getFacilityFromCourt,
   mapCourtDisplayLabel,
@@ -472,13 +472,12 @@ router.get('/tournaments/:id/matches/quick', requireAuth, async (req, res, next)
       ? normalizeCourtCode(req.query.court)
       : null;
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('_id timezone settings.schedule')
-      .lean();
-
+    const accessContext = await requireTournamentAdminContext(
+      id,
+      req.user.id,
+      '_id timezone settings.schedule'
+    );
+    const tournament = accessContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }

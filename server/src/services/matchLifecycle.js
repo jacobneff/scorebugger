@@ -1,6 +1,6 @@
 const Match = require('../models/Match');
 const Scoreboard = require('../models/Scoreboard');
-const Tournament = require('../models/Tournament');
+const { requireTournamentAdminContext } = require('./tournamentAccess');
 const { PLAYOFF_BRACKETS, recomputePlayoffBracketProgression } = require('./playoffs');
 const { computeMatchSnapshot } = require('./tournamentEngine/standings');
 const {
@@ -94,12 +94,12 @@ function serializeMatch(match) {
 }
 
 async function findOwnedTournamentContext(tournamentId, userId) {
-  return Tournament.findOne({
-    _id: tournamentId,
-    createdByUserId: userId,
-  })
-    .select('_id publicCode')
-    .lean();
+  const accessContext = await requireTournamentAdminContext(
+    tournamentId,
+    userId,
+    '_id publicCode'
+  );
+  return accessContext?.tournament || null;
 }
 
 function emitMatchStatusUpdated(io, tournamentCode, match) {

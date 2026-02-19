@@ -2,7 +2,6 @@ const express = require('express');
 const mongoose = require('mongoose');
 
 const Pool = require('../models/Pool');
-const Tournament = require('../models/Tournament');
 const TournamentTeam = require('../models/TournamentTeam');
 const { DEFAULT_15_TEAM_FORMAT_ID, getFormat } = require('../tournamentFormats/formatRegistry');
 const { requireAuth } = require('../middleware/auth');
@@ -12,6 +11,7 @@ const {
   TOURNAMENT_EVENT_TYPES,
   emitTournamentEvent,
 } = require('../services/tournamentRealtime');
+const { requireTournamentAdminContext } = require('../services/tournamentAccess');
 
 const router = express.Router();
 
@@ -155,13 +155,12 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
       return res.status(404).json({ message: 'Pool not found' });
     }
 
-    const ownedTournament = await Tournament.findOne({
-      _id: pool.tournamentId,
-      createdByUserId: req.user.id,
-    })
-      .select('_id publicCode facilities settings.format')
-      .lean();
-
+    const accessContext = await requireTournamentAdminContext(
+      pool.tournamentId,
+      req.user.id,
+      '_id publicCode facilities settings.format'
+    );
+    const ownedTournament = accessContext?.tournament || null;
     if (!ownedTournament) {
       return res.status(404).json({ message: 'Pool not found or unauthorized' });
     }

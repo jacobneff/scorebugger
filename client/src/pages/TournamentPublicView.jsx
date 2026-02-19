@@ -703,7 +703,7 @@ function TournamentPublicView() {
     <main className="container">
       <section className="card phase1-public-card">
         <h1 className="title">{tournament?.name || 'Tournament'}</h1>
-        <p className="subtitle">Code {tournament?.publicCode || publicCode}</p>
+        <p className="subtitle">Live tournament schedule and standings</p>
 
         <div className="phase1-admin-actions">
           <button

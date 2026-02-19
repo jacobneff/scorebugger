@@ -54,7 +54,35 @@ If you did not request a password reset, you can ignore this email.`;
   return { subject, text, html };
 }
 
+function buildTournamentInviteEmail({ displayName, inviterName, tournamentName, joinUrl }) {
+  const greeting = displayName ? `Hi ${displayName},` : 'Hi there,';
+  const inviter = inviterName || 'A tournament owner';
+  const safeTournamentName = tournamentName || 'a tournament';
+
+  const subject = `${inviter} invited you to admin "${safeTournamentName}" on Scorebugger`;
+  const text = `${greeting}
+
+${inviter} invited you to admin ${safeTournamentName} on Scorebugger.
+
+Accept this invite with your account:
+${joinUrl}
+
+This invite expires in 7 days.`;
+
+  const html = `
+    <p>${greeting}</p>
+    <p><strong>${inviter}</strong> invited you to admin <strong>${safeTournamentName}</strong> on Scorebugger.</p>
+    <p><a href="${joinUrl}">Accept tournament admin invite</a></p>
+    <p style="margin-top:16px">If the button doesn't work, copy and paste this link into your browser:</p>
+    <p><code>${joinUrl}</code></p>
+    <p style="margin-top:24px;font-size:14px;color:#6b7280">This invite expires in 7 days.</p>
+  `;
+
+  return { subject, text, html };
+}
+
 module.exports = {
   buildVerificationEmail,
   buildPasswordResetEmail,
+  buildTournamentInviteEmail,
 };

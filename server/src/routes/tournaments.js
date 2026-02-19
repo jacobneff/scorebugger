@@ -6,6 +6,10 @@ const TournamentTeam = require('../models/TournamentTeam');
 const Pool = require('../models/Pool');
 const Match = require('../models/Match');
 const Scoreboard = require('../models/Scoreboard');
+const TournamentAccess = require('../models/TournamentAccess');
+const TournamentInvite = require('../models/TournamentInvite');
+const TournamentShareLink = require('../models/TournamentShareLink');
+const User = require('../models/User');
 const { requireAuth } = require('../middleware/auth');
 const {
   PHASE1_COURT_ORDER,
@@ -62,6 +66,21 @@ const {
   cacheTournamentMatchEntry,
   emitTournamentEvent,
 } = require('../services/tournamentRealtime');
+const {
+  getTournamentAccessContext,
+  listTournamentAdminAccessEntries,
+  listUserAccessibleTournamentIds,
+  normalizeEmail,
+  removeTournamentAdminAccess,
+  requireTournamentAdminContext,
+  requireTournamentOwnerContext,
+  transferTournamentOwnership,
+  upsertTournamentAdminAccess,
+} = require('../services/tournamentAccess');
+const { createTokenPair, generateToken } = require('../utils/tokens');
+const { sendMail, isEmailConfigured } = require('../config/mailer');
+const { buildTournamentInviteEmail } = require('../utils/emailTemplates');
+const { resolveAppBaseUrl } = require('../utils/urls');
 
 const router = express.Router();
 
@@ -112,6 +131,9 @@ const TOURNAMENT_DETAILS_DEFAULTS = Object.freeze({
 });
 const TEAM_LOCATION_LABEL_MAX_LENGTH = 160;
 const DEFAULT_COURT_FALLBACK = [...PHASE1_COURT_ORDER];
+const DEFAULT_TOURNAMENT_INVITE_TTL_HOURS = 168;
+const TOURNAMENT_ADMIN_ROLE = 'admin';
+const SHARE_LINK_TOKEN_ATTEMPTS = 5;
 
 const phase2PoolNameIndex = PHASE2_POOL_NAMES.reduce((lookup, poolName, index) => {
   lookup[poolName] = index;
@@ -127,8 +149,51 @@ const isDuplicatePublicCodeError = (error) =>
 const isDuplicateTeamPublicCodeError = (error) =>
   error?.code === DUPLICATE_KEY_ERROR_CODE &&
   (error?.keyPattern?.publicTeamCode || error?.keyValue?.publicTeamCode);
+const isDuplicateShareTokenError = (error) =>
+  error?.code === DUPLICATE_KEY_ERROR_CODE &&
+  (error?.keyPattern?.token || error?.keyValue?.token);
 
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
+const resolveInviteTtlHours = () => {
+  const parsed = Number(process.env.TOURNAMENT_INVITE_TTL_HOURS);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.floor(parsed);
+  }
+
+  return DEFAULT_TOURNAMENT_INVITE_TTL_HOURS;
+};
+const getTournamentJoinBasePath = () => '/tournaments/join';
+const buildTournamentJoinPath = (token, query = {}) => {
+  const searchParams = new URLSearchParams();
+
+  if (isNonEmptyString(token)) {
+    searchParams.set('token', token.trim());
+  }
+
+  Object.entries(query || {}).forEach(([key, value]) => {
+    const normalizedKey = isNonEmptyString(key) ? key.trim() : '';
+    const normalizedValue =
+      value === undefined || value === null ? '' : String(value).trim();
+
+    if (!normalizedKey || !normalizedValue) {
+      return;
+    }
+
+    searchParams.set(normalizedKey, normalizedValue);
+  });
+
+  const queryString = searchParams.toString();
+  return queryString
+    ? `${getTournamentJoinBasePath()}?${queryString}`
+    : getTournamentJoinBasePath();
+};
+const buildTournamentJoinUrl = (token, query = {}) => {
+  const baseUrl = resolveAppBaseUrl();
+  const joinPath = buildTournamentJoinPath(token, query);
+  const url = new URL(joinPath, baseUrl);
+
+  return url.toString();
+};
 
 const uniqueValues = (values) => {
   const seen = new Set();
@@ -511,11 +576,61 @@ function validateStandingsOverridePhaseFilter(phase) {
   return STANDINGS_OVERRIDE_PHASES.includes(phase) ? null : 'Invalid standings override phase';
 }
 
-async function ensureTournamentOwnership(tournamentId, userId) {
-  return Tournament.exists({
-    _id: tournamentId,
-    createdByUserId: userId,
-  });
+async function ensureTournamentAdminAccess(tournamentId, userId) {
+  const adminContext = await requireTournamentAdminContext(tournamentId, userId);
+  return Boolean(adminContext);
+}
+
+function serializeAccessUser(userDoc, fallbackUserId = '') {
+  const userId = toIdString(userDoc?._id || fallbackUserId);
+  return {
+    userId,
+    email: typeof userDoc?.email === 'string' ? userDoc.email : '',
+    displayName: typeof userDoc?.displayName === 'string' ? userDoc.displayName : '',
+  };
+}
+
+function serializeAdminAccessRecord(accessEntry) {
+  const user = accessEntry?.userId;
+  const userId = toIdString(user?._id || user || accessEntry?.userId);
+  return {
+    userId,
+    role: TOURNAMENT_ADMIN_ROLE,
+    email: typeof user?.email === 'string' ? user.email : '',
+    displayName: typeof user?.displayName === 'string' ? user.displayName : '',
+    createdAt: accessEntry?.createdAt || null,
+  };
+}
+
+function serializePendingInviteRecord(inviteEntry) {
+  return {
+    inviteId: toIdString(inviteEntry?._id),
+    email: inviteEntry?.email || '',
+    role: inviteEntry?.role || TOURNAMENT_ADMIN_ROLE,
+    expiresAt: inviteEntry?.expiresAt || null,
+    createdAt: inviteEntry?.createdAt || null,
+    usedAt: inviteEntry?.usedAt || null,
+  };
+}
+
+async function persistShareLinkWithUniqueToken(shareLink) {
+  for (let attempt = 0; attempt < SHARE_LINK_TOKEN_ATTEMPTS; attempt += 1) {
+    shareLink.token = generateToken();
+    try {
+      await shareLink.save();
+      return shareLink;
+    } catch (error) {
+      if (isDuplicateShareTokenError(error)) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  const error = new Error('Failed to generate a unique share token');
+  error.status = 500;
+  throw error;
 }
 
 function getTournamentFormatContext(tournament, teamCount) {
@@ -544,12 +659,12 @@ function getTournamentFormatContext(tournament, teamCount) {
 }
 
 async function getOwnedTournamentAndTeamCount(tournamentId, userId, projection = '') {
-  const tournament = await Tournament.findOne({
-    _id: tournamentId,
-    createdByUserId: userId,
-  })
-    .select(projection || 'settings facilities publicCode status standingsOverrides')
-    .lean();
+  const accessContext = await requireTournamentAdminContext(
+    tournamentId,
+    userId,
+    projection || 'settings facilities publicCode status standingsOverrides'
+  );
+  const tournament = accessContext?.tournament;
 
   if (!tournament) {
     return null;
@@ -3255,14 +3370,29 @@ router.get('/code/:publicCode/standings', async (req, res, next) => {
   }
 });
 
-// GET /api/tournaments -> list tournaments created by current user
+// GET /api/tournaments -> list tournaments accessible by current user
 router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const tournaments = await Tournament.find({ createdByUserId: req.user.id })
+    const accessibleTournamentIds = await listUserAccessibleTournamentIds(req.user.id);
+
+    if (accessibleTournamentIds.length === 0) {
+      return res.json([]);
+    }
+
+    const tournaments = await Tournament.find({ _id: { $in: accessibleTournamentIds } })
       .sort({ date: -1, createdAt: -1 })
       .lean();
 
-    return res.json(tournaments);
+    return res.json(
+      tournaments.map((tournament) => {
+        const isOwner = toIdString(tournament.createdByUserId) === req.user.id;
+        return {
+          ...tournament,
+          accessRole: isOwner ? 'owner' : TOURNAMENT_ADMIN_ROLE,
+          isOwner,
+        };
+      })
+    );
   } catch (error) {
     return next(error);
   }
@@ -3366,10 +3496,14 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'No valid fields provided for update' });
     }
 
+    const adminContext = await requireTournamentAdminContext(id, req.user.id);
+    if (!adminContext) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
     const tournament = await Tournament.findOneAndUpdate(
       {
         _id: id,
-        createdByUserId: req.user.id,
       },
       updates,
       {
@@ -3398,12 +3532,8 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('_id')
-      .lean();
+    const ownerContext = await requireTournamentOwnerContext(id, req.user.id, '_id');
+    const tournament = ownerContext?.tournament || null;
 
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
@@ -3419,6 +3549,9 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
     await Match.deleteMany({ tournamentId: id });
     await Pool.deleteMany({ tournamentId: id });
     await TournamentTeam.deleteMany({ tournamentId: id });
+    await TournamentAccess.deleteMany({ tournamentId: id });
+    await TournamentInvite.deleteMany({ tournamentId: id });
+    await TournamentShareLink.deleteMany({ tournamentId: id });
 
     if (scoreboardIds.length > 0) {
       await Scoreboard.deleteMany({
@@ -3428,7 +3561,6 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
 
     await Tournament.deleteOne({
       _id: id,
-      createdByUserId: req.user.id,
     });
 
     return res.json({
@@ -3440,7 +3572,7 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
   }
 });
 
-// PATCH /api/tournaments/:id/details -> owner-only tournament details content update
+// PATCH /api/tournaments/:id/details -> tournament-admin details content update
 router.patch('/:id/details', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -3449,7 +3581,7 @@ router.patch('/:id/details', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const ownedTournament = await requireTournamentAdminContext(id, req.user.id);
 
     if (!ownedTournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
@@ -3468,7 +3600,6 @@ router.patch('/:id/details', requireAuth, async (req, res, next) => {
     const tournament = await Tournament.findOneAndUpdate(
       {
         _id: id,
-        createdByUserId: req.user.id,
       },
       {
         $set: updates,
@@ -3503,7 +3634,7 @@ router.patch('/:id/details', requireAuth, async (req, res, next) => {
   }
 });
 
-// POST /api/tournaments/:id/apply-format -> owner applies a format + active courts
+// POST /api/tournaments/:id/apply-format -> tournament-admin applies a format + active courts
 router.post('/:id/apply-format', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -3594,7 +3725,7 @@ router.post('/:id/apply-format', requireAuth, async (req, res, next) => {
     }
 
     await Tournament.updateOne(
-      { _id: id, createdByUserId: req.user.id },
+      { _id: id },
       {
         $set: {
           'settings.format.formatId': formatDef.id,
@@ -3963,13 +4094,8 @@ router.post('/:id/phase1/pools/init', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('publicCode')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(id, req.user.id, 'publicCode');
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -4053,13 +4179,8 @@ router.post('/:id/phase1/pools/autofill', requireAuth, async (req, res, next) =>
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('publicCode')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(id, req.user.id, 'publicCode');
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -4190,7 +4311,7 @@ router.post('/:id/phase1/pools/autofill', requireAuth, async (req, res, next) =>
   }
 });
 
-// GET /api/tournaments/:id/phase1/pools -> list phase1 pools for an owned tournament
+// GET /api/tournaments/:id/phase1/pools -> list phase1 pools for an accessible tournament
 router.get('/:id/phase1/pools', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -4199,13 +4320,8 @@ router.get('/:id/phase1/pools', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('publicCode')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(id, req.user.id, 'publicCode');
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -4217,7 +4333,7 @@ router.get('/:id/phase1/pools', requireAuth, async (req, res, next) => {
   }
 });
 
-// GET /api/tournaments/:id/phase2/pools -> list phase2 pools for an owned tournament
+// GET /api/tournaments/:id/phase2/pools -> list phase2 pools for an accessible tournament
 router.get('/:id/phase2/pools', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -4226,13 +4342,8 @@ router.get('/:id/phase2/pools', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('publicCode')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(id, req.user.id, 'publicCode');
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -4244,7 +4355,7 @@ router.get('/:id/phase2/pools', requireAuth, async (req, res, next) => {
   }
 });
 
-// PUT /api/tournaments/:id/pools/courts -> owner-only court assignments per phase
+// PUT /api/tournaments/:id/pools/courts -> tournament-admin court assignments per phase
 router.put('/:id/pools/courts', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -4263,13 +4374,8 @@ router.put('/:id/pools/courts', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'assignments must be an array' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('publicCode')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(id, req.user.id, 'publicCode');
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -4393,13 +4499,8 @@ router.post('/:id/phase2/pools/generate', requireAuth, async (req, res, next) =>
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('publicCode')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(id, req.user.id, 'publicCode');
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -4490,13 +4591,12 @@ async function handleGenerateLegacyPhase1(req, res, next) {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('settings status publicCode')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(
+      id,
+      req.user.id,
+      'settings status publicCode'
+    );
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -4662,13 +4762,12 @@ async function handleGenerateLegacyPhase2(req, res, next) {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('settings status publicCode')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(
+      id,
+      req.user.id,
+      'settings status publicCode'
+    );
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -4832,13 +4931,12 @@ async function handleGenerateLegacyPlayoffs(req, res, next) {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('settings status standingsOverrides publicCode')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(
+      id,
+      req.user.id,
+      'settings status standingsOverrides publicCode'
+    );
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -5025,7 +5123,7 @@ async function handleGenerateLegacyPlayoffs(req, res, next) {
 
 router.post('/:id/generate/playoffs', requireAuth, handleGenerateLegacyPlayoffs);
 
-// GET /api/tournaments/:id/playoffs -> owner playoff bracket + ops schedule
+// GET /api/tournaments/:id/playoffs -> tournament-admin playoff bracket + ops schedule
 router.get('/:id/playoffs', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -5059,7 +5157,7 @@ router.get('/:id/playoffs', requireAuth, async (req, res, next) => {
   }
 });
 
-// GET /api/tournaments/:id/playoffs/ops -> owner printable playoff ops schedule
+// GET /api/tournaments/:id/playoffs/ops -> tournament-admin printable playoff ops schedule
 router.get('/:id/playoffs/ops', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -5096,7 +5194,7 @@ router.get('/:id/playoffs/ops', requireAuth, async (req, res, next) => {
   }
 });
 
-// GET /api/tournaments/:id/matches?phase=phase1|phase2|playoffs -> owned tournament matches
+// GET /api/tournaments/:id/matches?phase=phase1|phase2|playoffs -> accessible tournament matches
 router.get('/:id/matches', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -5111,7 +5209,7 @@ router.get('/:id/matches', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: phaseError });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const ownedTournament = await ensureTournamentAdminAccess(id, req.user.id);
 
     if (!ownedTournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
@@ -5130,7 +5228,7 @@ router.get('/:id/matches', requireAuth, async (req, res, next) => {
   }
 });
 
-// GET /api/tournaments/:id/standings?phase=phase1|phase2|cumulative -> owned tournament standings
+// GET /api/tournaments/:id/standings?phase=phase1|phase2|cumulative -> accessible tournament standings
 router.get('/:id/standings', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -5146,7 +5244,7 @@ router.get('/:id/standings', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: phaseError });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const ownedTournament = await ensureTournamentAdminAccess(id, req.user.id);
 
     if (!ownedTournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
@@ -5164,7 +5262,7 @@ router.get('/:id/standings', requireAuth, async (req, res, next) => {
   }
 });
 
-// PUT /api/tournaments/:id/standings-overrides -> owner-only tie/ordering overrides
+// PUT /api/tournaments/:id/standings-overrides -> tournament-admin tie/ordering overrides
 router.put('/:id/standings-overrides', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -5198,13 +5296,8 @@ router.put('/:id/standings-overrides', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'overallOrder must be an array of team ids' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('_id standingsOverrides')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(id, req.user.id, '_id standingsOverrides');
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -5274,7 +5367,6 @@ router.put('/:id/standings-overrides', requireAuth, async (req, res, next) => {
     const updatedTournament = await Tournament.findOneAndUpdate(
       {
         _id: id,
-        createdByUserId: req.user.id,
       },
       { $set: updates },
       {
@@ -5293,6 +5385,454 @@ router.put('/:id/standings-overrides', requireAuth, async (req, res, next) => {
   }
 });
 
+// GET /api/tournaments/:id/access -> list owner/admin access and share-link metadata
+router.get('/:id/access', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const accessContext = await getTournamentAccessContext(
+      id,
+      req.user.id,
+      'name createdByUserId'
+    );
+    const tournament = accessContext?.tournament || null;
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const [ownerUser, adminAccessEntries, shareLink, pendingInvites] = await Promise.all([
+      User.findById(tournament.createdByUserId).select('_id email displayName').lean(),
+      listTournamentAdminAccessEntries(id),
+      TournamentShareLink.findOne({ tournamentId: id }).lean(),
+      accessContext.isOwner
+        ? TournamentInvite.find({
+            tournamentId: id,
+            usedAt: null,
+            expiresAt: { $gt: new Date() },
+          })
+            .sort({ createdAt: -1 })
+            .lean()
+        : Promise.resolve([]),
+    ]);
+
+    const owner = {
+      ...serializeAccessUser(ownerUser, tournament.createdByUserId),
+      role: 'owner',
+    };
+
+    const admins = adminAccessEntries
+      .map(serializeAdminAccessRecord)
+      .filter((entry) => entry.userId && entry.userId !== owner.userId);
+
+    const hasShareToken = isNonEmptyString(shareLink?.token);
+    const shareLinkPayload = {
+      enabled: Boolean(shareLink?.enabled),
+      role: shareLink?.role || TOURNAMENT_ADMIN_ROLE,
+      hasLink: hasShareToken,
+      joinPath:
+        accessContext.isOwner && hasShareToken
+          ? buildTournamentJoinPath(shareLink.token)
+          : null,
+      joinUrl:
+        accessContext.isOwner && hasShareToken
+          ? buildTournamentJoinUrl(shareLink.token)
+          : null,
+    };
+
+    return res.json({
+      tournamentId: toIdString(tournament._id),
+      tournamentName: tournament.name || '',
+      callerRole: accessContext.role,
+      isOwner: Boolean(accessContext.isOwner),
+      owner,
+      admins,
+      pendingInvites: accessContext.isOwner
+        ? pendingInvites.map(serializePendingInviteRecord)
+        : [],
+      shareLink: shareLinkPayload,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /api/tournaments/:id/share/email -> owner invites an admin by email
+router.post('/:id/share/email', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const role = typeof req.body?.role === 'string' ? req.body.role.trim().toLowerCase() : '';
+    const normalizedRole = role || TOURNAMENT_ADMIN_ROLE;
+    const email = normalizeEmail(req.body?.email);
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    if (normalizedRole !== TOURNAMENT_ADMIN_ROLE) {
+      return res.status(400).json({ message: 'role must be admin' });
+    }
+
+    if (!email) {
+      return res.status(400).json({ message: 'email is required' });
+    }
+
+    const ownerContext = await requireTournamentOwnerContext(id, req.user.id, 'name createdByUserId');
+    const tournament = ownerContext?.tournament || null;
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const ownerUser = await User.findById(tournament.createdByUserId).select('_id email').lean();
+    const ownerEmail = normalizeEmail(ownerUser?.email);
+    if (ownerEmail && ownerEmail === email) {
+      return res.status(400).json({ message: 'Owner already has access' });
+    }
+
+    const existingUser = await User.findOne({ email }).select('_id email displayName').lean();
+    if (existingUser) {
+      const existingAccess = await TournamentAccess.findOne({
+        tournamentId: id,
+        userId: existingUser._id,
+        role: TOURNAMENT_ADMIN_ROLE,
+      })
+        .select('_id')
+        .lean();
+
+      const accessRecord = await upsertTournamentAdminAccess(id, existingUser._id);
+      return res.json({
+        granted: true,
+        role: TOURNAMENT_ADMIN_ROLE,
+        alreadyHadAccess: Boolean(existingAccess),
+        user: serializeAccessUser(existingUser),
+        accessId: toIdString(accessRecord?._id),
+      });
+    }
+
+    const ttlHours = resolveInviteTtlHours();
+    const { token, tokenHash, expiresAt } = createTokenPair(ttlHours * 60 * 60 * 1000);
+    const invitePath = buildTournamentJoinPath(token, { invite: '1' });
+    const inviteUrl = buildTournamentJoinUrl(token, { invite: '1' });
+
+    await TournamentInvite.create({
+      tournamentId: id,
+      email,
+      role: TOURNAMENT_ADMIN_ROLE,
+      tokenHash,
+      expiresAt,
+      createdByUserId: req.user.id,
+    });
+
+    let emailDelivered = false;
+    let emailError = null;
+
+    if (isEmailConfigured()) {
+      try {
+        const inviterName = req.user.displayName || req.user.email || 'Tournament owner';
+        const message = buildTournamentInviteEmail({
+          displayName: '',
+          inviterName,
+          tournamentName: tournament.name || 'Tournament',
+          joinUrl: inviteUrl,
+        });
+
+        const mailResult = await sendMail({
+          to: email,
+          subject: message.subject,
+          text: message.text,
+          html: message.html,
+        });
+
+        emailDelivered = Boolean(mailResult?.delivered);
+      } catch (error) {
+        emailError = error?.message || 'Unable to send invite email';
+      }
+    }
+
+    return res.status(201).json({
+      invited: true,
+      role: TOURNAMENT_ADMIN_ROLE,
+      email,
+      emailDelivered,
+      emailError,
+      invitePath,
+      inviteUrl,
+      expiresAt,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /api/tournaments/:id/share/link -> create or return active admin join link
+router.post('/:id/share/link', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const ownerContext = await requireTournamentOwnerContext(id, req.user.id, '_id');
+    if (!ownerContext?.tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    let shareLink = await TournamentShareLink.findOne({ tournamentId: id });
+
+    if (shareLink && shareLink.enabled && isNonEmptyString(shareLink.token)) {
+      return res.json({
+        enabled: true,
+        role: shareLink.role || TOURNAMENT_ADMIN_ROLE,
+        joinPath: buildTournamentJoinPath(shareLink.token),
+        joinUrl: buildTournamentJoinUrl(shareLink.token),
+      });
+    }
+
+    if (!shareLink) {
+      shareLink = new TournamentShareLink({
+        tournamentId: id,
+        role: TOURNAMENT_ADMIN_ROLE,
+        enabled: true,
+        createdByUserId: req.user.id,
+      });
+    } else {
+      shareLink.role = TOURNAMENT_ADMIN_ROLE;
+      shareLink.enabled = true;
+      shareLink.createdByUserId = req.user.id;
+    }
+
+    await persistShareLinkWithUniqueToken(shareLink);
+
+    return res.status(201).json({
+      enabled: true,
+      role: TOURNAMENT_ADMIN_ROLE,
+      joinPath: buildTournamentJoinPath(shareLink.token),
+      joinUrl: buildTournamentJoinUrl(shareLink.token),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PATCH /api/tournaments/:id/share/link -> owner toggles share-link enabled state
+router.patch('/:id/share/link', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { enabled } = req.body ?? {};
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ message: 'enabled must be a boolean' });
+    }
+
+    const ownerContext = await requireTournamentOwnerContext(id, req.user.id, '_id');
+    if (!ownerContext?.tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    let shareLink = await TournamentShareLink.findOne({ tournamentId: id });
+
+    if (!shareLink && !enabled) {
+      return res.json({
+        enabled: false,
+        role: TOURNAMENT_ADMIN_ROLE,
+        joinPath: null,
+        joinUrl: null,
+      });
+    }
+
+    if (!shareLink) {
+      shareLink = new TournamentShareLink({
+        tournamentId: id,
+        role: TOURNAMENT_ADMIN_ROLE,
+        enabled: true,
+        createdByUserId: req.user.id,
+      });
+      await persistShareLinkWithUniqueToken(shareLink);
+    }
+
+    if (enabled) {
+      if (!isNonEmptyString(shareLink.token)) {
+        await persistShareLinkWithUniqueToken(shareLink);
+      }
+      shareLink.enabled = true;
+      shareLink.role = TOURNAMENT_ADMIN_ROLE;
+      shareLink.createdByUserId = req.user.id;
+      await shareLink.save();
+    } else {
+      shareLink.enabled = false;
+      await shareLink.save();
+    }
+
+    return res.json({
+      enabled: Boolean(shareLink.enabled),
+      role: shareLink.role || TOURNAMENT_ADMIN_ROLE,
+      joinPath:
+        shareLink.enabled && isNonEmptyString(shareLink.token)
+          ? buildTournamentJoinPath(shareLink.token)
+          : null,
+      joinUrl:
+        shareLink.enabled && isNonEmptyString(shareLink.token)
+          ? buildTournamentJoinUrl(shareLink.token)
+          : null,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// DELETE /api/tournaments/:id/access/:userId -> owner revokes an admin
+router.delete('/:id/access/:userId', requireAuth, async (req, res, next) => {
+  try {
+    const { id, userId } = req.params;
+
+    if (!isObjectId(id) || !isObjectId(userId)) {
+      return res.status(400).json({ message: 'Invalid tournament id or user id' });
+    }
+
+    const ownerContext = await requireTournamentOwnerContext(id, req.user.id, 'createdByUserId');
+    const tournament = ownerContext?.tournament || null;
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    if (toIdString(tournament.createdByUserId) === toIdString(userId)) {
+      return res.status(400).json({ message: 'Owner access cannot be revoked' });
+    }
+
+    const result = await removeTournamentAdminAccess(id, userId);
+    return res.json({
+      revoked: result?.deletedCount > 0,
+      userId: toIdString(userId),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /api/tournaments/:id/access/leave -> admin removes own access (owner cannot leave)
+router.post('/:id/access/leave', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const accessContext = await getTournamentAccessContext(id, req.user.id, 'createdByUserId');
+    const tournament = accessContext?.tournament || null;
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    if (accessContext.isOwner) {
+      return res.status(400).json({ message: 'Owner cannot leave the tournament' });
+    }
+
+    await removeTournamentAdminAccess(id, req.user.id);
+    return res.json({
+      left: true,
+      tournamentId: toIdString(id),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PATCH /api/tournaments/:id/owner -> owner transfers ownership to another user
+router.patch('/:id/owner', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const nextOwnerUserId = toIdString(req.body?.userId);
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    if (!isObjectId(nextOwnerUserId)) {
+      return res.status(400).json({ message: 'userId is required' });
+    }
+
+    const ownerContext = await requireTournamentOwnerContext(id, req.user.id, '_id createdByUserId');
+    if (!ownerContext?.tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const nextOwner = await User.findById(nextOwnerUserId).select('_id email displayName').lean();
+    if (!nextOwner) {
+      return res.status(404).json({ message: 'Target user not found' });
+    }
+
+    const transferred = await transferTournamentOwnership({
+      tournamentId: id,
+      currentOwnerUserId: req.user.id,
+      nextOwnerUserId,
+    });
+
+    if (!transferred) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const previousOwner = await User.findById(req.user.id).select('_id email displayName').lean();
+
+    return res.json({
+      transferred: true,
+      tournamentId: toIdString(id),
+      owner: {
+        ...serializeAccessUser(nextOwner),
+        role: 'owner',
+      },
+      previousOwner: {
+        ...serializeAccessUser(previousOwner, req.user.id),
+        role: TOURNAMENT_ADMIN_ROLE,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /api/tournaments/join -> join via enabled share-link token
+router.post('/join', requireAuth, async (req, res, next) => {
+  try {
+    const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+    if (!token) {
+      return res.status(400).json({ message: 'token is required' });
+    }
+
+    const shareLink = await TournamentShareLink.findOne({
+      token,
+      enabled: true,
+      role: TOURNAMENT_ADMIN_ROLE,
+    })
+      .select('tournamentId role enabled')
+      .lean();
+
+    if (!shareLink) {
+      return res.status(400).json({ message: 'Share link is invalid or disabled' });
+    }
+
+    await upsertTournamentAdminAccess(shareLink.tournamentId, req.user.id);
+    const accessContext = await getTournamentAccessContext(shareLink.tournamentId, req.user.id);
+
+    return res.json({
+      joined: true,
+      tournamentId: toIdString(shareLink.tournamentId),
+      role: accessContext?.role || TOURNAMENT_ADMIN_ROLE,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // GET /api/tournaments/:id -> fetch tournament details and basic counts
 router.get('/:id', requireAuth, async (req, res, next) => {
   try {
@@ -5302,11 +5842,8 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    }).lean();
-
+    const adminContext = await getTournamentAccessContext(id, req.user.id);
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -5319,6 +5856,8 @@ router.get('/:id', requireAuth, async (req, res, next) => {
 
     return res.json({
       ...attachTournamentScheduleDefaults(tournament, { teamCount: teamsCount }),
+      accessRole: adminContext.role,
+      isOwner: Boolean(adminContext.isOwner),
       teamsCount,
       poolsCount,
       matchesCount,
@@ -5337,7 +5876,7 @@ router.post('/:id/teams', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const ownedTournament = await ensureTournamentAdminAccess(id, req.user.id);
 
     if (!ownedTournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
@@ -5405,7 +5944,7 @@ router.put('/:id/teams/order', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const ownedTournament = await ensureTournamentAdminAccess(id, req.user.id);
 
     if (!ownedTournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
@@ -5451,7 +5990,7 @@ router.put('/:id/teams/order', requireAuth, async (req, res, next) => {
   }
 });
 
-// GET /api/tournaments/:id/teams/links -> list relative team public links for owned tournament
+// GET /api/tournaments/:id/teams/links -> list relative team public links for accessible tournament
 router.get('/:id/teams/links', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -5460,13 +5999,8 @@ router.get('/:id/teams/links', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('publicCode')
-      .lean();
-
+    const adminContext = await requireTournamentAdminContext(id, req.user.id, 'publicCode');
+    const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -5489,7 +6023,7 @@ router.get('/:id/teams/links', requireAuth, async (req, res, next) => {
   }
 });
 
-// GET /api/tournaments/:id/teams -> list teams for an owned tournament
+// GET /api/tournaments/:id/teams -> list teams for an accessible tournament
 router.get('/:id/teams', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -5498,7 +6032,7 @@ router.get('/:id/teams', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const ownedTournament = await ensureTournamentOwnership(id, req.user.id);
+    const ownedTournament = await ensureTournamentAdminAccess(id, req.user.id);
 
     if (!ownedTournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });

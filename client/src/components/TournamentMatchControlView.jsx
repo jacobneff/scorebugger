@@ -407,7 +407,7 @@ function TournamentMatchControlView({
         <div>
           <h1 className="title tournament-match-control__title">Tournament Match Control</h1>
           <p className="subtitle tournament-match-control__subtitle">
-            Code {scoreboard?.code || scoreboard?._id || 'Unknown'}
+            Live scoring controls
           </p>
         </div>
         <span className={`phase1-status-badge ${statusMeta.badgeClassName}`}>

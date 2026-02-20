@@ -83,6 +83,7 @@ describe('TournamentTeamPublicView', () => {
             timeLabel: '11:00 AM',
             status: 'scheduled',
             summaryLabel: 'BYE (Pool C)',
+            refLabel: 'SHOULD_NOT_RENDER',
           },
           {
             timelineId: 'lunch-1',
@@ -113,6 +114,12 @@ describe('TournamentTeamPublicView', () => {
     expect(screen.getByText('ENDED')).toBeInTheDocument();
     expect(screen.getByText('Sets 1-1 • 25-20, 20-25')).toBeInTheDocument();
     expect(screen.queryByText(/Pts/)).not.toBeInTheDocument();
+    const byeSummary = screen.getByText('BYE (Pool C)');
+    const byeRow = byeSummary.closest('article');
+    expect(byeRow).toBeTruthy();
+    if (byeRow) {
+      expect(within(byeRow).queryByText(/Ref:/i)).not.toBeInTheDocument();
+    }
     const lunchSummary = screen.getByText('Lunch Break (45 min)');
     expect(lunchSummary).toBeInTheDocument();
     const lunchRow = lunchSummary.closest('article');

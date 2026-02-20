@@ -361,7 +361,8 @@ describe('TournamentPublicView', () => {
           phase: 'phase1',
           phaseLabel: 'Pool Play',
           roundBlock: 4,
-          courtCode: 'SRC-2',
+          courtCode: 'COURT_78C28E42-AF17-4651-ACC1-513EE486D47F',
+          courtLabel: 'Volleyball Court East',
           poolName: null,
           matchupLabel: 'C (#1) vs D (#1)',
           refLabel: 'C (#2)',
@@ -383,6 +384,8 @@ describe('TournamentPublicView', () => {
       )
     ).toBeInTheDocument();
     expect(screen.getByText('Ref: C (#2)')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Volleyball Court East' })).toBeInTheDocument();
+    expect(screen.queryByText('COURT_78C28E42-AF17-4651-ACC1-513EE486D47F')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Pool Play' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Pool Play 2' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cumulative' })).toBeInTheDocument();

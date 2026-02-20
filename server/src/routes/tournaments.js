@@ -3458,6 +3458,7 @@ function createTeamTimelineEntry({ slotView, role, focusTeamId, index = 0 } = {}
   const slotId = isNonEmptyString(slotView?.slotId) ? slotView.slotId.trim() : '';
   const normalizedRole = String(role || '').trim().toUpperCase();
   const isLunch = normalizedRole === 'LUNCH';
+  const suppressRef = isLunch || normalizedRole === 'BYE';
   const participants = Array.isArray(slotView?.participants) ? slotView.participants : [];
   const teamA = slotView?.teamA || participants?.[0]?.team || null;
   const teamB = slotView?.teamB || participants?.[1]?.team || null;
@@ -3534,9 +3535,9 @@ function createTeamTimelineEntry({ slotView, role, focusTeamId, index = 0 } = {}
     teamA: isLunch ? null : teamA,
     teamB: isLunch ? null : teamB,
     opponent: isLunch ? null : (opponent || null),
-    ref: isLunch ? null : (slotView?.ref || null),
-    refLabel: isLunch ? null : (slotView?.refLabel || null),
-    refReferenceLabel: isLunch ? null : (slotView?.refReferenceLabel || null),
+    ref: suppressRef ? null : (slotView?.ref || null),
+    refLabel: suppressRef ? null : (slotView?.refLabel || null),
+    refReferenceLabel: suppressRef ? null : (slotView?.refReferenceLabel || null),
     byeParticipants: isLunch ? [] : (Array.isArray(slotView?.byeParticipants) ? slotView.byeParticipants : []),
     byeLabel: slotView?.byeLabel || null,
     scoreSummary,

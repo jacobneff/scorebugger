@@ -750,11 +750,30 @@ function TournamentPublicView() {
     return uniqueRoundBlocks;
   }, [scheduleSlots]);
   const scheduleCourts = useMemo(() => {
-    const usedCourts = uniqueValues(
-      scheduleSlots
-        .map((slot) => (typeof slot?.courtCode === 'string' ? slot.courtCode.trim().toUpperCase() : ''))
-        .filter(Boolean)
+    const knownCourtLabelsByCode = new Map(
+      (Array.isArray(courts) ? courts : [])
+        .map((court) => {
+          const code = typeof court?.code === 'string' ? court.code.trim().toUpperCase() : '';
+          const label = typeof court?.label === 'string' ? court.label.trim() : '';
+          return [code, label];
+        })
+        .filter(([code]) => Boolean(code))
     );
+    const usedCourtsByCode = new Map();
+    scheduleSlots.forEach((slot) => {
+      const code = typeof slot?.courtCode === 'string' ? slot.courtCode.trim().toUpperCase() : '';
+      if (!code || usedCourtsByCode.has(code)) {
+        return;
+      }
+
+      const slotCourtLabel = typeof slot?.courtLabel === 'string' ? slot.courtLabel.trim() : '';
+      const knownLabel = knownCourtLabelsByCode.get(code) || '';
+      usedCourtsByCode.set(code, {
+        code,
+        label: slotCourtLabel || knownLabel || mapCourtLabel(code) || code,
+      });
+    });
+    const usedCourts = Array.from(usedCourtsByCode.keys());
     const preferredCourts = Array.isArray(tournament?.settings?.format?.activeCourts)
       ? tournament.settings.format.activeCourts
       : [];
@@ -763,12 +782,17 @@ function TournamentPublicView() {
         .map((courtCode) => (typeof courtCode === 'string' ? courtCode.trim().toUpperCase() : ''))
         .filter(Boolean)
     );
-    const orderedCourts = uniqueValues([
+    const orderedCourtCodes = uniqueValues([
       ...preferredCourtCodes.filter((courtCode) => usedCourts.includes(courtCode)),
       ...usedCourts,
     ]);
-    return orderedCourts;
-  }, [scheduleSlots, tournament]);
+    return orderedCourtCodes.map((code) =>
+      usedCourtsByCode.get(code) || {
+        code,
+        label: knownCourtLabelsByCode.get(code) || mapCourtLabel(code) || code,
+      }
+    );
+  }, [courts, scheduleSlots, tournament]);
   const hasCrossoverMatches = useMemo(
     () =>
       scheduleSlots.some(
@@ -1074,7 +1098,7 @@ function TournamentPublicView() {
                       <tr>
                         <th>Time</th>
                         {scheduleCourts.map((court) => (
-                          <th key={court}>{mapCourtLabel(court)}</th>
+                          <th key={court.code}>{court.label || mapCourtLabel(court.code)}</th>
                         ))}
                       </tr>
                     </thead>
@@ -1083,7 +1107,7 @@ function TournamentPublicView() {
                         <tr key={roundBlock}>
                           <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
                           {scheduleCourts.map((court) => {
-                            const slot = scheduleLookup[`${roundBlock}-${court}`];
+                            const slot = scheduleLookup[`${roundBlock}-${court.code}`];
                             const scoreboardKey = slot?.scoreboardCode || null;
                             const liveSummary = slot?.matchId
                               ? liveSummariesByMatchId[slot.matchId] || null
@@ -1104,7 +1128,7 @@ function TournamentPublicView() {
                               : formatCourtSlotScoreSummary(slot);
 
                             return (
-                              <td key={`${roundBlock}-${court}`}>
+                              <td key={`${roundBlock}-${court.code}`}>
                                 {slot ? (
                                   <div className="phase1-match-cell">
                                     <p>

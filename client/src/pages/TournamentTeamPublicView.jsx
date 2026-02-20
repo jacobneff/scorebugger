@@ -440,7 +440,8 @@ function TournamentTeamPublicView() {
                   && entry.matchupReferenceLabel
                   && entry.matchupReferenceLabel !== entry?.matchupLabel;
                 const hasRefReference =
-                  typeof entry?.refReferenceLabel === 'string'
+                  role === 'PLAY'
+                  && typeof entry?.refReferenceLabel === 'string'
                   && entry.refReferenceLabel
                   && entry.refReferenceLabel !== entry?.refLabel;
                 const matchDetailsHref = entry?.scoreboardCode
@@ -492,7 +493,7 @@ function TournamentTeamPublicView() {
                         {entry?.courtLabel ? <span>{entry.courtLabel}</span> : null}
                         {entry?.roundLabel ? <span>{entry.roundLabel}</span> : null}
                       </div>
-                      {entry?.refLabel && role !== 'REF' && role !== 'LUNCH' ? (
+                      {entry?.refLabel && role === 'PLAY' ? (
                         <p className="subtle">Ref: {entry.refLabel}</p>
                       ) : null}
                       {hasRefReference ? (

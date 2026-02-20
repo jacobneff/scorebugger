@@ -859,12 +859,21 @@ function TournamentsTab({
   const canEditTeamRoster = selectedTournament?.status === "setup";
   const canEditTeamNames = selectedTournament?.status === "setup";
   const canEditTeamAssets = Boolean(selectedTournament);
+  const selectedFormatId =
+    typeof selectedTournament?.settings?.format?.formatId === "string"
+      ? selectedTournament.settings.format.formatId.trim()
+      : "";
+  const isLegacyOduFormat = selectedFormatId === "odu_15_5courts_v1";
   const selectedTournamentRole = selectedTournament?.accessRole || (selectedTournament?.isOwner ? "owner" : "admin");
   const selectedTournamentIsOwner = selectedTournamentRole === "owner";
   const currentTeamCount = teamRows.length;
 
   const teamWarnings = useMemo(() => {
     if (!selectedTournament) {
+      return [];
+    }
+
+    if (!isLegacyOduFormat) {
       return [];
     }
 
@@ -876,7 +885,7 @@ function TournamentsTab({
       warnings.push("Pool auto-fill uses the first 15 teams by card order.");
     }
     return warnings;
-  }, [currentTeamCount, selectedTournament]);
+  }, [currentTeamCount, isLegacyOduFormat, selectedTournament]);
   const detailsPreviewUrls = useMemo(
     () =>
       detailsDraft.mapImageSlots

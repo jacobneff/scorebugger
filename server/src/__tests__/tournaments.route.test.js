@@ -175,6 +175,32 @@ describe('tournament routes', () => {
     );
   });
 
+  test('GET /api/tournaments/:id returns explicit applied format settings', async () => {
+    const tournament = await Tournament.create({
+      name: 'Applied Format Tournament',
+      date: new Date('2026-07-11T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'FMT001',
+      createdByUserId: user._id,
+      settings: {
+        format: {
+          formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+          activeCourts: ['SRC-1', 'SRC-2', 'VC-1'],
+        },
+      },
+    });
+
+    const response = await request(app)
+      .get(`/api/tournaments/${tournament._id}`)
+      .set(authHeader());
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.settings?.format).toEqual({
+      formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+      activeCourts: ['SRC-1', 'SRC-2', 'VC-1'],
+    });
+  });
+
   test('PATCH /api/tournaments/:id/details updates details for the owner', async () => {
     const tournament = await Tournament.create({
       name: 'Details Edit Tournament',
@@ -671,6 +697,152 @@ describe('tournament routes', () => {
         scoreboards: 0,
       },
     });
+  });
+
+  test('POST /api/tournaments/:id/stages/:stageKey/pools/autofill fills applied stage pools using team order', async () => {
+    const tournament = await Tournament.create({
+      name: 'Stage Autofill Tournament',
+      date: new Date('2026-08-22T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'STGAF1',
+      createdByUserId: user._id,
+      settings: {
+        format: {
+          formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+          activeCourts: ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1'],
+        },
+      },
+    });
+
+    await TournamentTeam.insertMany(
+      Array.from({ length: 14 }, (_, index) => ({
+        tournamentId: tournament._id,
+        name: `Team ${index + 1}`,
+        shortName: `T${index + 1}`,
+        orderIndex: index + 1,
+      })),
+      { ordered: true }
+    );
+
+    const response = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools/autofill`)
+      .set(authHeader());
+
+    expect(response.statusCode).toBe(200);
+    expect(Array.isArray(response.body)).toBe(true);
+    expect(response.body).toHaveLength(4);
+    expect(response.body.map((pool) => pool.name)).toEqual(['A', 'B', 'C', 'D']);
+    expect(response.body.map((pool) => pool.requiredTeamCount)).toEqual([4, 4, 3, 3]);
+
+    const totalAssigned = response.body.reduce(
+      (sum, pool) => sum + (Array.isArray(pool.teamIds) ? pool.teamIds.length : 0),
+      0
+    );
+    expect(totalAssigned).toBe(14);
+
+    response.body.forEach((pool) => {
+      expect(Array.isArray(pool.teamIds)).toBe(true);
+      expect(pool.teamIds.length).toBe(pool.requiredTeamCount);
+    });
+  });
+
+  test('POST /api/tournaments/:id/stages/:stageKey/pools/autofill returns conflict unless forced when pools already assigned', async () => {
+    const tournament = await Tournament.create({
+      name: 'Stage Autofill Conflict Tournament',
+      date: new Date('2026-08-22T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'STGAF2',
+      createdByUserId: user._id,
+      settings: {
+        format: {
+          formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+          activeCourts: ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1'],
+        },
+      },
+    });
+
+    await TournamentTeam.insertMany(
+      Array.from({ length: 14 }, (_, index) => ({
+        tournamentId: tournament._id,
+        name: `Team ${index + 1}`,
+        shortName: `T${index + 1}`,
+        orderIndex: index + 1,
+      })),
+      { ordered: true }
+    );
+
+    const first = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools/autofill`)
+      .set(authHeader());
+    expect(first.statusCode).toBe(200);
+
+    const conflict = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools/autofill`)
+      .set(authHeader());
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.body.message).toMatch(/already contain teams/i);
+
+    const forced = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools/autofill?force=true`)
+      .set(authHeader());
+    expect(forced.statusCode).toBe(200);
+    expect(Array.isArray(forced.body)).toBe(true);
+    expect(forced.body).toHaveLength(4);
+  });
+
+  test('POST /api/tournaments/:id/stages/:stageKey/pools/autofill rejects non-poolPlay stages', async () => {
+    const tournament = await Tournament.create({
+      name: 'Stage Autofill Reject Tournament',
+      date: new Date('2026-08-22T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'STGAF3',
+      createdByUserId: user._id,
+      settings: {
+        format: {
+          formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+          activeCourts: ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1'],
+        },
+      },
+    });
+
+    const response = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/playoffs/pools/autofill`)
+      .set(authHeader());
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.message).toMatch(/not a poolPlay stage/i);
+  });
+
+  test('POST /api/tournaments/:id/stages/:stageKey/pools/autofill requires tournament access', async () => {
+    const tournament = await Tournament.create({
+      name: 'Stage Autofill Access Tournament',
+      date: new Date('2026-08-22T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'STGAF4',
+      createdByUserId: user._id,
+      settings: {
+        format: {
+          formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+          activeCourts: ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1'],
+        },
+      },
+    });
+
+    const intruder = await User.create({
+      email: 'intruder-stage-autofill@example.com',
+      passwordHash: 'hashed',
+      emailVerified: true,
+    });
+    const intruderToken = jwt.sign({ sub: intruder._id.toString() }, process.env.JWT_SECRET);
+
+    const response = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools/autofill`)
+      .set({
+        Authorization: `Bearer ${intruderToken}`,
+      });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body.message).toMatch(/not found or unauthorized/i);
   });
 
   test('creating a team with shortName only defaults name and assigns incremental orderIndex', async () => {

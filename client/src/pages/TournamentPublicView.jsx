@@ -385,7 +385,6 @@ function TournamentPublicView() {
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
   const [details, setDetails] = useState(() => TOURNAMENT_DETAILS_DEFAULTS);
   const [liveMatches, setLiveMatches] = useState([]);
-  const [publicTeamCount, setPublicTeamCount] = useState(0);
 
   const loadPublicData = useCallback(
     async ({ silent = false } = {}) => {
@@ -466,12 +465,7 @@ function TournamentPublicView() {
           typeof tournamentPayload?.tournament?.settings?.format?.formatId === 'string'
             ? tournamentPayload.tournament.settings.format.formatId.trim()
             : '';
-        const payloadTeamCount = Array.isArray(tournamentPayload?.teams)
-          ? tournamentPayload.teams.length
-          : 0;
-        const supportsPhase2 =
-          tournamentFormatId === ODU_15_FORMAT_ID ||
-          (!tournamentFormatId && Number(payloadTeamCount) === 15);
+        const supportsPhase2 = tournamentFormatId === ODU_15_FORMAT_ID;
         if (!phase2StandingsResponse.ok && supportsPhase2) {
           throw new Error(phase2StandingsPayload?.message || 'Unable to load Pool Play 2 standings');
         }
@@ -489,7 +483,6 @@ function TournamentPublicView() {
         }
 
         setTournament(tournamentPayload.tournament);
-        setPublicTeamCount(payloadTeamCount);
         setDetails(normalizeTournamentDetails(detailsPayload?.details));
         setLiveMatches(Array.isArray(liveMatchesPayload) ? liveMatchesPayload : []);
         setPools(normalizePools(poolPayload));
@@ -650,13 +643,7 @@ function TournamentPublicView() {
     typeof tournament?.settings?.format?.formatId === 'string'
       ? tournament.settings.format.formatId.trim()
       : '';
-  const hasPhase2StandingsData =
-    (Array.isArray(standingsByPhase?.phase2?.pools) && standingsByPhase.phase2.pools.length > 0) ||
-    (Array.isArray(standingsByPhase?.phase2?.overall) && standingsByPhase.phase2.overall.length > 0);
-  const supportsPhase2 =
-    formatId === ODU_15_FORMAT_ID ||
-    (!formatId && Number(publicTeamCount) === 15) ||
-    hasPhase2StandingsData;
+  const supportsPhase2 = formatId === ODU_15_FORMAT_ID;
   const phase1Label = supportsPhase2 ? 'Pool Play 1' : 'Pool Play';
   const phase2Label = 'Pool Play 2';
   const scheduleMatches = useMemo(
@@ -731,6 +718,19 @@ function TournamentPublicView() {
         return phase1Label;
       }
       return String(match?.phase || '').trim() === 'phase2' ? phase2Label : phase1Label;
+    },
+    [phase1Label, phase2Label]
+  );
+  const getPhaseLabel = useCallback(
+    (phase) => {
+      const normalizedPhase = String(phase || '').trim().toLowerCase();
+      if (normalizedPhase === 'phase2') {
+        return phase2Label;
+      }
+      if (normalizedPhase === 'playoffs') {
+        return 'Playoffs';
+      }
+      return phase1Label;
     },
     [phase1Label, phase2Label]
   );
@@ -902,7 +902,7 @@ function TournamentPublicView() {
                         {courtLabel} · {facilityLabel}
                       </p>
                       <p className="tournament-live-card-phase">
-                        {match?.phaseLabel || match?.phase || 'Match'}
+                        {getPhaseLabel(match?.phase)}
                         {match?.bracket ? ` · ${String(match.bracket).toUpperCase()}` : ''}
                       </p>
                       <p className="tournament-live-card-teams">
@@ -1240,7 +1240,7 @@ function TournamentPublicView() {
                           </p>
                           <div className="court-schedule-meta">
                             <span className={statusMeta.className}>{statusMeta.label}</span>
-                            <span>{match.phaseLabel || match.phase || ''}</span>
+                            <span>{getPhaseLabel(match.phase)}</span>
                             {match.poolName ? <span>Pool {match.poolName}</span> : null}
                           </div>
                           <p className="subtle">

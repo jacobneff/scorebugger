@@ -256,7 +256,7 @@ function TournamentPlayoffsAdmin() {
     typeof tournament?.settings?.format?.formatId === 'string'
       ? tournament.settings.format.formatId.trim()
       : '';
-  const isLegacyOduFormat = !formatId || formatId === ODU_15_FORMAT_ID;
+  const isLegacyOduFormat = formatId === ODU_15_FORMAT_ID;
 
   const generatePlayoffs = useCallback(
     async (force = false) => {
@@ -472,8 +472,8 @@ function TournamentPlayoffsAdmin() {
                 activeSubTab: 'playoffs',
                 showPhase2: isLegacyOduFormat,
                 phase1Label: isLegacyOduFormat ? 'Pool Play 1' : 'Pool Play',
-                phase1Href: isLegacyOduFormat ? `/tournaments/${id}/phase1` : `/tournaments/${id}/format`,
-                phase2Href: isLegacyOduFormat ? `/tournaments/${id}/phase2` : `/tournaments/${id}/format`,
+                phase1Href: isLegacyOduFormat ? `/tournaments/${id}/phase1` : `/tournaments/${id}/pool-play`,
+                phase2Href: isLegacyOduFormat ? `/tournaments/${id}/phase2` : `/tournaments/${id}/pool-play`,
               }}
             />
           </div>

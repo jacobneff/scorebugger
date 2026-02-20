@@ -560,6 +560,58 @@ function compareTeamsByTournamentOrder(teamA, teamB) {
   return String(toIdString(teamA?._id) || '').localeCompare(String(toIdString(teamB?._id) || ''));
 }
 
+function buildSerpentinePoolAssignments(orderedTeams, orderedPools) {
+  const pools = Array.isArray(orderedPools)
+    ? orderedPools.map((pool) => ({
+        poolId: toIdString(pool?._id),
+        name: String(pool?.name || ''),
+        requiredTeamCount: Number.isFinite(Number(pool?.requiredTeamCount)) && Number(pool.requiredTeamCount) > 0
+          ? Math.floor(Number(pool.requiredTeamCount))
+          : 3,
+        teamIds: [],
+      }))
+    : [];
+  const teams = Array.isArray(orderedTeams) ? orderedTeams : [];
+
+  if (pools.length === 0 || teams.length === 0) {
+    return pools;
+  }
+
+  const maxSlots = pools.reduce((total, pool) => total + pool.requiredTeamCount, 0);
+  const teamCountToAssign = Math.min(teams.length, maxSlots);
+
+  let poolIndex = 0;
+  let direction = 1;
+  let assignedCount = 0;
+
+  while (assignedCount < teamCountToAssign) {
+    const currentPool = pools[poolIndex];
+
+    if (currentPool && currentPool.teamIds.length < currentPool.requiredTeamCount) {
+      currentPool.teamIds.push(toIdString(teams[assignedCount]?._id));
+      assignedCount += 1;
+    }
+
+    const hasCapacityRemaining = pools.some(
+      (pool) => pool.teamIds.length < pool.requiredTeamCount
+    );
+    if (!hasCapacityRemaining) {
+      break;
+    }
+
+    poolIndex += direction;
+    if (poolIndex >= pools.length) {
+      direction = -1;
+      poolIndex = pools.length - 1;
+    } else if (poolIndex < 0) {
+      direction = 1;
+      poolIndex = 0;
+    }
+  }
+
+  return pools;
+}
+
 function validateStandingsPhaseFilter(phase) {
   if (!phase) {
     return null;
@@ -4026,6 +4078,173 @@ router.post('/:id/stages/:stageKey/pools/init', requireAuth, async (req, res, ne
   }
 });
 
+// POST /api/tournaments/:id/stages/:stageKey/pools/autofill -> serpentine fill stage pools from team order
+router.post('/:id/stages/:stageKey/pools/autofill', requireAuth, async (req, res, next) => {
+  try {
+    const { id, stageKey } = req.params;
+    const normalizedStageKey = isNonEmptyString(stageKey) ? stageKey.trim() : '';
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    if (!normalizedStageKey) {
+      return res.status(400).json({ message: 'stageKey is required' });
+    }
+
+    const ownedContext = await getOwnedTournamentAndTeamCount(
+      id,
+      req.user.id,
+      'publicCode status settings facilities'
+    );
+
+    if (!ownedContext) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const { tournament, teamCount } = ownedContext;
+    const formatContext = getTournamentFormatContext(tournament, teamCount);
+
+    if (!formatContext.formatDef) {
+      return res.status(400).json({ message: 'No tournament format has been applied yet' });
+    }
+
+    const stageDef = resolveStage(formatContext.formatDef, normalizedStageKey);
+
+    if (!stageDef) {
+      return res.status(404).json({ message: 'Unknown stageKey for current format' });
+    }
+
+    if (stageDef.type !== 'poolPlay') {
+      return res.status(400).json({
+        message: `Stage ${stageDef.key} is not a poolPlay stage`,
+      });
+    }
+
+    const stagePoolNames = Array.isArray(stageDef.pools)
+      ? stageDef.pools.map((poolDef) => String(poolDef?.name || '')).filter(Boolean)
+      : [];
+
+    if (stagePoolNames.length === 0) {
+      return res.status(400).json({
+        message: `Stage ${stageDef.key} has no pool definitions`,
+      });
+    }
+
+    await instantiatePools(
+      id,
+      formatContext.formatDef,
+      stageDef.key,
+      formatContext.activeCourts,
+      { clearTeamIds: false }
+    );
+
+    const phase = resolvePoolPhase(formatContext.formatDef, stageDef.key, stageDef);
+    const pools = await Pool.find({
+      tournamentId: id,
+      phase,
+      name: { $in: stagePoolNames },
+      $or: [{ stageKey: stageDef.key }, { stageKey: null }, { stageKey: { $exists: false } }],
+    })
+      .select('_id name requiredTeamCount teamIds')
+      .lean();
+    const poolByName = new Map(
+      pools.map((pool) => [String(pool?.name || '').trim(), pool])
+    );
+    const orderedPools = stagePoolNames
+      .map((poolName) => poolByName.get(poolName))
+      .filter(Boolean);
+
+    if (orderedPools.length === 0) {
+      return res.status(404).json({
+        message: `No pools found for stage ${stageDef.key}. Initialize pools first.`,
+      });
+    }
+
+    const forceAutofill = parseBooleanFlag(req.query?.force ?? req.body?.force, false);
+    const hasAnyAssignedTeams = orderedPools.some(
+      (pool) => Array.isArray(pool?.teamIds) && pool.teamIds.length > 0
+    );
+
+    if (hasAnyAssignedTeams && !forceAutofill) {
+      return res.status(409).json({
+        message: `${stageDef.displayName || stageDef.key} pools already contain teams. Re-run with ?force=true to overwrite assignments.`,
+      });
+    }
+
+    const teams = await TournamentTeam.find({ tournamentId: id })
+      .select('_id name shortName orderIndex createdAt')
+      .lean();
+    teams.sort(compareTeamsByTournamentOrder);
+
+    const stageAssignments = buildSerpentinePoolAssignments(teams, orderedPools);
+    const writeOperations = stageAssignments
+      .map((assignment) => {
+        if (!assignment?.poolId || !isObjectId(assignment.poolId)) {
+          return null;
+        }
+
+        const requiredTeamCount =
+          Number.isFinite(Number(assignment.requiredTeamCount)) &&
+          Number(assignment.requiredTeamCount) > 0
+            ? Math.floor(Number(assignment.requiredTeamCount))
+            : 3;
+        const teamIds = Array.isArray(assignment.teamIds)
+          ? assignment.teamIds.filter((teamId) => isObjectId(teamId))
+          : [];
+
+        return {
+          updateOne: {
+            filter: { _id: assignment.poolId },
+            update: {
+              $set: {
+                stageKey: stageDef.key,
+                requiredTeamCount,
+                teamIds,
+              },
+            },
+          },
+        };
+      })
+      .filter(Boolean);
+
+    if (writeOperations.length > 0) {
+      await Pool.bulkWrite(writeOperations, { ordered: true });
+    }
+
+    const populatedPools = await Pool.find({
+      tournamentId: id,
+      phase,
+      name: { $in: stagePoolNames },
+      $or: [{ stageKey: stageDef.key }, { stageKey: null }, { stageKey: { $exists: false } }],
+    })
+      .populate('teamIds', 'name shortName logoUrl orderIndex seed')
+      .lean();
+    const populatedPoolByName = new Map(
+      populatedPools.map((pool) => [String(pool?.name || '').trim(), pool])
+    );
+    const orderedSerializedPools = stagePoolNames
+      .map((poolName) => populatedPoolByName.get(poolName))
+      .filter(Boolean)
+      .map(serializePool);
+
+    emitTournamentEventFromRequest(
+      req,
+      tournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.POOLS_UPDATED,
+      {
+        phase,
+        stageKey: stageDef.key,
+        poolIds: orderedSerializedPools.map((pool) => pool._id).filter(Boolean),
+      }
+    );
+
+    return res.json(orderedSerializedPools);
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // POST /api/tournaments/:id/stages/:stageKey/matches/generate -> generate matches for a format stage
 router.post('/:id/stages/:stageKey/matches/generate', requireAuth, async (req, res, next) => {
   try {
@@ -5905,7 +6124,11 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid tournament id' });
     }
 
-    const adminContext = await getTournamentAccessContext(id, req.user.id);
+    const adminContext = await getTournamentAccessContext(
+      id,
+      req.user.id,
+      'name date timezone status details facilities settings.schedule settings.format'
+    );
     const tournament = adminContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });

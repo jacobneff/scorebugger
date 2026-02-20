@@ -317,6 +317,7 @@ function TournamentPhase2Admin() {
   const [matchActionId, setMatchActionId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [routeGuard, setRouteGuard] = useState('');
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
   const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now());
 
@@ -427,13 +428,33 @@ function TournamentPhase2Admin() {
           ? tournamentData.settings.format.formatId.trim()
           : '';
 
-      if (formatId && formatId !== ODU_15_FORMAT_ID) {
-        navigate(`/tournaments/${id}/format`, { replace: true });
+      if (!formatId) {
+        setTournament(tournamentData);
+        setPools([]);
+        setMatches([]);
+        setStandingsByPhase({
+          phase2: { pools: [], overall: [] },
+          cumulative: { pools: [], overall: [] },
+        });
+        setRouteGuard('apply-format');
+        return;
+      }
+
+      if (formatId !== ODU_15_FORMAT_ID) {
+        setTournament(tournamentData);
+        setPools([]);
+        setMatches([]);
+        setStandingsByPhase({
+          phase2: { pools: [], overall: [] },
+          cumulative: { pools: [], overall: [] },
+        });
+        setRouteGuard('wrong-format');
         return;
       }
 
       const phase1SeedLookup = buildPhase1SeedLookup(phase1Standings);
 
+      setRouteGuard('');
       setTournament(tournamentData);
       setPhase1SeedByTeamId(phase1SeedLookup);
       setPools(applyPhase1SeedsToPools(poolData, phase1SeedLookup));
@@ -447,7 +468,7 @@ function TournamentPhase2Admin() {
     } finally {
       setLoading(false);
     }
-  }, [applyPhase1SeedsToPools, fetchJson, id, loadMatches, loadPools, loadStandings, navigate, token]);
+  }, [applyPhase1SeedsToPools, fetchJson, id, loadMatches, loadPools, loadStandings, token]);
 
   const refreshMatchesAndStandings = useCallback(async () => {
     setStandingsLoading(true);
@@ -1216,6 +1237,80 @@ function TournamentPhase2Admin() {
     );
   }
 
+  if (routeGuard === 'apply-format') {
+    return (
+      <main className="container">
+        <section className="card phase1-admin-card">
+          <div className="phase1-admin-header">
+            <div>
+              <h1 className="title">Pool Play 2 Setup</h1>
+              <p className="subtitle">
+                {tournament?.name || 'Tournament'} • Apply a format before opening this page.
+              </p>
+              <TournamentAdminNav
+                tournamentId={id}
+                publicCode={tournament?.publicCode || ''}
+                activeMainTab="scheduling"
+                scheduling={{
+                  activeSubTab: 'phase2',
+                  showPhase2: true,
+                  phase1Label: 'Pool Play 1',
+                  phase1Href: `/tournaments/${id}/phase1`,
+                  phase2Label: 'Pool Play 2',
+                  phase2Href: `/tournaments/${id}/phase2`,
+                  playoffsHref: `/tournaments/${id}/playoffs`,
+                }}
+              />
+            </div>
+          </div>
+          <div className="tournaments-route-error">
+            <p className="error">Apply format first.</p>
+            <a className="secondary-button" href={`/tournaments/${id}/format`}>
+              Open Format Page
+            </a>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (routeGuard === 'wrong-format') {
+    return (
+      <main className="container">
+        <section className="card phase1-admin-card">
+          <div className="phase1-admin-header">
+            <div>
+              <h1 className="title">Pool Play 2 Setup</h1>
+              <p className="subtitle">
+                {tournament?.name || 'Tournament'} • This page is only for the legacy ODU 15 format.
+              </p>
+              <TournamentAdminNav
+                tournamentId={id}
+                publicCode={tournament?.publicCode || ''}
+                activeMainTab="scheduling"
+                scheduling={{
+                  activeSubTab: 'phase2',
+                  showPhase2: false,
+                  phase1Label: 'Pool Play',
+                  phase1Href: `/tournaments/${id}/pool-play`,
+                  playoffsHref: `/tournaments/${id}/playoffs`,
+                }}
+              />
+            </div>
+          </div>
+          <div className="tournaments-route-error">
+            <p className="error">
+              Wrong page for current format. Use the Pool Play page for this tournament.
+            </p>
+            <a className="secondary-button" href={`/tournaments/${id}/pool-play`}>
+              Open Pool Play
+            </a>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="container">
       <section className="card phase1-admin-card">
@@ -1232,6 +1327,12 @@ function TournamentPhase2Admin() {
               activeMainTab="scheduling"
               scheduling={{
                 activeSubTab: 'phase2',
+                showPhase2: true,
+                phase1Label: 'Pool Play 1',
+                phase1Href: `/tournaments/${id}/phase1`,
+                phase2Label: 'Pool Play 2',
+                phase2Href: `/tournaments/${id}/phase2`,
+                playoffsHref: `/tournaments/${id}/playoffs`,
               }}
             />
           </div>

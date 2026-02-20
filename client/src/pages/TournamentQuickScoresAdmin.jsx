@@ -21,7 +21,7 @@ import {
 
 const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 const buildPhaseOptions = (formatId) => {
-  const supportsPhase2 = !formatId || formatId === ODU_15_FORMAT_ID;
+  const supportsPhase2 = formatId === ODU_15_FORMAT_ID;
   const options = [
     { value: 'phase1', label: supportsPhase2 ? 'Pool Play 1' : 'Pool Play' },
   ];

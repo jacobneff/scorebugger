@@ -26,7 +26,7 @@ function TournamentAdminNav({
   ];
 
   const showSchedulingSubtabs = Boolean(scheduling && typeof scheduling === 'object');
-  const showPhase2 = scheduling?.showPhase2 !== false;
+  const showPhase2 = scheduling?.showPhase2 === true;
   const schedulingTabs = showSchedulingSubtabs
     ? [
         {
@@ -36,8 +36,8 @@ function TournamentAdminNav({
         },
         {
           key: 'phase1',
-          label: scheduling?.phase1Label || 'Pool Play 1',
-          href: scheduling?.phase1Href || `/tournaments/${id}/phase1`,
+          label: scheduling?.phase1Label || 'Pool Play',
+          href: scheduling?.phase1Href || `/tournaments/${id}/pool-play`,
         },
         ...(showPhase2
           ? [

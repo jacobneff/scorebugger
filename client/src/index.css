@@ -2537,6 +2537,12 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
+.phase1-action-help {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.4rem;
+}
+
 .tournament-admin-nav {
   display: grid;
   gap: 0.55rem;

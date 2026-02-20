@@ -7,6 +7,7 @@ import ResetPassword from './pages/ResetPassword.jsx';
 import TournamentMatchControl from './pages/TournamentMatchControl.jsx';
 import TournamentDetailsAdmin from './pages/TournamentDetailsAdmin.jsx';
 import TournamentFormatAdmin from './pages/TournamentFormatAdmin.jsx';
+import TournamentPoolPlayAdmin from './pages/TournamentPoolPlayAdmin.jsx';
 import TournamentPhase1Admin from './pages/TournamentPhase1Admin.jsx';
 import TournamentPhase2Admin from './pages/TournamentPhase2Admin.jsx';
 import TournamentPlayoffsAdmin from './pages/TournamentPlayoffsAdmin.jsx';
@@ -30,6 +31,7 @@ function App() {
       <Route path="/tournaments/:id/details" element={<TournamentDetailsAdmin />} />
       <Route path="/tournaments/:id/teams" element={<TournamentTeamsAdmin />} />
       <Route path="/tournaments/:id/format" element={<TournamentFormatAdmin />} />
+      <Route path="/tournaments/:id/pool-play" element={<TournamentPoolPlayAdmin />} />
       <Route path="/tournaments/:id/phase1" element={<TournamentPhase1Admin />} />
       <Route path="/tournaments/:id/phase2" element={<TournamentPhase2Admin />} />
       <Route path="/tournaments/:id/playoffs" element={<TournamentPlayoffsAdmin />} />

@@ -281,6 +281,7 @@ function TournamentPhase1Admin() {
   const [matchActionId, setMatchActionId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [routeGuard, setRouteGuard] = useState('');
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
   const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now());
   const [dragPreviewPools, setDragPreviewPools] = useState(null);
@@ -375,7 +376,32 @@ function TournamentPhase1Admin() {
         loadMatches(),
         loadStandings(),
       ]);
+      const formatId =
+        typeof tournamentData?.settings?.format?.formatId === 'string'
+          ? tournamentData.settings.format.formatId.trim()
+          : '';
 
+      if (!formatId) {
+        setTournament(tournamentData);
+        setPools([]);
+        setTeams(teamData);
+        setMatches([]);
+        setStandings({ pools: [], overall: [] });
+        setRouteGuard('apply-format');
+        return;
+      }
+
+      if (formatId !== ODU_15_FORMAT_ID) {
+        setTournament(tournamentData);
+        setPools([]);
+        setTeams(teamData);
+        setMatches([]);
+        setStandings({ pools: [], overall: [] });
+        setRouteGuard('wrong-format');
+        return;
+      }
+
+      setRouteGuard('');
       setTournament(tournamentData);
       setPools(poolData);
       setTeams(teamData);
@@ -1161,6 +1187,80 @@ function TournamentPhase1Admin() {
     );
   }
 
+  if (routeGuard === 'apply-format') {
+    return (
+      <main className="container">
+        <section className="card phase1-admin-card">
+          <div className="phase1-admin-header">
+            <div>
+              <h1 className="title">Pool Play 1 Setup</h1>
+              <p className="subtitle">
+                {tournament?.name || 'Tournament'} • Apply format before opening this page.
+              </p>
+              <TournamentAdminNav
+                tournamentId={id}
+                publicCode={tournament?.publicCode || ''}
+                activeMainTab="scheduling"
+                scheduling={{
+                  activeSubTab: 'phase1',
+                  showPhase2: true,
+                  phase1Label: 'Pool Play 1',
+                  phase1Href: `/tournaments/${id}/phase1`,
+                  phase2Label: 'Pool Play 2',
+                  phase2Href: `/tournaments/${id}/phase2`,
+                  playoffsHref: `/tournaments/${id}/playoffs`,
+                }}
+              />
+            </div>
+          </div>
+          <div className="tournaments-route-error">
+            <p className="error">Apply format first.</p>
+            <a className="secondary-button" href={`/tournaments/${id}/format`}>
+              Open Format Page
+            </a>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (routeGuard === 'wrong-format') {
+    return (
+      <main className="container">
+        <section className="card phase1-admin-card">
+          <div className="phase1-admin-header">
+            <div>
+              <h1 className="title">Pool Play 1 Setup</h1>
+              <p className="subtitle">
+                {tournament?.name || 'Tournament'} • This page is only for legacy ODU 15 tournaments.
+              </p>
+              <TournamentAdminNav
+                tournamentId={id}
+                publicCode={tournament?.publicCode || ''}
+                activeMainTab="scheduling"
+                scheduling={{
+                  activeSubTab: 'phase1',
+                  showPhase2: false,
+                  phase1Label: 'Pool Play',
+                  phase1Href: `/tournaments/${id}/pool-play`,
+                  playoffsHref: `/tournaments/${id}/playoffs`,
+                }}
+              />
+            </div>
+          </div>
+          <div className="tournaments-route-error">
+            <p className="error">
+              Wrong page for current format. Open Pool Play for this tournament.
+            </p>
+            <a className="secondary-button" href={`/tournaments/${id}/pool-play`}>
+              Open Pool Play
+            </a>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="container">
       <section className="card phase1-admin-card">
@@ -1177,9 +1277,12 @@ function TournamentPhase1Admin() {
               activeMainTab="scheduling"
               scheduling={{
                 activeSubTab: 'phase1',
-                showPhase2:
-                  !tournament?.settings?.format?.formatId ||
-                  tournament?.settings?.format?.formatId === 'odu_15_5courts_v1',
+                showPhase2: true,
+                phase1Label: 'Pool Play 1',
+                phase1Href: `/tournaments/${id}/phase1`,
+                phase2Label: 'Pool Play 2',
+                phase2Href: `/tournaments/${id}/phase2`,
+                playoffsHref: `/tournaments/${id}/playoffs`,
               }}
             />
           </div>
@@ -1196,7 +1299,7 @@ function TournamentPhase1Admin() {
                 autofillLoading
               }
             >
-              {initLoading ? 'Creating...' : 'Create Pool Play 1 Pools'}
+              {initLoading ? 'Initializing Pools...' : 'Initialize Pools from Format Template'}
             </button>
             <button
               className="secondary-button"
@@ -1210,7 +1313,7 @@ function TournamentPhase1Admin() {
                 generateLoading
               }
             >
-              {autofillLoading ? 'Auto-filling...' : 'Auto-fill pools from team order'}
+              {autofillLoading ? 'Distributing...' : 'Distribute Teams by Ranking Order'}
             </button>
             <button
               className="primary-button"
@@ -1231,6 +1334,15 @@ function TournamentPhase1Admin() {
               </button>
             )}
           </div>
+        </div>
+
+        <div className="phase1-action-help">
+          <p className="subtle">
+            Initialize creates or refreshes Pool Play 1 shells from the applied format template.
+          </p>
+          <p className="subtle">
+            Distribute applies serpentine team assignment using Team Setup ranking order.
+          </p>
         </div>
 
         {(savingPools || savingCourtAssignments) && (

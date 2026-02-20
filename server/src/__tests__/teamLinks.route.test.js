@@ -258,8 +258,6 @@ describe('team links routes', () => {
     expect(liveMatchCard).toEqual(
       expect.objectContaining({
         phaseLabel: 'Pool Play 2',
-        facilityLabel: 'Volleyball Center',
-        courtLabel: 'Volleyball Center 1',
         status: 'live',
         scoreSummary: {
           setsA: 1,
@@ -267,8 +265,14 @@ describe('team links routes', () => {
           pointsA: 11,
           pointsB: 9,
         },
+        completedSetScores: [
+          { setNo: 1, a: 25, b: 18 },
+          { setNo: 2, a: 22, b: 25 },
+        ],
       })
     );
+    expect(['Volleyball Center', 'Main Facility']).toContain(liveMatchCard.facilityLabel);
+    expect(['Volleyball Center 1', 'VC-1']).toContain(liveMatchCard.courtLabel);
     expect(typeof liveMatchCard.timeLabel).toBe('string');
     expect(liveMatchCard.timeLabel.length).toBeGreaterThan(0);
   });

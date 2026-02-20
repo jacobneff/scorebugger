@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const Tournament = require('./Tournament');
 
 const MatchResultSetScoreSchema = new mongoose.Schema(
   {
@@ -90,6 +89,11 @@ const MatchSchema = new mongoose.Schema(
       enum: ['phase1', 'phase2', 'playoffs'],
       required: true,
     },
+    stageKey: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     poolId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Pool',
@@ -97,13 +101,13 @@ const MatchSchema = new mongoose.Schema(
     },
     bracket: {
       type: String,
-      enum: ['gold', 'silver', 'bronze'],
       default: null,
+      trim: true,
     },
     bracketRound: {
       type: String,
-      enum: ['R1', 'R2', 'R3'],
       default: null,
+      trim: true,
     },
     bracketMatchKey: {
       type: String,
@@ -114,13 +118,13 @@ const MatchSchema = new mongoose.Schema(
       type: Number,
       default: null,
       min: 1,
-      max: 5,
+      max: 64,
     },
     seedB: {
       type: Number,
       default: null,
       min: 1,
-      max: 5,
+      max: 64,
     },
     teamAFromMatchId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -148,35 +152,23 @@ const MatchSchema = new mongoose.Schema(
     },
     facility: {
       type: String,
-      enum: ['SRC', 'VC'],
-      required: true,
+      default: null,
+      trim: true,
     },
     court: {
       type: String,
-      required: true,
+      default: null,
       trim: true,
-      validate: {
-        validator: async function validateCourt(value) {
-          if (!value || !this.tournamentId || !this.facility) {
-            return false;
-          }
-
-          const tournament = await Tournament.findById(this.tournamentId)
-            .select('facilities')
-            .lean();
-
-          if (!tournament?.facilities) {
-            return false;
-          }
-
-          const courts = Array.isArray(tournament.facilities[this.facility])
-            ? tournament.facilities[this.facility]
-            : [];
-
-          return courts.includes(value);
-        },
-        message: 'Court must match a configured court for the selected facility.',
-      },
+    },
+    facilityId: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    courtId: {
+      type: String,
+      default: null,
+      trim: true,
     },
     teamAId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -217,15 +209,33 @@ const MatchSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    byeTeamId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TournamentTeam',
+      default: null,
+    },
     scoreboardId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Scoreboard',
       default: null,
     },
+    plannedSlotId: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     status: {
       type: String,
-      enum: ['scheduled', 'live', 'final'],
+      enum: ['scheduled', 'live', 'ended', 'final'],
       default: 'scheduled',
+    },
+    startedAt: {
+      type: Date,
+      default: null,
+    },
+    endedAt: {
+      type: Date,
+      default: null,
     },
     result: {
       type: MatchResultSchema,
@@ -243,6 +253,17 @@ const MatchSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+  }
+);
+
+MatchSchema.index({ tournamentId: 1, stageKey: 1, phase: 1, roundBlock: 1, court: 1 });
+MatchSchema.index(
+  { tournamentId: 1, plannedSlotId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      plannedSlotId: { $type: 'string' },
+    },
   }
 );
 

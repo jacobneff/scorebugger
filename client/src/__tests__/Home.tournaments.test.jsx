@@ -111,7 +111,7 @@ describe("Home tournaments tab", () => {
     expect(screen.queryByRole("button", { name: "Create tournament" })).not.toBeInTheDocument();
   });
 
-  it("creates a tournament and navigates to Pool Play 1", async () => {
+  it("creates a tournament and navigates to Format setup", async () => {
     mockUseAuth.mockReturnValue(createSignedInAuth());
     const user = userEvent.setup();
 
@@ -173,11 +173,11 @@ describe("Home tournaments tab", () => {
     });
 
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith("/tournaments/tour-1/phase1");
+      expect(mockNavigate).toHaveBeenCalledWith("/tournaments/tour-1/format");
     });
   });
 
-  it("shows details and team setup links in Tournament Hub rows", async () => {
+  it("shows open and delete actions in Tournament Hub rows", async () => {
     mockUseAuth.mockReturnValue(createSignedInAuth());
     const user = userEvent.setup();
 
@@ -188,6 +188,7 @@ describe("Home tournaments tab", () => {
       timezone: "America/New_York",
       publicCode: "LOCKED",
       status: "phase1",
+      isOwner: true,
     };
 
     globalThis.fetch.mockImplementation(async (url) => {
@@ -211,13 +212,14 @@ describe("Home tournaments tab", () => {
     expect(screen.queryByRole("heading", { name: "Tournament Details" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Team Setup" })).not.toBeInTheDocument();
 
-    expect(screen.getByRole("link", { name: "Details" })).toHaveAttribute(
-      "href",
-      "/tournaments/tour-locked/details"
-    );
-    expect(screen.getByRole("link", { name: "Team Setup" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute(
       "href",
       "/tournaments/tour-locked/teams"
     );
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Details" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Scheduling" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Quick Scores" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Public View" })).not.toBeInTheDocument();
   });
 });

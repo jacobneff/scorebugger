@@ -121,7 +121,7 @@ describe('manual finalize + standings routes', () => {
 
   async function finalizeMatch(matchId) {
     return request(app)
-      .post(`/api/matches/${matchId}/finalize`)
+      .post(`/api/matches/${matchId}/finalize?override=true`)
       .set(authHeader());
   }
 
@@ -322,7 +322,7 @@ describe('manual finalize + standings routes', () => {
       .set(authHeader());
 
     expect(unfinalize.statusCode).toBe(200);
-    expect(unfinalize.body.status).toBe('scheduled');
+    expect(unfinalize.body.status).toBe('ended');
     expect(unfinalize.body.result).toBeNull();
 
     const after = await getStandings(tournament._id);

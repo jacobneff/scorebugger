@@ -25,10 +25,12 @@ const Tournament = require('./models/Tournament');
 const scoreboardRoutes = require('./routes/scoreboards');
 const authRoutes = require('./routes/auth');
 const tournamentRoutes = require('./routes/tournaments');
+const tournamentFormatsRoutes = require('./routes/tournamentFormats');
 const tournamentTeamRoutes = require('./routes/tournamentTeams');
 const poolRoutes = require('./routes/pools');
 const matchRoutes = require('./routes/matches');
 const adminRoutes = require('./routes/admin');
+const tournamentInviteRoutes = require('./routes/tournamentInvites');
 const {
   emitScoreboardSummaryEvent,
   getTournamentRoom,
@@ -72,10 +74,12 @@ async function bootstrap() {
   app.use('/api/auth', authRoutes);
   app.use('/api/scoreboards', scoreboardRoutes);
   app.use('/api/tournaments', tournamentRoutes);
+  app.use('/api/tournament-formats', tournamentFormatsRoutes);
   app.use('/api/tournament-teams', tournamentTeamRoutes);
   app.use('/api/pools', poolRoutes);
   app.use('/api/matches', matchRoutes);
   app.use('/api/admin', adminRoutes);
+  app.use('/api/tournament-invites', tournamentInviteRoutes);
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });

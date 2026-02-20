@@ -5,26 +5,134 @@ const { requireAuth } = require('../middleware/auth');
 const Match = require('../models/Match');
 const TournamentTeam = require('../models/TournamentTeam');
 const {
-  TOURNAMENT_EVENT_TYPES,
-  emitTournamentEvent,
-} = require('../services/tournamentRealtime');
-const {
   MATCH_STATUSES,
+  emitMatchStatusUpdated,
   finalizeMatchAndEmit,
   findOwnedTournamentContext,
   serializeMatch,
   toIdString,
   unfinalizeMatchAndEmit,
 } = require('../services/matchLifecycle');
+const { syncSchedulePlan } = require('../services/schedulePlan');
 
 const router = express.Router();
 
 const isObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
+const parseBooleanFlag = (value, fallback = false) => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return value === 1;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+
+    if (['true', '1', 'yes', 'y'].includes(normalized)) {
+      return true;
+    }
+
+    if (['false', '0', 'no', 'n'].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return fallback;
+};
+
+// POST /api/matches/:matchId/start -> owner-only match start transition
+router.post('/:matchId/start', requireAuth, async (req, res, next) => {
+  try {
+    const { matchId } = req.params;
+
+    if (!isObjectId(matchId)) {
+      return res.status(400).json({ message: 'Invalid match id' });
+    }
+
+    const match = await Match.findById(matchId);
+
+    if (!match) {
+      return res.status(404).json({ message: 'Match not found' });
+    }
+
+    const tournamentContext = await findOwnedTournamentContext(match.tournamentId, req.user.id);
+
+    if (!tournamentContext) {
+      return res.status(404).json({ message: 'Match not found or unauthorized' });
+    }
+
+    if (match.status === 'final') {
+      return res.status(409).json({ message: 'Cannot start a finalized match' });
+    }
+
+    match.status = 'live';
+    match.startedAt = new Date();
+    match.endedAt = null;
+    await match.save();
+
+    const serializedMatch = serializeMatch(match.toObject());
+    emitMatchStatusUpdated(req.app?.get('io'), tournamentContext.publicCode, serializedMatch);
+
+    return res.json(serializedMatch);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// POST /api/matches/:matchId/end -> owner-only match end transition
+router.post('/:matchId/end', requireAuth, async (req, res, next) => {
+  try {
+    const { matchId } = req.params;
+
+    if (!isObjectId(matchId)) {
+      return res.status(400).json({ message: 'Invalid match id' });
+    }
+
+    const match = await Match.findById(matchId);
+
+    if (!match) {
+      return res.status(404).json({ message: 'Match not found' });
+    }
+
+    const tournamentContext = await findOwnedTournamentContext(match.tournamentId, req.user.id);
+
+    if (!tournamentContext) {
+      return res.status(404).json({ message: 'Match not found or unauthorized' });
+    }
+
+    if (match.status !== 'live') {
+      return res.status(409).json({ message: 'Only live matches can be ended' });
+    }
+
+    const endedAt = new Date();
+    match.status = 'ended';
+    match.endedAt = endedAt;
+
+    if (!match.startedAt) {
+      match.startedAt = endedAt;
+    }
+
+    await match.save();
+
+    const serializedMatch = serializeMatch(match.toObject());
+    emitMatchStatusUpdated(req.app?.get('io'), tournamentContext.publicCode, serializedMatch);
+
+    return res.json(serializedMatch);
+  } catch (error) {
+    return next(error);
+  }
+});
 
 // POST /api/matches/:matchId/finalize -> snapshot scoreboard result to the match doc
 router.post('/:matchId/finalize', requireAuth, async (req, res, next) => {
   try {
     const { matchId } = req.params;
+    const override = parseBooleanFlag(
+      req.body?.override,
+      parseBooleanFlag(req.query?.override, false)
+    );
 
     if (!isObjectId(matchId)) {
       return res.status(400).json({ message: 'Invalid match id' });
@@ -47,6 +155,16 @@ router.post('/:matchId/finalize', requireAuth, async (req, res, next) => {
       userId: req.user.id,
       io: req.app?.get('io'),
       tournamentCode: tournamentContext.publicCode,
+      override,
+    });
+
+    await syncSchedulePlan({
+      tournamentId: match.tournamentId,
+      actorUserId: req.user.id,
+      io: req.app?.get('io'),
+      emitEvents: true,
+      emitPoolsUpdated:
+        (match.phase === 'phase1' || match.phase === 'phase2') && Boolean(match.poolId),
     });
 
     return res.json(responseMatch);
@@ -55,7 +173,7 @@ router.post('/:matchId/finalize', requireAuth, async (req, res, next) => {
   }
 });
 
-// POST /api/matches/:matchId/unfinalize -> clear snapshot and return to scheduled
+// POST /api/matches/:matchId/unfinalize -> clear snapshot and return to ended
 router.post('/:matchId/unfinalize', requireAuth, async (req, res, next) => {
   try {
     const { matchId } = req.params;
@@ -80,6 +198,15 @@ router.post('/:matchId/unfinalize', requireAuth, async (req, res, next) => {
       match,
       io: req.app?.get('io'),
       tournamentCode: tournamentContext.publicCode,
+    });
+
+    await syncSchedulePlan({
+      tournamentId: match.tournamentId,
+      actorUserId: req.user.id,
+      io: req.app?.get('io'),
+      emitEvents: true,
+      emitPoolsUpdated:
+        (match.phase === 'phase1' || match.phase === 'phase2') && Boolean(match.poolId),
     });
 
     return res.json(responseMatch);
@@ -123,23 +250,42 @@ router.patch('/:matchId/status', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: 'Use unfinalize to clear a finalized result' });
     }
 
+    const nextTransitionTime = new Date();
+    let shouldSave = false;
+
     if (match.status !== nextStatus) {
       match.status = nextStatus;
+      shouldSave = true;
+    }
+
+    if (nextStatus === 'scheduled') {
+      if (match.startedAt || match.endedAt) {
+        match.startedAt = null;
+        match.endedAt = null;
+        shouldSave = true;
+      }
+    } else if (nextStatus === 'live') {
+      match.startedAt = nextTransitionTime;
+      match.endedAt = null;
+      shouldSave = true;
+    } else if (nextStatus === 'ended') {
+      if (!match.startedAt) {
+        match.startedAt = nextTransitionTime;
+        shouldSave = true;
+      }
+      match.endedAt = nextTransitionTime;
+      shouldSave = true;
+    } else if (nextStatus === 'final' && !match.endedAt) {
+      match.endedAt = nextTransitionTime;
+      shouldSave = true;
+    }
+
+    if (shouldSave) {
       await match.save();
     }
 
     const serializedMatch = serializeMatch(match.toObject());
-    const io = req.app?.get('io');
-
-    emitTournamentEvent(
-      io,
-      tournamentContext.publicCode,
-      TOURNAMENT_EVENT_TYPES.MATCH_STATUS_UPDATED,
-      {
-        matchId: serializedMatch._id,
-        status: serializedMatch.status,
-      }
-    );
+    emitMatchStatusUpdated(req.app?.get('io'), tournamentContext.publicCode, serializedMatch);
 
     return res.json(serializedMatch);
   } catch (error) {

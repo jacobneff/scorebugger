@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { FiCoffee, FiPauseCircle, FiPlayCircle, FiShield } from 'react-icons/fi';
 
 import { API_URL } from '../config/env.js';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
+import {
+  formatSetSummaryWithScores,
+  resolveCompletedSetScores,
+  toSetSummaryFromScoreSummary,
+} from '../utils/matchSetSummary.js';
+import { buildTournamentMatchControlHref } from '../utils/tournamentMatchControl.js';
 
 const REFRESH_EVENT_TYPES = new Set([
   'MATCH_FINALIZED',
@@ -10,14 +17,34 @@ const REFRESH_EVENT_TYPES = new Set([
   'MATCH_STATUS_UPDATED',
   'SCOREBOARD_SUMMARY',
   'PLAYOFFS_BRACKET_UPDATED',
+  'POOLS_UPDATED',
+  'MATCHES_GENERATED',
+  'SCHEDULE_PLAN_UPDATED',
 ]);
 
-const PHASE_SECTION_ORDER = ['phase1', 'phase2', 'playoffs'];
-const PHASE_SECTION_LABELS = {
-  phase1: 'Pool Play 1',
-  phase2: 'Pool Play 2',
-  playoffs: 'Playoffs',
-};
+const AUTH_STORAGE_KEY = 'scorebugger.auth';
+const TIMELINE_ROLE_META = Object.freeze({
+  PLAY: {
+    label: 'PLAY',
+    icon: FiPlayCircle,
+    className: 'team-timeline-role--play',
+  },
+  REF: {
+    label: 'REF',
+    icon: FiShield,
+    className: 'team-timeline-role--ref',
+  },
+  BYE: {
+    label: 'BYE',
+    icon: FiPauseCircle,
+    className: 'team-timeline-role--bye',
+  },
+  LUNCH: {
+    label: 'LUNCH',
+    icon: FiCoffee,
+    className: 'team-timeline-role--lunch',
+  },
+});
 
 const getStatusMeta = (status) => {
   if (status === 'live') {
@@ -34,24 +61,111 @@ const getStatusMeta = (status) => {
     };
   }
 
+  if (status === 'ended') {
+    return {
+      label: 'ENDED',
+      className: 'court-schedule-status court-schedule-status--ended',
+    };
+  }
+
   return {
     label: 'Scheduled',
     className: 'court-schedule-status court-schedule-status--scheduled',
   };
 };
 
-const formatScoreSummary = (scoreSummary) => {
-  if (!scoreSummary) {
-    return '';
-  }
-
-  return `Sets ${scoreSummary.setsA ?? 0}-${scoreSummary.setsB ?? 0} • Pts ${scoreSummary.pointsA ?? 0}-${scoreSummary.pointsB ?? 0}`;
-};
+const formatScoreSummary = (match) =>
+  formatSetSummaryWithScores(
+    toSetSummaryFromScoreSummary(match?.scoreSummary),
+    resolveCompletedSetScores(match)
+  );
 
 const formatOpponentLabel = (match) => match?.opponent?.shortName || 'TBD';
 
 const formatTeamsPlaying = (match) =>
   `${match?.teamA?.shortName || 'TBD'} vs ${match?.teamB?.shortName || 'TBD'}`;
+
+const readStoredAuthToken = () => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  try {
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) {
+      return '';
+    }
+
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.token === 'string' ? parsed.token.trim() : '';
+  } catch {
+    return '';
+  }
+};
+
+const sortTimelineRows = (rows) =>
+  [...(Array.isArray(rows) ? rows : [])].sort((left, right) => {
+    const leftTime = Number.isFinite(Number(left?.timeIndex))
+      ? Number(left.timeIndex)
+      : Number.isFinite(Number(left?.roundBlock))
+        ? Number(left.roundBlock) * 100
+        : Number.MAX_SAFE_INTEGER;
+    const rightTime = Number.isFinite(Number(right?.timeIndex))
+      ? Number(right.timeIndex)
+      : Number.isFinite(Number(right?.roundBlock))
+        ? Number(right.roundBlock) * 100
+        : Number.MAX_SAFE_INTEGER;
+    if (leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+
+    const leftRound = Number.isFinite(Number(left?.roundBlock))
+      ? Number(left.roundBlock)
+      : Number.MAX_SAFE_INTEGER;
+    const rightRound = Number.isFinite(Number(right?.roundBlock))
+      ? Number(right.roundBlock)
+      : Number.MAX_SAFE_INTEGER;
+    if (leftRound !== rightRound) {
+      return leftRound - rightRound;
+    }
+
+    const leftId = String(left?.timelineId || left?.matchId || '');
+    const rightId = String(right?.timelineId || right?.matchId || '');
+    return leftId.localeCompare(rightId);
+  });
+
+const buildLegacyTimeline = ({ matches, refs, byes }) => {
+  const playRows = (Array.isArray(matches) ? matches : []).map((match, index) => ({
+    timelineId: `legacy-play-${match?.matchId || index}`,
+    role: 'PLAY',
+    roleLabel: 'PLAY',
+    iconKey: 'play',
+    summaryLabel: `vs ${formatOpponentLabel(match)}`,
+    ...match,
+    matchupLabel: `${match?.teamA?.shortName || 'TBD'} vs ${match?.teamB?.shortName || 'TBD'}`,
+    setSummary: match?.setSummary || null,
+  }));
+  const refRows = (Array.isArray(refs) ? refs : []).map((match, index) => ({
+    timelineId: `legacy-ref-${match?.matchId || index}`,
+    role: 'REF',
+    roleLabel: 'REF',
+    iconKey: 'ref',
+    summaryLabel: formatTeamsPlaying(match),
+    ...match,
+    matchupLabel: `${match?.teamA?.shortName || 'TBD'} vs ${match?.teamB?.shortName || 'TBD'}`,
+    setSummary: match?.setSummary || null,
+  }));
+  const byeRows = (Array.isArray(byes) ? byes : []).map((bye, index) => ({
+    timelineId: `legacy-bye-${bye?.matchId || index}`,
+    role: 'BYE',
+    roleLabel: 'BYE',
+    iconKey: 'bye',
+    summaryLabel: bye?.poolName ? `BYE (Pool ${bye.poolName})` : 'BYE',
+    ...bye,
+  }));
+
+  return sortTimelineRows([...playRows, ...refRows, ...byeRows]);
+};
 
 function TournamentTeamPublicView() {
   const { tournamentCode, teamCode } = useParams();
@@ -61,8 +175,8 @@ function TournamentTeamPublicView() {
   const [tournament, setTournament] = useState(null);
   const [team, setTeam] = useState(null);
   const [nextUp, setNextUp] = useState(null);
-  const [matches, setMatches] = useState([]);
-  const [refs, setRefs] = useState([]);
+  const [timeline, setTimeline] = useState([]);
+  const [canManageMatches, setCanManageMatches] = useState(false);
 
   const loadTeamData = useCallback(
     async ({ silent = false } = {}) => {
@@ -93,8 +207,17 @@ function TournamentTeamPublicView() {
         setTournament(payload?.tournament || null);
         setTeam(payload?.team || null);
         setNextUp(payload?.nextUp || null);
-        setMatches(Array.isArray(payload?.matches) ? payload.matches : []);
-        setRefs(Array.isArray(payload?.refs) ? payload.refs : []);
+        const nextMatches = Array.isArray(payload?.matches) ? payload.matches : [];
+        const nextRefs = Array.isArray(payload?.refs) ? payload.refs : [];
+        const nextByes = Array.isArray(payload?.byes) ? payload.byes : [];
+        const nextTimeline = Array.isArray(payload?.timeline)
+          ? payload.timeline
+          : buildLegacyTimeline({
+              matches: nextMatches,
+              refs: nextRefs,
+              byes: nextByes,
+            });
+        setTimeline(sortTimelineRows(nextTimeline));
       } catch (loadError) {
         setError(loadError?.message || 'Unable to load team page');
       } finally {
@@ -129,6 +252,39 @@ function TournamentTeamPublicView() {
     []
   );
 
+  useEffect(() => {
+    const tournamentId = typeof tournament?.id === 'string' ? tournament.id.trim() : '';
+    const token = readStoredAuthToken();
+
+    if (!tournamentId || !token) {
+      setCanManageMatches(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const response = await fetch(`${API_URL}/api/tournaments/${encodeURIComponent(tournamentId)}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        if (!cancelled) {
+          setCanManageMatches(response.ok);
+        }
+      } catch {
+        if (!cancelled) {
+          setCanManageMatches(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tournament?.id]);
+
   const handleTournamentEvent = useCallback(
     (event) => {
       if (!event || typeof event !== 'object') {
@@ -149,32 +305,22 @@ function TournamentTeamPublicView() {
     onEvent: handleTournamentEvent,
   });
 
-  const matchesByPhase = useMemo(() => {
-    const grouped = {
-      phase1: [],
-      phase2: [],
-      playoffs: [],
-    };
-
-    (Array.isArray(matches) ? matches : []).forEach((match) => {
-      const phase = typeof match?.phase === 'string' ? match.phase : '';
-      if (!grouped[phase]) {
-        return;
-      }
-      grouped[phase].push(match);
-    });
-
-    return grouped;
-  }, [matches]);
-
-  const finalResults = useMemo(
-    () => (Array.isArray(matches) ? matches.filter((match) => match?.status === 'final') : []),
-    [matches]
+  const timelineRows = useMemo(
+    () =>
+      sortTimelineRows(timeline).filter((entry) =>
+        ['PLAY', 'REF', 'BYE', 'LUNCH'].includes(String(entry?.role || '').toUpperCase())
+      ),
+    [timeline]
   );
 
   const nextRefAssignment = useMemo(
-    () => (Array.isArray(refs) ? refs.find((refMatch) => refMatch?.status !== 'final') || null : null),
-    [refs]
+    () =>
+      timelineRows.find(
+        (entry) =>
+          String(entry?.role || '').toUpperCase() === 'REF'
+          && !['ended', 'final'].includes(String(entry?.status || '').toLowerCase())
+      ) || null,
+    [timelineRows]
   );
 
   const tournamentPublicCode = tournament?.publicCode || String(tournamentCode || '').trim().toUpperCase();
@@ -231,8 +377,8 @@ function TournamentTeamPublicView() {
                 <p className="subtle">
                   {nextUp.facilityLabel || ''} {nextUp.courtLabel ? `• ${nextUp.courtLabel}` : ''}
                 </p>
-                {formatScoreSummary(nextUp.scoreSummary) ? (
-                  <p className="subtle">{formatScoreSummary(nextUp.scoreSummary)}</p>
+                {formatScoreSummary(nextUp) ? (
+                  <p className="subtle">{formatScoreSummary(nextUp)}</p>
                 ) : null}
                 {nextRefAssignment ? (
                   <p className="subtle">
@@ -259,101 +405,116 @@ function TournamentTeamPublicView() {
         </section>
 
         <section className="team-public-section">
-          <h2 className="secondary-title">My Schedule</h2>
-          <div className="team-public-phase-groups">
-            {PHASE_SECTION_ORDER.map((phase) => {
-              const phaseMatches = matchesByPhase[phase] || [];
-              return (
-                <article key={phase} className="team-public-phase-card">
-                  <h3>{PHASE_SECTION_LABELS[phase]}</h3>
-                  {phaseMatches.length === 0 ? (
-                    <p className="subtle">No matches yet.</p>
-                  ) : (
-                    <div className="team-public-list">
-                      {phaseMatches.map((match) => (
-                        <article key={`${phase}-${match.matchId}`} className="team-public-match-row">
-                          <div className="team-public-time">{match.timeLabel || '-'}</div>
-                          <div className="team-public-body">
-                            <p className="team-public-opponent">vs {formatOpponentLabel(match)}</p>
-                            <div className="court-schedule-meta">
-                              <span className={getStatusMeta(match.status).className}>
-                                {getStatusMeta(match.status).label}
-                              </span>
-                              <span>{match.courtLabel || '-'}</span>
-                              <span>{match.facilityLabel || ''}</span>
-                              {match.roundLabel ? <span>{match.roundLabel}</span> : null}
-                            </div>
-                            {formatScoreSummary(match.scoreSummary) ? (
-                              <p className="subtle">{formatScoreSummary(match.scoreSummary)}</p>
-                            ) : null}
-                            {Array.isArray(match.refBy) && match.refBy.length > 0 ? (
-                              <p className="subtle">
-                                Ref: {match.refBy.map((refTeam) => refTeam.shortName).join(', ')}
-                              </p>
-                            ) : null}
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                </article>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="team-public-section">
-          <h2 className="secondary-title">My Ref Assignments</h2>
-          {refs.length === 0 ? (
-            <p className="subtle">No ref assignments yet.</p>
+          <h2 className="secondary-title">Timeline</h2>
+          {timelineRows.length === 0 ? (
+            <p className="subtle">No schedule rows yet.</p>
           ) : (
-            <div className="team-public-list">
-              {refs.map((match) => (
-                <article key={`ref-${match.matchId}`} className="team-public-match-row">
-                  <div className="team-public-time">{match.timeLabel || '-'}</div>
-                  <div className="team-public-body">
-                    <p className="team-public-opponent">{formatTeamsPlaying(match)}</p>
-                    <div className="court-schedule-meta">
-                      <span className={getStatusMeta(match.status).className}>
-                        {getStatusMeta(match.status).label}
-                      </span>
-                      <span>{match.phaseLabel || match.phase || ''}</span>
-                      <span>{match.courtLabel || '-'}</span>
-                    </div>
-                    {formatScoreSummary(match.scoreSummary) ? (
-                      <p className="subtle">{formatScoreSummary(match.scoreSummary)}</p>
-                    ) : null}
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
+            <div className="team-public-list team-public-timeline-list">
+              {timelineRows.map((entry) => {
+                const role = String(entry?.role || '').toUpperCase();
+                const roleMeta = TIMELINE_ROLE_META[role] || TIMELINE_ROLE_META.PLAY;
+                const RoleIcon = roleMeta.icon;
+                const statusMeta = getStatusMeta(String(entry?.status || '').toLowerCase());
+                const isLunch = role === 'LUNCH';
+                const summaryLabel =
+                  entry?.summaryLabel
+                  || (role === 'PLAY'
+                    ? `vs ${formatOpponentLabel(entry)}`
+                    : role === 'REF'
+                      ? formatTeamsPlaying(entry)
+                      : role === 'BYE'
+                        ? 'BYE'
+                        : `Lunch Break (${Number(entry?.lunchDurationMinutes) > 0 ? Number(entry.lunchDurationMinutes) : 45} min)`);
+                const setSummarySource = entry?.setSummary || entry?.scoreSummary || null;
+                const setSummaryScores = Array.isArray(entry?.setSummary?.setScores)
+                  ? entry.setSummary.setScores
+                  : resolveCompletedSetScores(entry);
+                const setSummaryText = setSummarySource
+                  ? formatSetSummaryWithScores(
+                      toSetSummaryFromScoreSummary(setSummarySource),
+                      setSummaryScores
+                    )
+                  : '';
+                const hasMatchupReference =
+                  typeof entry?.matchupReferenceLabel === 'string'
+                  && entry.matchupReferenceLabel
+                  && entry.matchupReferenceLabel !== entry?.matchupLabel;
+                const hasRefReference =
+                  role === 'PLAY'
+                  && typeof entry?.refReferenceLabel === 'string'
+                  && entry.refReferenceLabel
+                  && entry.refReferenceLabel !== entry?.refLabel;
+                const matchDetailsHref = entry?.scoreboardCode
+                  ? `/board/${encodeURIComponent(entry.scoreboardCode)}/display`
+                  : '';
+                const matchControlHref = canManageMatches
+                  ? buildTournamentMatchControlHref({
+                      matchId: entry?.matchId,
+                      scoreboardKey: entry?.scoreboardCode,
+                      status: entry?.status,
+                      startedAt: entry?.startedAt,
+                      endedAt: entry?.endedAt,
+                    })
+                  : '';
+                const showRefAction = role === 'REF' && Boolean(entry?.matchId) && Boolean(matchDetailsHref);
+                const refActionHref = canManageMatches && matchControlHref
+                  ? matchControlHref
+                  : matchDetailsHref;
+                const refActionLabel = canManageMatches && matchControlHref
+                  ? 'Open Match Control'
+                  : 'Match details';
 
-        <section className="team-public-section">
-          <h2 className="secondary-title">My Results</h2>
-          {finalResults.length === 0 ? (
-            <p className="subtle">No finalized matches yet.</p>
-          ) : (
-            <div className="team-public-list">
-              {finalResults.map((match) => (
-                <article key={`result-${match.matchId}`} className="team-public-match-row">
-                  <div className="team-public-time">{match.timeLabel || '-'}</div>
-                  <div className="team-public-body">
-                    <p className="team-public-opponent">vs {formatOpponentLabel(match)}</p>
-                    <div className="court-schedule-meta">
-                      <span className={getStatusMeta(match.status).className}>
-                        {getStatusMeta(match.status).label}
-                      </span>
-                      <span>{match.courtLabel || '-'}</span>
-                      <span>{match.phaseLabel || match.phase || ''}</span>
+                return (
+                  <article
+                    key={entry?.timelineId || `${role}-${entry?.matchId || entry?.slotId || 'row'}`}
+                    className={`team-public-match-row team-timeline-row ${roleMeta.className}`}
+                  >
+                    <div className="team-public-time">{entry?.timeLabel || '-'}</div>
+                    <div className="team-public-body">
+                      <div className={`team-timeline-role-badge ${roleMeta.className}`}>
+                        <span className="team-timeline-role-icon" aria-hidden>
+                          <RoleIcon />
+                        </span>
+                        <span>{roleMeta.label}</span>
+                      </div>
+                      <p className="team-public-opponent">{summaryLabel}</p>
+                      {hasMatchupReference ? (
+                        <p className="team-timeline-reference">{entry.matchupReferenceLabel}</p>
+                      ) : null}
+                      <div className="court-schedule-meta">
+                        {!isLunch ? (
+                          <span className={statusMeta.className}>{statusMeta.label}</span>
+                        ) : (
+                          <span className="court-schedule-status court-schedule-status--scheduled">LUNCH</span>
+                        )}
+                        {entry?.phaseLabel || entry?.stageLabel ? (
+                          <span>{entry.phaseLabel || entry.stageLabel}</span>
+                        ) : null}
+                        {entry?.courtLabel ? <span>{entry.courtLabel}</span> : null}
+                        {entry?.roundLabel ? <span>{entry.roundLabel}</span> : null}
+                      </div>
+                      {entry?.refLabel && role === 'PLAY' ? (
+                        <p className="subtle">Ref: {entry.refLabel}</p>
+                      ) : null}
+                      {hasRefReference ? (
+                        <p className="team-timeline-reference">{entry.refReferenceLabel}</p>
+                      ) : null}
+                      {entry?.facilityLabel || entry?.courtLabel ? (
+                        <p className="subtle">
+                          {entry?.facilityLabel || ''}
+                          {entry?.courtLabel ? ` • ${entry.courtLabel}` : ''}
+                        </p>
+                      ) : null}
+                      {setSummaryText ? <p className="subtle">{setSummaryText}</p> : null}
+                      {showRefAction && refActionHref ? (
+                        <a className="secondary-button team-timeline-action" href={refActionHref}>
+                          {refActionLabel}
+                        </a>
+                      ) : null}
                     </div>
-                    {formatScoreSummary(match.scoreSummary) ? (
-                      <p className="subtle">{formatScoreSummary(match.scoreSummary)}</p>
-                    ) : null}
-                  </div>
-                </article>
-              ))}
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>

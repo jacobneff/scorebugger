@@ -1,9 +1,9 @@
 const express = require('express');
 const mongoose = require('mongoose');
 
-const Tournament = require('../models/Tournament');
 const TournamentTeam = require('../models/TournamentTeam');
 const { requireAuth } = require('../middleware/auth');
+const { requireTournamentAdminContext } = require('../services/tournamentAccess');
 const {
   createUniqueTeamPublicCode,
   normalizeTeamPublicCode,
@@ -112,10 +112,7 @@ async function findOwnedTeam(teamId, userId) {
     return null;
   }
 
-  const ownedTournament = await Tournament.exists({
-    _id: team.tournamentId,
-    createdByUserId: userId,
-  });
+  const ownedTournament = await requireTournamentAdminContext(team.tournamentId, userId, '_id');
 
   if (!ownedTournament) {
     return null;

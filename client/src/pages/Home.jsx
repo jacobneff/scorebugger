@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MdContentCopy, MdDelete, MdEdit, MdSave } from "react-icons/md";
 import { FiCheckCircle, FiInfo, FiXCircle } from "react-icons/fi";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import ControlPanelView from "../components/ControlPanelView.jsx";
 import TournamentsTab from "../components/TournamentsTab.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
@@ -260,7 +260,16 @@ function Home() {
   }, []);
 
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const initializedFromQuery = useRef(false);
+  const returnToTarget = useMemo(() => {
+    const rawValue = searchParams.get("returnTo");
+    const normalized = typeof rawValue === "string" ? rawValue.trim() : "";
+    if (!normalized || !normalized.startsWith("/") || normalized.startsWith("//")) {
+      return "";
+    }
+    return normalized;
+  }, [searchParams]);
 
   useEffect(() => {
     if (initializedFromQuery.current) return;
@@ -607,7 +616,13 @@ function Home() {
   const handleCopyBoardId = async (value, id) => {
     if (!value) return;
     try {
-      await navigator.clipboard.writeText(value);
+      const normalizedValue = String(value).trim();
+      const origin =
+        typeof window !== "undefined" && window.location?.origin
+          ? window.location.origin
+          : "";
+      const controlLink = `${origin}/board/${encodeURIComponent(normalizedValue)}/control`;
+      await navigator.clipboard.writeText(controlLink);
       setCopiedBoardId(id);
       setTimeout(() => {
         setCopiedBoardId((prev) => (prev === id ? null : prev));
@@ -654,6 +669,9 @@ function Home() {
       setAuthEmail("");
       setAuthPassword("");
       showToast("success", "Signed in");
+      if (returnToTarget) {
+        navigate(returnToTarget, { replace: true });
+      }
     } else {
       const res = await register({
         email: authEmail,
@@ -682,6 +700,9 @@ function Home() {
       setAuthPassword("");
       setAuthDisplayName("");
       showToast("success", "Account created");
+      if (returnToTarget) {
+        navigate(returnToTarget, { replace: true });
+      }
     }
   };
 
@@ -902,12 +923,6 @@ function Home() {
       {boards.map((b) => {
         const id = b.code || b._id;
         const rawIdentifier = b.code || b._id || "";
-        const alphanumeric = (rawIdentifier.match(/[a-z0-9]/gi) || [])
-          .join("")
-          .toUpperCase();
-        const shortIdentifier =
-          alphanumeric.slice(0, 5) || rawIdentifier.slice(0, 5).toUpperCase();
-        const displayIdentifier = shortIdentifier || "-----";
         return (
           <div key={id} className="board-item" onClick={() => openBoard(id)}>
             <div className="board-title-wrap">
@@ -971,9 +986,6 @@ function Home() {
               className="board-code-row"
               onClick={(e) => e.stopPropagation()}
             >
-              <span className="board-code-badge" aria-label="Scoreboard ID">
-                {displayIdentifier}
-              </span>
               <button
                 type="button"
                 className={`board-code-copy ${
@@ -983,11 +995,12 @@ function Home() {
                   e.stopPropagation();
                   handleCopyBoardId(rawIdentifier, id);
                 }}
-                aria-label="Copy scoreboard ID"
+                aria-label="Copy scoreboard control link"
               >
                 <span className="copy-icon copy-icon--copy">
                   <MdContentCopy />
                 </span>
+                <span>Copy Scoreboard Link</span>
                 <span
                   className="copy-icon copy-icon--check"
                   aria-hidden={copiedBoardId !== id}

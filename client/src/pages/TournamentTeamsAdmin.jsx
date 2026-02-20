@@ -40,17 +40,6 @@ function TournamentTeamsAdmin() {
             <h1 className="title">Team Setup</h1>
             <p className="subtitle">Manage teams, ordering, and team public links.</p>
           </div>
-          <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${tournamentId}/details`}>
-              Tournament Details
-            </a>
-            <a className="secondary-button" href={`/tournaments/${tournamentId}/phase1`}>
-              Scheduling
-            </a>
-            <a className="secondary-button" href={`/tournaments/${tournamentId}/quick-scores`}>
-              Quick Scores
-            </a>
-          </div>
         </div>
         <TournamentsTab
           user={user}

@@ -6,15 +6,17 @@ import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
   formatRoundBlockStartTime,
   formatSetRecord,
-  PHASE1_COURT_ORDER,
-  PHASE1_ROUND_BLOCKS,
-  buildPhase1ScheduleLookup,
-  formatTeamLabel,
   mapCourtLabel,
   sortPhase1Pools,
 } from '../utils/phase1.js';
+import {
+  formatSetSummaryWithScores,
+  normalizeCompletedSetScores,
+  resolveCompletedSetScores,
+  toSetSummaryFromLiveSummary,
+  toSetSummaryFromScoreSummary,
+} from '../utils/matchSetSummary.js';
 
-const PLAYOFF_BRACKET_ORDER = ['gold', 'silver', 'bronze'];
 const PLAYOFF_BRACKET_LABELS = {
   gold: 'Gold',
   silver: 'Silver',
@@ -35,6 +37,9 @@ const TOURNAMENT_DETAILS_DEFAULTS = Object.freeze({
   parkingInfo: '',
   mapImageUrls: [],
 });
+const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
+const CROSSOVER_STAGE_KEY = 'crossover';
+const OVERVIEW_STAGE_KEYS = ['poolPlay1', CROSSOVER_STAGE_KEY];
 
 const normalizePools = (pools) =>
   sortPhase1Pools(pools).map((pool) => ({
@@ -53,6 +58,7 @@ const normalizePlayoffPayload = (payload) => ({
   matches: Array.isArray(payload?.matches) ? payload.matches : [],
   brackets: payload?.brackets && typeof payload.brackets === 'object' ? payload.brackets : {},
   opsSchedule: Array.isArray(payload?.opsSchedule) ? payload.opsSchedule : [],
+  bracketOrder: Array.isArray(payload?.bracketOrder) ? payload.bracketOrder : [],
 });
 
 const formatPointDiff = (value) => {
@@ -76,17 +82,44 @@ const toIdString = (value) => {
 
   return String(value);
 };
+const uniqueValues = (values) => {
+  const seen = new Set();
+  const ordered = [];
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    if (!value || seen.has(value)) {
+      return;
+    }
+    seen.add(value);
+    ordered.push(value);
+  });
+  return ordered;
+};
 const normalizeBracket = (value) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
+const parseRoundRank = (roundKey) => {
+  const normalized = String(roundKey || '').trim().toUpperCase();
+  const matched = /^R(\d+)$/.exec(normalized);
+  if (!matched) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  return Number(matched[1]);
+};
+const toTitleCase = (value) =>
+  String(value || '')
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`)
+    .join(' ');
 const toOverallSeed = (bracket, bracketSeed) => {
   const seed = Number(bracketSeed);
   const offset = PLAYOFF_OVERALL_SEED_OFFSETS[normalizeBracket(bracket)];
 
-  if (!Number.isFinite(seed) || !Number.isFinite(offset)) {
+  if (!Number.isFinite(seed) || !Number.isFinite(offset) || seed <= 0) {
     return null;
   }
 
-  return offset + seed;
+  return offset + Math.floor(seed);
 };
 const formatTeamWithOverallSeed = (team, overallSeed) => {
   const hasResolvedTeam =
@@ -121,11 +154,21 @@ const formatLiveSummary = (summary) => {
     return '';
   }
 
-  return `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
+  return `Live: ${formatSetSummaryWithScores(
+    toSetSummaryFromLiveSummary(summary),
+    summary?.completedSetScores
+  )}`;
 };
 
 const getCourtMatchStatusMeta = (status) => {
   const normalized = typeof status === 'string' ? status.trim().toLowerCase() : '';
+
+  if (normalized === 'scheduled_tbd') {
+    return {
+      label: 'Scheduled / TBD',
+      className: 'court-schedule-status court-schedule-status--tbd',
+    };
+  }
 
   if (normalized === 'live') {
     return {
@@ -141,18 +184,71 @@ const getCourtMatchStatusMeta = (status) => {
     };
   }
 
+  if (normalized === 'ended') {
+    return {
+      label: 'ENDED',
+      className: 'court-schedule-status court-schedule-status--ended',
+    };
+  }
+
   return {
     label: 'Scheduled',
     className: 'court-schedule-status court-schedule-status--scheduled',
   };
 };
 
-const formatCourtScoreSummary = (score) => {
-  if (!score) {
+const normalizeCourtScheduleSlots = (payload) => {
+  if (Array.isArray(payload?.slots) && payload.slots.length > 0) {
+    return payload.slots;
+  }
+
+  if (!Array.isArray(payload?.matches)) {
+    return Array.isArray(payload?.slots) ? payload.slots : [];
+  }
+
+  return payload.matches.map((match, index) => ({
+    slotId: `${match?.matchId || 'match'}-${match?.roundBlock || index}`,
+    kind: 'match',
+    stageLabel: match?.phaseLabel || '',
+    phase: match?.phase || null,
+    phaseLabel: match?.phaseLabel || '',
+    roundBlock: match?.roundBlock ?? null,
+    timeLabel: '',
+    status: match?.status || 'scheduled',
+    matchId: match?.matchId || null,
+    poolName: match?.poolName || null,
+    matchupLabel: `${match?.teamA || 'TBD'} vs ${match?.teamB || 'TBD'}`,
+    matchupReferenceLabel: null,
+    refLabel:
+      Array.isArray(match?.refs) && match.refs.length > 0
+        ? match.refs.join(', ')
+        : 'TBD',
+    refReferenceLabel: null,
+    scoreSummary: match?.score || null,
+    setSummary: match?.score
+      ? {
+          setsA: Number(match.score?.setsA) || 0,
+          setsB: Number(match.score?.setsB) || 0,
+          setScores: [],
+        }
+      : null,
+    teamA: match?.teamA ? { shortName: match.teamA, logoUrl: null } : null,
+    teamB: match?.teamB ? { shortName: match.teamB, logoUrl: null } : null,
+  }));
+};
+const formatCourtSlotScoreSummary = (slot) => {
+  const scoreSummary = slot?.setSummary || slot?.scoreSummary;
+  if (!scoreSummary) {
     return '';
   }
 
-  return `Sets ${score.setsA ?? 0}-${score.setsB ?? 0} • Pts ${score.pointsA ?? 0}-${score.pointsB ?? 0}`;
+  const setScores = Array.isArray(slot?.setSummary?.setScores)
+    ? slot.setSummary.setScores
+    : Array.isArray(slot?.completedSetScores)
+      ? slot.completedSetScores
+      : [];
+
+  return formatSetSummaryWithScores(toSetSummaryFromScoreSummary(scoreSummary), setScores);
 };
 const normalizeText = (value) => (typeof value === 'string' ? value : '');
 const normalizeUrl = (value) => (typeof value === 'string' ? value.trim() : '');
@@ -182,39 +278,45 @@ const normalizeLiveScoreSummary = (summary) => {
     return null;
   }
 
-  const hasFlatFields =
-    summary.setsA !== undefined ||
-    summary.setsB !== undefined ||
-    summary.pointsA !== undefined ||
-    summary.pointsB !== undefined;
-  const sets = summary.sets && typeof summary.sets === 'object' ? summary.sets : {};
-  const points = summary.points && typeof summary.points === 'object' ? summary.points : {};
-
-  return hasFlatFields
-    ? {
-        setsA: Number(summary.setsA) || 0,
-        setsB: Number(summary.setsB) || 0,
-        pointsA: Number(summary.pointsA) || 0,
-        pointsB: Number(summary.pointsB) || 0,
-      }
-    : {
-        setsA: Number(sets.a) || 0,
-        setsB: Number(sets.b) || 0,
-        pointsA: Number(points.a) || 0,
-        pointsB: Number(points.b) || 0,
-      };
+  return {
+    ...toSetSummaryFromLiveSummary(summary),
+    completedSetScores: normalizeCompletedSetScores(summary?.completedSetScores),
+  };
 };
 
-const formatLiveCardScoreSummary = (summary) => {
-  const normalized = normalizeLiveScoreSummary(summary);
+const formatLiveCardScoreSummary = ({ summary, completedSetScores }) => {
+  const normalized = summary;
   if (!normalized) {
     return '';
   }
 
-  return `Sets ${normalized.setsA}-${normalized.setsB} • Pts ${normalized.pointsA}-${normalized.pointsB}`;
+  return formatSetSummaryWithScores(
+    toSetSummaryFromScoreSummary(normalized),
+    completedSetScores || normalized.completedSetScores
+  );
 };
 
-const isHttpUrl = (value) => /^https?:\/\//i.test(value || '');
+const toSafeHttpUrl = (value) => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '';
+    }
+
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+};
 
 const renderInlineMarkdown = (text, keyPrefix) => {
   if (!text) {
@@ -232,11 +334,16 @@ const renderInlineMarkdown = (text, keyPrefix) => {
       nodes.push(text.slice(cursor, match.index));
     }
 
-    nodes.push(
-      <a key={`${keyPrefix}-link-${index}`} href={match[2]} target="_blank" rel="noreferrer">
-        {match[1]}
-      </a>
-    );
+    const safeHref = toSafeHttpUrl(match[2]);
+    if (safeHref) {
+      nodes.push(
+        <a key={`${keyPrefix}-link-${index}`} href={safeHref} target="_blank" rel="noreferrer">
+          {match[1]}
+        </a>
+      );
+    } else {
+      nodes.push(match[0]);
+    }
     cursor = match.index + match[0].length;
     index += 1;
   }
@@ -322,7 +429,7 @@ function TournamentPublicView() {
   const location = useLocation();
   const [tournament, setTournament] = useState(null);
   const [pools, setPools] = useState([]);
-  const [matches, setMatches] = useState([]);
+  const [overviewScheduleSlots, setOverviewScheduleSlots] = useState([]);
   const [playoffs, setPlayoffs] = useState({
     matches: [],
     brackets: {},
@@ -331,14 +438,14 @@ function TournamentPublicView() {
   const [courts, setCourts] = useState([]);
   const [selectedCourtCode, setSelectedCourtCode] = useState('');
   const [selectedCourt, setSelectedCourt] = useState(null);
-  const [courtScheduleMatches, setCourtScheduleMatches] = useState([]);
+  const [courtScheduleSlots, setCourtScheduleSlots] = useState([]);
   const [standingsByPhase, setStandingsByPhase] = useState({
     phase1: { pools: [], overall: [] },
     phase2: { pools: [], overall: [] },
     cumulative: { pools: [], overall: [] },
   });
   const [activeStandingsTab, setActiveStandingsTab] = useState('phase1');
-  const [activeViewTab, setActiveViewTab] = useState('live');
+  const [activeViewTab, setActiveViewTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [courtScheduleLoading, setCourtScheduleLoading] = useState(false);
   const [error, setError] = useState('');
@@ -361,7 +468,7 @@ function TournamentPublicView() {
         const [
           tournamentResponse,
           poolResponse,
-          matchResponse,
+          schedulePlanResponse,
           courtsResponse,
           phase1StandingsResponse,
           phase2StandingsResponse,
@@ -372,7 +479,11 @@ function TournamentPublicView() {
         ] = await Promise.all([
           fetch(`${API_URL}/api/tournaments/code/${publicCode}`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/phase1/pools`),
-          fetch(`${API_URL}/api/tournaments/code/${publicCode}/matches?phase=phase1`),
+          fetch(
+            `${API_URL}/api/tournaments/code/${publicCode}/schedule-plan?stageKeys=${encodeURIComponent(
+              OVERVIEW_STAGE_KEYS.join(',')
+            )}&kinds=match`
+          ),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/courts`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=phase1`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=phase2`),
@@ -385,7 +496,7 @@ function TournamentPublicView() {
         const [
           tournamentPayload,
           poolPayload,
-          matchPayload,
+          schedulePlanPayload,
           courtsPayload,
           phase1StandingsPayload,
           phase2StandingsPayload,
@@ -396,7 +507,7 @@ function TournamentPublicView() {
         ] = await Promise.all([
           tournamentResponse.json().catch(() => null),
           poolResponse.json().catch(() => null),
-          matchResponse.json().catch(() => null),
+          schedulePlanResponse.json().catch(() => null),
           courtsResponse.json().catch(() => null),
           phase1StandingsResponse.json().catch(() => null),
           phase2StandingsResponse.json().catch(() => null),
@@ -412,8 +523,8 @@ function TournamentPublicView() {
         if (!poolResponse.ok) {
           throw new Error(poolPayload?.message || 'Unable to load pools');
         }
-        if (!matchResponse.ok) {
-          throw new Error(matchPayload?.message || 'Unable to load matches');
+        if (!schedulePlanResponse.ok) {
+          throw new Error(schedulePlanPayload?.message || 'Unable to load schedule');
         }
         if (!courtsResponse.ok) {
           throw new Error(courtsPayload?.message || 'Unable to load courts');
@@ -421,7 +532,12 @@ function TournamentPublicView() {
         if (!phase1StandingsResponse.ok) {
           throw new Error(phase1StandingsPayload?.message || 'Unable to load Pool Play 1 standings');
         }
-        if (!phase2StandingsResponse.ok) {
+        const tournamentFormatId =
+          typeof tournamentPayload?.tournament?.settings?.format?.formatId === 'string'
+            ? tournamentPayload.tournament.settings.format.formatId.trim()
+            : '';
+        const supportsPhase2 = tournamentFormatId === ODU_15_FORMAT_ID;
+        if (!phase2StandingsResponse.ok && supportsPhase2) {
           throw new Error(phase2StandingsPayload?.message || 'Unable to load Pool Play 2 standings');
         }
         if (!cumulativeStandingsResponse.ok) {
@@ -441,7 +557,9 @@ function TournamentPublicView() {
         setDetails(normalizeTournamentDetails(detailsPayload?.details));
         setLiveMatches(Array.isArray(liveMatchesPayload) ? liveMatchesPayload : []);
         setPools(normalizePools(poolPayload));
-        setMatches(Array.isArray(matchPayload) ? matchPayload : []);
+        setOverviewScheduleSlots(
+          Array.isArray(schedulePlanPayload?.slots) ? schedulePlanPayload.slots : []
+        );
         const nextCourts = Array.isArray(courtsPayload?.courts) ? courtsPayload.courts : [];
         setCourts(nextCourts);
         setSelectedCourtCode((currentCode) => {
@@ -458,8 +576,14 @@ function TournamentPublicView() {
             overall: Array.isArray(phase1StandingsPayload?.overall) ? phase1StandingsPayload.overall : [],
           },
           phase2: {
-            pools: Array.isArray(phase2StandingsPayload?.pools) ? phase2StandingsPayload.pools : [],
-            overall: Array.isArray(phase2StandingsPayload?.overall) ? phase2StandingsPayload.overall : [],
+            pools:
+              supportsPhase2 && Array.isArray(phase2StandingsPayload?.pools)
+                ? phase2StandingsPayload.pools
+                : [],
+            overall:
+              supportsPhase2 && Array.isArray(phase2StandingsPayload?.overall)
+                ? phase2StandingsPayload.overall
+                : [],
           },
           cumulative: {
             pools: Array.isArray(cumulativeStandingsPayload?.pools)
@@ -502,9 +626,9 @@ function TournamentPublicView() {
         }
 
         setSelectedCourt(payload?.court || null);
-        setCourtScheduleMatches(Array.isArray(payload?.matches) ? payload.matches : []);
+        setCourtScheduleSlots(normalizeCourtScheduleSlots(payload));
       } catch {
-        setCourtScheduleMatches([]);
+        setCourtScheduleSlots([]);
         if (!silent) {
           setSelectedCourt(null);
         }
@@ -547,7 +671,7 @@ function TournamentPublicView() {
   useEffect(() => {
     if (!selectedCourtCode) {
       setSelectedCourt(null);
-      setCourtScheduleMatches([]);
+      setCourtScheduleSlots([]);
       return;
     }
 
@@ -588,7 +712,110 @@ function TournamentPublicView() {
     onEvent: handleTournamentEvent,
   });
 
-  const scheduleLookup = useMemo(() => buildPhase1ScheduleLookup(matches), [matches]);
+  const formatId =
+    typeof tournament?.settings?.format?.formatId === 'string'
+      ? tournament.settings.format.formatId.trim()
+      : '';
+  const supportsPhase2 = formatId === ODU_15_FORMAT_ID;
+  const phase1Label = supportsPhase2 ? 'Pool Play 1' : 'Pool Play';
+  const phase2Label = 'Pool Play 2';
+  const scheduleSlots = useMemo(
+    () =>
+      (Array.isArray(overviewScheduleSlots) ? overviewScheduleSlots : []).filter(
+        (slot) => String(slot?.kind || 'match').trim() === 'match'
+      ),
+    [overviewScheduleSlots]
+  );
+  const scheduleLookup = useMemo(() => {
+    const lookup = {};
+    scheduleSlots.forEach((slot) => {
+      const roundBlock = Number(slot?.roundBlock);
+      const courtCode = typeof slot?.courtCode === 'string' ? slot.courtCode.trim() : '';
+      if (!Number.isFinite(roundBlock) || roundBlock <= 0 || !courtCode) {
+        return;
+      }
+
+      lookup[`${Math.floor(roundBlock)}-${courtCode.toUpperCase()}`] = slot;
+    });
+    return lookup;
+  }, [scheduleSlots]);
+  const scheduleRoundBlocks = useMemo(() => {
+    const uniqueRoundBlocks = Array.from(
+      new Set(
+        scheduleSlots
+          .map((slot) => Number(slot?.roundBlock))
+          .filter((roundBlock) => Number.isFinite(roundBlock) && roundBlock > 0)
+      )
+    ).sort((left, right) => left - right);
+    return uniqueRoundBlocks;
+  }, [scheduleSlots]);
+  const scheduleCourts = useMemo(() => {
+    const knownCourtLabelsByCode = new Map(
+      (Array.isArray(courts) ? courts : [])
+        .map((court) => {
+          const code = typeof court?.code === 'string' ? court.code.trim().toUpperCase() : '';
+          const label = typeof court?.label === 'string' ? court.label.trim() : '';
+          return [code, label];
+        })
+        .filter(([code]) => Boolean(code))
+    );
+    const usedCourtsByCode = new Map();
+    scheduleSlots.forEach((slot) => {
+      const code = typeof slot?.courtCode === 'string' ? slot.courtCode.trim().toUpperCase() : '';
+      if (!code || usedCourtsByCode.has(code)) {
+        return;
+      }
+
+      const slotCourtLabel = typeof slot?.courtLabel === 'string' ? slot.courtLabel.trim() : '';
+      const knownLabel = knownCourtLabelsByCode.get(code) || '';
+      usedCourtsByCode.set(code, {
+        code,
+        label: slotCourtLabel || knownLabel || mapCourtLabel(code) || code,
+      });
+    });
+    const usedCourts = Array.from(usedCourtsByCode.keys());
+    const preferredCourts = Array.isArray(tournament?.settings?.format?.activeCourts)
+      ? tournament.settings.format.activeCourts
+      : [];
+    const preferredCourtCodes = uniqueValues(
+      preferredCourts
+        .map((courtCode) => (typeof courtCode === 'string' ? courtCode.trim().toUpperCase() : ''))
+        .filter(Boolean)
+    );
+    const orderedCourtCodes = uniqueValues([
+      ...preferredCourtCodes.filter((courtCode) => usedCourts.includes(courtCode)),
+      ...usedCourts,
+    ]);
+    return orderedCourtCodes.map((code) =>
+      usedCourtsByCode.get(code) || {
+        code,
+        label: knownCourtLabelsByCode.get(code) || mapCourtLabel(code) || code,
+      }
+    );
+  }, [courts, scheduleSlots, tournament]);
+  const hasCrossoverMatches = useMemo(
+    () =>
+      scheduleSlots.some(
+        (slot) => String(slot?.stageKey || '').trim() === CROSSOVER_STAGE_KEY
+      ),
+    [scheduleSlots]
+  );
+  const scheduleHeading = hasCrossoverMatches
+    ? `${phase1Label} + Crossover Schedule`
+    : `${phase1Label} Schedule`;
+  const getPhaseLabel = useCallback(
+    (phase) => {
+      const normalizedPhase = String(phase || '').trim().toLowerCase();
+      if (normalizedPhase === 'phase2') {
+        return phase2Label;
+      }
+      if (normalizedPhase === 'playoffs') {
+        return 'Playoffs';
+      }
+      return phase1Label;
+    },
+    [phase1Label, phase2Label]
+  );
   const activeStandings =
     activeStandingsTab === 'phase2'
       ? standingsByPhase.phase2
@@ -618,7 +845,16 @@ function TournamentPublicView() {
           ...match,
           resolvedScoreSummary:
             normalizeLiveScoreSummary(liveSummariesByMatchId[match?.matchId]) ||
-            normalizeLiveScoreSummary(match?.scoreSummary),
+            normalizeLiveScoreSummary(match?.scoreSummary) ||
+            toSetSummaryFromScoreSummary(match?.scoreSummary),
+          resolvedCompletedSetScores: (() => {
+            const liveCompletedSetScores = normalizeCompletedSetScores(
+              liveSummariesByMatchId[match?.matchId]?.completedSetScores
+            );
+            return liveCompletedSetScores.length > 0
+              ? liveCompletedSetScores
+              : resolveCompletedSetScores(match);
+          })(),
         })),
     [liveMatches, liveSummariesByMatchId]
   );
@@ -627,10 +863,17 @@ function TournamentPublicView() {
   const hasParkingInfo = Boolean(details?.parkingInfo?.trim());
   const hasFoodText = Boolean(details?.foodInfo?.text?.trim());
   const hasFoodLink = Boolean(details?.foodInfo?.linkUrl?.trim());
+  const safeFoodLinkUrl = toSafeHttpUrl(details?.foodInfo?.linkUrl);
   const hasFood = hasFoodText || hasFoodLink;
   const hasMaps = Array.isArray(details?.mapImageUrls) && details.mapImageUrls.length > 0;
   const hasAnyDetails =
     hasSpecialNotes || hasFacilitiesInfo || hasParkingInfo || hasFood || hasMaps;
+
+  useEffect(() => {
+    if (!supportsPhase2 && activeStandingsTab === 'phase2') {
+      setActiveStandingsTab('phase1');
+    }
+  }, [activeStandingsTab, supportsPhase2]);
 
   if (loading) {
     return (
@@ -657,7 +900,7 @@ function TournamentPublicView() {
     <main className="container">
       <section className="card phase1-public-card">
         <h1 className="title">{tournament?.name || 'Tournament'}</h1>
-        <p className="subtitle">Code {tournament?.publicCode || publicCode}</p>
+        <p className="subtitle">Live tournament schedule and standings</p>
 
         <div className="phase1-admin-actions">
           <button
@@ -710,7 +953,10 @@ function TournamentPublicView() {
                   const courtLabel = match?.courtLabel || mapCourtLabel(match?.courtCode) || 'Court TBD';
                   const facilityLabel =
                     match?.facilityLabel || match?.facility || (match?.courtCode ? courtLabel : 'Facility TBD');
-                  const scoreSummary = formatLiveCardScoreSummary(match?.resolvedScoreSummary);
+                  const scoreSummary = formatLiveCardScoreSummary({
+                    summary: match?.resolvedScoreSummary,
+                    completedSetScores: match?.resolvedCompletedSetScores,
+                  });
                   return (
                     <article key={match?.matchId || `${match?.roundBlock}-${match?.courtCode}`} className="tournament-live-card">
                       <div className="tournament-live-card-header">
@@ -721,7 +967,7 @@ function TournamentPublicView() {
                         {courtLabel} · {facilityLabel}
                       </p>
                       <p className="tournament-live-card-phase">
-                        {match?.phaseLabel || match?.phase || 'Match'}
+                        {getPhaseLabel(match?.phase)}
                         {match?.bracket ? ` · ${String(match.bracket).toUpperCase()}` : ''}
                       </p>
                       <p className="tournament-live-card-teams">
@@ -765,7 +1011,9 @@ function TournamentPublicView() {
                 {hasFacilitiesInfo ? (
                   <article className="tournament-public-details-section">
                     <h3>Facilities / Court Notes</h3>
-                    <p>{details.facilitiesInfo}</p>
+                    <div className="tournament-details-markdown">
+                      {renderBasicMarkdown(details.facilitiesInfo)}
+                    </div>
                   </article>
                 ) : null}
 
@@ -791,9 +1039,13 @@ function TournamentPublicView() {
                 {hasFood ? (
                   <article className="tournament-public-details-section">
                     <h3>Food</h3>
-                    {hasFoodText ? <p>{details.foodInfo.text}</p> : null}
-                    {hasFoodLink && isHttpUrl(details.foodInfo.linkUrl) ? (
-                      <a href={details.foodInfo.linkUrl} target="_blank" rel="noreferrer">
+                    {hasFoodText ? (
+                      <div className="tournament-details-markdown">
+                        {renderBasicMarkdown(details.foodInfo.text)}
+                      </div>
+                    ) : null}
+                    {hasFoodLink && safeFoodLinkUrl ? (
+                      <a href={safeFoodLinkUrl} target="_blank" rel="noreferrer">
                         Food details
                       </a>
                     ) : null}
@@ -803,7 +1055,9 @@ function TournamentPublicView() {
                 {hasParkingInfo ? (
                   <article className="tournament-public-details-section">
                     <h3>Parking</h3>
-                    <p>{details.parkingInfo}</p>
+                    <div className="tournament-details-markdown">
+                      {renderBasicMarkdown(details.parkingInfo)}
+                    </div>
                   </article>
                 ) : null}
               </div>
@@ -812,7 +1066,7 @@ function TournamentPublicView() {
         ) : activeViewTab === 'overview' ? (
           <>
             <section>
-              <h2 className="secondary-title">Pool Rosters</h2>
+              <h2 className="secondary-title">Pools</h2>
               <div className="phase1-pool-grid phase1-pool-grid--readonly">
                 {pools.map((pool) => (
                   <article key={pool._id} className="phase1-pool-column">
@@ -834,59 +1088,85 @@ function TournamentPublicView() {
             </section>
 
             <section className="phase1-schedule">
-              <h2 className="secondary-title">Pool Play 1 Schedule</h2>
-              <div className="phase1-table-wrap">
-                <table className="phase1-schedule-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      {PHASE1_COURT_ORDER.map((court) => (
-                        <th key={court}>{mapCourtLabel(court)}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {PHASE1_ROUND_BLOCKS.map((roundBlock) => (
-                      <tr key={roundBlock}>
-                        <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
-                        {PHASE1_COURT_ORDER.map((court) => {
-                          const match = scheduleLookup[`${roundBlock}-${court}`];
-                          const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
-                          const liveSummary = match ? liveSummariesByMatchId[match._id] : null;
-
-                          return (
-                            <td key={`${roundBlock}-${court}`}>
-                              {match ? (
-                                <div className="phase1-match-cell">
-                                  <p>
-                                    <strong>Pool {match.poolName}</strong>
-                                    {`: ${formatTeamLabel(match.teamA)} vs ${formatTeamLabel(match.teamB)}`}
-                                  </p>
-                                  <p>Ref: {formatTeamLabel(match.refTeams?.[0])}</p>
-                                  {liveSummary && <p className="subtle">{formatLiveSummary(liveSummary)}</p>}
-                                  {scoreboardKey ? (
-                                    <a
-                                      href={`/board/${scoreboardKey}/display`}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                    >
-                                      Open Live Scoreboard
-                                    </a>
-                                  ) : (
-                                    <span className="subtle">No scoreboard link</span>
-                                  )}
-                                </div>
-                              ) : (
-                                <span className="subtle">-</span>
-                              )}
-                            </td>
-                          );
-                        })}
+              <h2 className="secondary-title">{scheduleHeading}</h2>
+              {scheduleRoundBlocks.length === 0 || scheduleCourts.length === 0 ? (
+                <p className="subtle">No schedule rows yet.</p>
+              ) : (
+                <div className="phase1-table-wrap">
+                  <table className="phase1-schedule-table">
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        {scheduleCourts.map((court) => (
+                          <th key={court.code}>{court.label || mapCourtLabel(court.code)}</th>
+                        ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {scheduleRoundBlocks.map((roundBlock) => (
+                        <tr key={roundBlock}>
+                          <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
+                          {scheduleCourts.map((court) => {
+                            const slot = scheduleLookup[`${roundBlock}-${court.code}`];
+                            const scoreboardKey = slot?.scoreboardCode || null;
+                            const liveSummary = slot?.matchId
+                              ? liveSummariesByMatchId[slot.matchId] || null
+                              : null;
+                            const stageLabel = slot?.poolName
+                              ? `Pool ${slot.poolName}`
+                              : slot?.stageLabel || getPhaseLabel(slot?.phase);
+                            const hasMatchupReference =
+                              typeof slot?.matchupReferenceLabel === 'string'
+                              && slot.matchupReferenceLabel
+                              && slot.matchupReferenceLabel !== slot?.matchupLabel;
+                            const hasRefReference =
+                              typeof slot?.refReferenceLabel === 'string'
+                              && slot.refReferenceLabel
+                              && slot.refReferenceLabel !== slot?.refLabel;
+                            const scoreSummary = liveSummary
+                              ? formatLiveSummary(liveSummary)
+                              : formatCourtSlotScoreSummary(slot);
+
+                            return (
+                              <td key={`${roundBlock}-${court.code}`}>
+                                {slot ? (
+                                  <div className="phase1-match-cell">
+                                    <p>
+                                      <strong>{stageLabel || 'Stage'}</strong>
+                                      {`: ${slot?.matchupLabel || 'TBD vs TBD'}`}
+                                    </p>
+                                    {hasMatchupReference ? (
+                                      <p className="subtle">{slot.matchupReferenceLabel}</p>
+                                    ) : null}
+                                    <p>Ref: {slot?.refLabel || 'TBD'}</p>
+                                    {hasRefReference ? (
+                                      <p className="subtle">{slot.refReferenceLabel}</p>
+                                    ) : null}
+                                    {scoreSummary ? <p className="subtle">{scoreSummary}</p> : null}
+                                    {scoreboardKey ? (
+                                      <a
+                                        href={`/board/${scoreboardKey}/display`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                      >
+                                        Open Live Scoreboard
+                                      </a>
+                                    ) : (
+                                      <span className="subtle">No scoreboard link</span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="subtle">-</span>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </section>
 
             <section className="phase1-standings">
@@ -898,15 +1178,17 @@ function TournamentPublicView() {
                   type="button"
                   onClick={() => setActiveStandingsTab('phase1')}
                 >
-                  Pool Play 1
+                  {phase1Label}
                 </button>
-                <button
-                  className={activeStandingsTab === 'phase2' ? 'primary-button' : 'secondary-button'}
-                  type="button"
-                  onClick={() => setActiveStandingsTab('phase2')}
-                >
-                  Pool Play 2
-                </button>
+                {supportsPhase2 && (
+                  <button
+                    className={activeStandingsTab === 'phase2' ? 'primary-button' : 'secondary-button'}
+                    type="button"
+                    onClick={() => setActiveStandingsTab('phase2')}
+                  >
+                    {phase2Label}
+                  </button>
+                )}
                 <button
                   className={activeStandingsTab === 'cumulative' ? 'primary-button' : 'secondary-button'}
                   type="button"
@@ -955,9 +1237,9 @@ function TournamentPublicView() {
               <article className="phase1-standings-card phase1-standings-card--overall">
                 <h3>
                   {activeStandingsTab === 'phase1'
-                    ? 'Pool Play 1 Overall'
+                    ? `${phase1Label} Overall`
                     : activeStandingsTab === 'phase2'
-                      ? 'Pool Play 2 Overall'
+                      ? `${phase2Label} Overall`
                       : 'Cumulative Overall'}
                 </h3>
                 <div className="phase1-table-wrap">
@@ -1012,35 +1294,88 @@ function TournamentPublicView() {
               <p className="subtle">Loading court schedule...</p>
             ) : (
               <div className="court-schedule-list">
-                {courtScheduleMatches.length === 0 ? (
+                {courtScheduleSlots.length === 0 ? (
                   <p className="subtle">No matches scheduled for this court yet.</p>
                 ) : (
-                  courtScheduleMatches.map((match) => {
-                    const liveSummary = liveSummariesByMatchId[match.matchId] || null;
-                    const statusMeta = getCourtMatchStatusMeta(match.status);
+                  courtScheduleSlots.map((slot, index) => {
+                    const liveSummary = slot?.matchId ? liveSummariesByMatchId[slot.matchId] || null : null;
+                    const statusMeta = getCourtMatchStatusMeta(slot?.status);
                     const liveScoreSummary = liveSummary
-                      ? `Sets ${liveSummary.sets?.a ?? 0}-${liveSummary.sets?.b ?? 0} • Pts ${
-                          liveSummary.points?.a ?? 0
-                        }-${liveSummary.points?.b ?? 0}`
+                      ? formatSetSummaryWithScores(
+                          toSetSummaryFromLiveSummary(liveSummary),
+                          liveSummary?.completedSetScores
+                        )
                       : '';
-                    const scoreSummary = liveScoreSummary || formatCourtScoreSummary(match.score);
-                    const timeLabel = formatRoundBlockStartTime(match.roundBlock, tournament) || '-';
+                    const scoreSummary = liveScoreSummary || formatCourtSlotScoreSummary(slot);
+                    const timeLabel =
+                      slot?.timeLabel
+                      || formatRoundBlockStartTime(slot?.roundBlock, tournament)
+                      || '-';
+                    const stageLabel = slot?.stageLabel || slot?.phaseLabel || getPhaseLabel(slot?.phase);
+                    const hasReferenceSubtitle =
+                      typeof slot?.matchupReferenceLabel === 'string'
+                      && slot.matchupReferenceLabel
+                      && slot.matchupReferenceLabel !== slot?.matchupLabel;
+                    const hasRefReferenceSubtitle =
+                      typeof slot?.refReferenceLabel === 'string'
+                      && slot.refReferenceLabel
+                      && slot.refReferenceLabel !== slot?.refLabel;
+                    const renderTeamChip = (team, fallbackLabel, key) => {
+                      if (!team && !fallbackLabel) {
+                        return null;
+                      }
+
+                      return (
+                        <span key={key} className="court-schedule-team-chip">
+                          {team?.logoUrl ? (
+                            <img
+                              src={team.logoUrl}
+                              alt={`${team?.shortName || fallbackLabel || 'Team'} logo`}
+                              className="court-schedule-team-logo"
+                            />
+                          ) : null}
+                          <span>{team?.shortName || fallbackLabel || 'TBD'}</span>
+                        </span>
+                      );
+                    };
+                    const participantA = slot?.participants?.[0] || null;
+                    const participantB = slot?.participants?.[1] || null;
+                    const teamA = slot?.teamA || participantA?.team || null;
+                    const teamB = slot?.teamB || participantB?.team || null;
+                    const showResolvedTeams = Boolean(teamA || teamB);
 
                     return (
-                      <article key={`${match.matchId || 'match'}-${match.roundBlock || 'na'}`} className="court-schedule-row">
+                      <article
+                        key={`${slot?.slotId || slot?.matchId || 'slot'}-${slot?.roundBlock || index}`}
+                        className="court-schedule-row"
+                      >
                         <div className="court-schedule-time">{timeLabel}</div>
                         <div className="court-schedule-body">
-                          <p className="court-schedule-teams">
-                            {match.teamA || 'TBD'} vs {match.teamB || 'TBD'}
+                          <p className="court-schedule-stage">
+                            <strong>{stageLabel || 'Stage'}</strong>
+                            {`: ${slot?.matchupLabel || 'TBD vs TBD'}`}
                           </p>
+                          {hasReferenceSubtitle ? (
+                            <p className="court-schedule-reference">{slot.matchupReferenceLabel}</p>
+                          ) : null}
+                          {showResolvedTeams ? (
+                            <div className="court-schedule-team-row">
+                              {renderTeamChip(teamA, participantA?.label, 'team-a')}
+                              <span className="subtle">vs</span>
+                              {renderTeamChip(teamB, participantB?.label, 'team-b')}
+                            </div>
+                          ) : null}
                           <div className="court-schedule-meta">
                             <span className={statusMeta.className}>{statusMeta.label}</span>
-                            <span>{match.phaseLabel || match.phase || ''}</span>
-                            {match.poolName ? <span>Pool {match.poolName}</span> : null}
+                            <span>{slot?.phaseLabel || getPhaseLabel(slot?.phase)}</span>
+                            {slot?.poolName ? <span>Pool {slot.poolName}</span> : null}
                           </div>
                           <p className="subtle">
-                            Ref: {Array.isArray(match.refs) && match.refs.length > 0 ? match.refs.join(', ') : 'TBD'}
+                            Ref: {slot?.refLabel || 'TBD'}
                           </p>
+                          {hasRefReferenceSubtitle ? (
+                            <p className="court-schedule-reference">{slot.refReferenceLabel}</p>
+                          ) : null}
                           <p className="subtle">
                             Location: {selectedCourt?.label || mapCourtLabel(selectedCourtCode)}
                           </p>
@@ -1056,7 +1391,7 @@ function TournamentPublicView() {
         ) : (
           <>
             <section className="phase1-schedule">
-              <h2 className="secondary-title">Playoff Ops Schedule</h2>
+              <h2 className="secondary-title">Playoff Schedule</h2>
               {playoffs.opsSchedule.length === 0 ? (
                 <p className="subtle">Playoffs have not been generated yet.</p>
               ) : (
@@ -1086,7 +1421,7 @@ function TournamentPublicView() {
                                 <td>{slot.facility}</td>
                                 <td>{mapCourtLabel(slot.court)}</td>
                                 <td>{slot.matchLabel}</td>
-                                <td>{slot.matchId ? `${slot.teams.a} vs ${slot.teams.b}` : 'Empty'}</td>
+                                <td>{`${slot?.teams?.a || 'TBD'} vs ${slot?.teams?.b || 'TBD'}`}</td>
                                 <td>{slot.refs.length > 0 ? slot.refs.join(', ') : 'TBD'}</td>
                                 <td>
                                   {slot.status || 'empty'}
@@ -1116,22 +1451,37 @@ function TournamentPublicView() {
               <section className="phase1-standings">
                 <h2 className="secondary-title">Playoff Brackets</h2>
                 <div className="playoff-bracket-grid">
-                  {PLAYOFF_BRACKET_ORDER.map((bracket) => {
+                  {(Array.isArray(playoffs.bracketOrder) && playoffs.bracketOrder.length > 0
+                    ? playoffs.bracketOrder
+                    : Object.keys(playoffs.brackets || [])
+                  ).map((bracketKey) => {
+                    const bracket = normalizeBracket(bracketKey);
                     const bracketData = playoffs.brackets?.[bracket];
                     if (!bracketData) {
                       return null;
                     }
 
+                    const roundOrder =
+                      Array.isArray(bracketData.roundOrder) && bracketData.roundOrder.length > 0
+                        ? bracketData.roundOrder
+                        : Object.keys(bracketData.rounds || {}).sort((left, right) => {
+                            const byRank = parseRoundRank(left) - parseRoundRank(right);
+                            if (byRank !== 0) {
+                              return byRank;
+                            }
+                            return left.localeCompare(right);
+                          });
+
                     return (
                       <article key={bracket} className="phase1-standings-card playoff-bracket-card">
-                        <h3>{PLAYOFF_BRACKET_LABELS[bracket]}</h3>
+                        <h3>{bracketData.label || PLAYOFF_BRACKET_LABELS[bracket] || toTitleCase(bracket)}</h3>
                         <div className="playoff-seed-list">
                           {(bracketData.seeds || []).map((entry) => (
-                            <p key={`${bracket}-seed-${entry.seed}`}>
+                            <p key={`${bracket}-seed-${entry.seed || entry.bracketSeed}`}>
                               #
                               {Number.isFinite(Number(entry?.overallSeed))
                                 ? Number(entry.overallSeed)
-                                : entry.seed}{' '}
+                                : entry.seed || entry.bracketSeed}{' '}
                               {formatTeamName(entry.team)}
                             </p>
                           ))}
@@ -1157,7 +1507,7 @@ function TournamentPublicView() {
                               .filter(Boolean)
                           );
 
-                          return ['R1', 'R2', 'R3'].map((roundKey) => (
+                          return roundOrder.map((roundKey) => (
                             <div key={`${bracket}-${roundKey}`} className="playoff-round-block">
                               <h4>{roundKey === 'R3' ? 'Final' : roundKey}</h4>
                               {(bracketData.rounds?.[roundKey] || []).map((match) => (

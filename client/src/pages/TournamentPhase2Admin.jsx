@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   DndContext,
   DragOverlay,
@@ -21,7 +21,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 import { API_URL } from '../config/env.js';
-import TournamentSchedulingTabs from '../components/TournamentSchedulingTabs.jsx';
+import TournamentAdminNav from '../components/TournamentAdminNav.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
@@ -38,6 +38,13 @@ import {
   buildTournamentMatchControlHref,
   getMatchStatusMeta,
 } from '../utils/tournamentMatchControl.js';
+import { formatElapsedTimer } from '../utils/matchTimer.js';
+import {
+  formatSetSummaryWithScores,
+  resolveCompletedSetScores,
+  toSetSummaryFromLiveSummary,
+  toSetSummaryFromScoreSummary,
+} from '../utils/matchSetSummary.js';
 import {
   buildPoolSwapDragId,
   buildPoolSwapTargetId,
@@ -58,6 +65,8 @@ const jsonHeaders = (token) => ({
 const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
 });
+
+const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 
 const normalizePools = (pools) =>
   sortPhase2Pools(pools).map((pool) => ({
@@ -86,17 +95,20 @@ const formatPointDiff = (value) => {
   return parsed > 0 ? `+${parsed}` : `${parsed}`;
 };
 const formatLiveSummary = (summary) =>
-  `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
-const formatResultSetScores = (result) => {
-  if (!Array.isArray(result?.setScores) || result.setScores.length === 0) {
-    return '';
-  }
+  `Live: ${formatSetSummaryWithScores(
+    toSetSummaryFromLiveSummary(summary),
+    summary?.completedSetScores
+  )}`;
+const formatMatchSetSummary = (match) => {
+  const fallbackScoreSummary = {
+    setsA: Number(match?.result?.setsWonA) || 0,
+    setsB: Number(match?.result?.setsWonB) || 0,
+  };
 
-  return result.setScores
-    .slice()
-    .sort((left, right) => (left?.setNo ?? 0) - (right?.setNo ?? 0))
-    .map((set) => `${set?.a ?? 0}-${set?.b ?? 0}`)
-    .join(', ');
+  return formatSetSummaryWithScores(
+    toSetSummaryFromScoreSummary(match?.scoreSummary || fallbackScoreSummary),
+    resolveCompletedSetScores(match)
+  );
 };
 
 const normalizeStandingsPayload = (payload) => ({
@@ -277,6 +289,7 @@ function PoolHeaderDropTarget({ poolId, activeSwapPoolId, children }) {
 
 function TournamentPhase2Admin() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const { token, user, initializing } = useAuth();
 
   const [tournament, setTournament] = useState(null);
@@ -299,11 +312,14 @@ function TournamentPhase2Admin() {
   const [savingPools, setSavingPools] = useState(false);
   const [poolsGenerateLoading, setPoolsGenerateLoading] = useState(false);
   const [generateLoading, setGenerateLoading] = useState(false);
+  const [resettingTournament, setResettingTournament] = useState(false);
   const [standingsLoading, setStandingsLoading] = useState(false);
   const [matchActionId, setMatchActionId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [routeGuard, setRouteGuard] = useState('');
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
+  const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now());
 
   const applyPhase1SeedsToPools = useCallback((poolsToSeed, seedLookup) => {
     if (!Array.isArray(poolsToSeed)) {
@@ -407,8 +423,38 @@ function TournamentPhase2Admin() {
         loadStandings('cumulative'),
       ]);
 
+      const formatId =
+        typeof tournamentData?.settings?.format?.formatId === 'string'
+          ? tournamentData.settings.format.formatId.trim()
+          : '';
+
+      if (!formatId) {
+        setTournament(tournamentData);
+        setPools([]);
+        setMatches([]);
+        setStandingsByPhase({
+          phase2: { pools: [], overall: [] },
+          cumulative: { pools: [], overall: [] },
+        });
+        setRouteGuard('apply-format');
+        return;
+      }
+
+      if (formatId !== ODU_15_FORMAT_ID) {
+        setTournament(tournamentData);
+        setPools([]);
+        setMatches([]);
+        setStandingsByPhase({
+          phase2: { pools: [], overall: [] },
+          cumulative: { pools: [], overall: [] },
+        });
+        setRouteGuard('wrong-format');
+        return;
+      }
+
       const phase1SeedLookup = buildPhase1SeedLookup(phase1Standings);
 
+      setRouteGuard('');
       setTournament(tournamentData);
       setPhase1SeedByTeamId(phase1SeedLookup);
       setPools(applyPhase1SeedsToPools(poolData, phase1SeedLookup));
@@ -464,6 +510,26 @@ function TournamentPhase2Admin() {
   useEffect(() => {
     setLiveSummariesByMatchId({});
   }, [id]);
+
+  const hasLiveTimers = useMemo(
+    () =>
+      matches.some(
+        (match) => match?.status === 'live' && typeof match?.startedAt === 'string' && match.startedAt
+      ),
+    [matches]
+  );
+
+  useEffect(() => {
+    if (!hasLiveTimers) {
+      return undefined;
+    }
+
+    const timerId = window.setInterval(() => {
+      setElapsedNowMs(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [hasLiveTimers]);
 
   const handleTournamentRealtimeEvent = useCallback(
     (event) => {
@@ -1099,6 +1165,37 @@ function TournamentPhase2Admin() {
     [fetchJson, matchActionId, refreshMatchesAndStandings, token]
   );
 
+  const handleResetTournament = useCallback(async () => {
+    if (!token || !id || resettingTournament || !tournament?.isOwner) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Reset this tournament?\n\nThis deletes all pools, matches, and linked scoreboards, clears standings overrides, and sets status back to setup. Teams, details, and format settings stay.'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setResettingTournament(true);
+    setError('');
+    setMessage('');
+
+    try {
+      await fetchJson(`${API_URL}/api/tournaments/${id}/reset`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      setMessage('Tournament reset. Redirecting to format setup.');
+      navigate(`/tournaments/${id}/format`, { replace: true });
+    } catch (resetError) {
+      setError(resetError.message || 'Unable to reset tournament');
+    } finally {
+      setResettingTournament(false);
+    }
+  }, [fetchJson, id, navigate, resettingTournament, token, tournament?.isOwner]);
+
   const getPoolTeams = (pool) =>
     (Array.isArray(pool?.teamIds) ? pool.teamIds : []).filter(
       (team) => team && typeof team === 'object' && team._id
@@ -1140,6 +1237,81 @@ function TournamentPhase2Admin() {
     );
   }
 
+  if (routeGuard === 'apply-format') {
+    return (
+      <main className="container">
+        <section className="card phase1-admin-card">
+          <div className="phase1-admin-header">
+            <div>
+              <h1 className="title">Pool Play 2 Setup</h1>
+              <p className="subtitle">
+                {tournament?.name || 'Tournament'} • Apply a format before opening this page.
+              </p>
+              <TournamentAdminNav
+                tournamentId={id}
+                publicCode={tournament?.publicCode || ''}
+                activeMainTab="scheduling"
+                scheduling={{
+                  activeSubTab: 'phase2',
+                  showPhase2: true,
+                  phase1Label: 'Pool Play 1',
+                  phase1Href: `/tournaments/${id}/phase1`,
+                  phase2Label: 'Pool Play 2',
+                  phase2Href: `/tournaments/${id}/phase2`,
+                  playoffsHref: `/tournaments/${id}/playoffs`,
+                }}
+              />
+            </div>
+          </div>
+          <div className="tournaments-route-error">
+            <p className="error">Apply format first.</p>
+            <a className="secondary-button" href={`/tournaments/${id}/format`}>
+              Open Format Page
+            </a>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (routeGuard === 'wrong-format') {
+    return (
+      <main className="container">
+        <section className="card phase1-admin-card">
+          <div className="phase1-admin-header">
+            <div>
+              <h1 className="title">Pool Play 2 Setup</h1>
+              <p className="subtitle">
+                {tournament?.name || 'Tournament'} • This page is only for the legacy ODU 15 format.
+              </p>
+              <TournamentAdminNav
+                tournamentId={id}
+                publicCode={tournament?.publicCode || ''}
+                activeMainTab="scheduling"
+                scheduling={{
+                  activeSubTab: 'phase2',
+                  showPhase2: false,
+                  phase1Label: 'Pool Play Setup',
+                  phase1Href: `/tournaments/${id}/pool-play`,
+                  playoffsLabel: 'Playoffs Setup',
+                  playoffsHref: `/tournaments/${id}/playoffs`,
+                }}
+              />
+            </div>
+          </div>
+          <div className="tournaments-route-error">
+            <p className="error">
+              Wrong page for current format. Use the Pool Play page for this tournament.
+            </p>
+            <a className="secondary-button" href={`/tournaments/${id}/pool-play`}>
+              Open Pool Play
+            </a>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="container">
       <section className="card phase1-admin-card">
@@ -1150,7 +1322,20 @@ function TournamentPhase2Admin() {
               {tournament?.name || 'Tournament'} • Build pools F-J from Pool Play 1 placements, then
               generate fixed rounds 4-6.
             </p>
-            <TournamentSchedulingTabs tournamentId={id} activeTab="phase2" />
+            <TournamentAdminNav
+              tournamentId={id}
+              publicCode={tournament?.publicCode || ''}
+              activeMainTab="scheduling"
+              scheduling={{
+                activeSubTab: 'phase2',
+                showPhase2: true,
+                phase1Label: 'Pool Play 1',
+                phase1Href: `/tournaments/${id}/phase1`,
+                phase2Label: 'Pool Play 2',
+                phase2Href: `/tournaments/${id}/phase2`,
+                playoffsHref: `/tournaments/${id}/playoffs`,
+              }}
+            />
           </div>
           <div className="phase1-admin-actions">
             <button
@@ -1171,6 +1356,16 @@ function TournamentPhase2Admin() {
             >
               {generateLoading ? 'Generating Matches...' : 'Generate Pool Play 2 Matches'}
             </button>
+            {tournament?.isOwner && (
+              <button
+                className="secondary-button danger-button"
+                type="button"
+                onClick={handleResetTournament}
+                disabled={resettingTournament}
+              >
+                {resettingTournament ? 'Resetting...' : 'Reset Tournament'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -1288,11 +1483,20 @@ function TournamentPhase2Admin() {
                         const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
                         const refLabel = formatTeamLabel(match?.refTeams?.[0]);
                         const matchStatusMeta = getMatchStatusMeta(match?.status);
-                        const resultSetScores = formatResultSetScores(match?.result);
+                        const liveSummary = liveSummariesByMatchId[match._id];
+                        const setSummaryLine = liveSummary
+                          ? formatLiveSummary(liveSummary)
+                          : formatMatchSetSummary(match);
+                        const liveTimerLabel =
+                          match?.status === 'live' && match?.startedAt
+                            ? formatElapsedTimer(match.startedAt, elapsedNowMs)
+                            : '';
                         const controlPanelHref = buildTournamentMatchControlHref({
                           matchId: match?._id,
                           scoreboardKey,
                           status: match?.status,
+                          startedAt: match?.startedAt,
+                          endedAt: match?.endedAt,
                         });
 
                         return (
@@ -1304,11 +1508,7 @@ function TournamentPhase2Admin() {
                                   {`: ${formatTeamLabel(match.teamA)} vs ${formatTeamLabel(match.teamB)}`}
                                 </p>
                                 <p>Ref: {refLabel}</p>
-                                {liveSummariesByMatchId[match._id] && (
-                                  <p className="subtle">
-                                    {formatLiveSummary(liveSummariesByMatchId[match._id])}
-                                  </p>
-                                )}
+                                <p className="subtle">{setSummaryLine}</p>
                                 {controlPanelHref ? (
                                   <a
                                     href={controlPanelHref}
@@ -1328,12 +1528,9 @@ function TournamentPhase2Admin() {
                                   >
                                     {matchStatusMeta.label}
                                   </span>
-                                  {match.result && (
-                                    <span className="phase1-match-result">
-                                      Sets {match.result.setsWonA}-{match.result.setsWonB}
-                                      {resultSetScores ? ` • ${resultSetScores}` : ''}
-                                    </span>
-                                  )}
+                                  {liveTimerLabel ? (
+                                    <span className="phase1-match-result">LIVE {liveTimerLabel}</span>
+                                  ) : null}
                                 </div>
                                 <div className="phase1-match-actions">
                                   {match.status === 'final' ? (

@@ -40,17 +40,6 @@ function TournamentDetailsAdmin() {
             <h1 className="title">Tournament Details</h1>
             <p className="subtitle">Update public notes, maps, and venue information.</p>
           </div>
-          <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${tournamentId}/teams`}>
-              Team Setup
-            </a>
-            <a className="secondary-button" href={`/tournaments/${tournamentId}/phase1`}>
-              Scheduling
-            </a>
-            <a className="secondary-button" href={`/tournaments/${tournamentId}/quick-scores`}>
-              Quick Scores
-            </a>
-          </div>
         </div>
         <TournamentsTab
           user={user}

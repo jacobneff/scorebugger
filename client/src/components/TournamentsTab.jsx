@@ -11,6 +11,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 import { API_URL } from "../config/env.js";
+import TournamentAdminNav from "./TournamentAdminNav.jsx";
 import TournamentDatePicker from "./TournamentDatePicker.jsx";
 
 const DEFAULT_TIMEZONE = "America/New_York";
@@ -24,6 +25,13 @@ const TOURNAMENT_DETAILS_DEFAULTS = Object.freeze({
   facilitiesInfo: "",
   parkingInfo: "",
   mapImageUrls: [],
+});
+const TOURNAMENT_SHARE_LINK_DEFAULTS = Object.freeze({
+  enabled: false,
+  role: "admin",
+  hasLink: false,
+  joinPath: "",
+  joinUrl: "",
 });
 
 const resolveTimezone = () => {
@@ -100,6 +108,16 @@ const createDetailsDraft = (details) => {
     foodText: normalized.foodInfo.text,
     foodLinkUrl: normalized.foodInfo.linkUrl,
     mapImageSlots: buildMapImageSlots(normalized.mapImageUrls),
+  };
+};
+const normalizeShareLinkPayload = (shareLink) => {
+  const source = shareLink && typeof shareLink === "object" ? shareLink : {};
+  return {
+    enabled: Boolean(source.enabled),
+    role: typeof source.role === "string" && source.role.trim() ? source.role.trim() : "admin",
+    hasLink: Boolean(source.hasLink),
+    joinPath: typeof source.joinPath === "string" ? source.joinPath : "",
+    joinUrl: typeof source.joinUrl === "string" ? source.joinUrl : "",
   };
 };
 
@@ -416,12 +434,25 @@ function TournamentsTab({
   const [teamLinksError, setTeamLinksError] = useState("");
   const [teamLinkActionTeamId, setTeamLinkActionTeamId] = useState("");
   const [copiedTeamLinkTeamId, setCopiedTeamLinkTeamId] = useState("");
+  const [accessOwner, setAccessOwner] = useState(null);
+  const [accessAdmins, setAccessAdmins] = useState([]);
+  const [pendingInvites, setPendingInvites] = useState([]);
+  const [shareLinkInfo, setShareLinkInfo] = useState(() => TOURNAMENT_SHARE_LINK_DEFAULTS);
+  const [sharingLoading, setSharingLoading] = useState(false);
+  const [sharingError, setSharingError] = useState("");
+  const [sharingMessage, setSharingMessage] = useState("");
+  const [shareEmailInput, setShareEmailInput] = useState("");
+  const [sharingActionBusy, setSharingActionBusy] = useState("");
+  const [copiedShareLink, setCopiedShareLink] = useState(false);
+  const [lastInviteLink, setLastInviteLink] = useState("");
   const [deletingTournamentId, setDeletingTournamentId] = useState("");
+  const [routeContextError, setRouteContextError] = useState("");
   const normalizedMode =
     mode === "details" || mode === "teams" ? mode : "hub";
   const showCreateCard = normalizedMode === "hub";
   const showDetailsSection = normalizedMode === "details";
   const showTeamsSection = normalizedMode === "teams";
+  const showHubLayout = normalizedMode === "hub";
 
   const makeRowId = useCallback(() => {
     rowCounterRef.current += 1;
@@ -505,6 +536,66 @@ function TournamentsTab({
     [authHeaders, fetchJson, token]
   );
 
+  const refreshSharingAccess = useCallback(
+    async ({ tournamentId, showLoading = true } = {}) => {
+      const normalizedId =
+        typeof tournamentId === "string" && tournamentId.trim()
+          ? tournamentId.trim()
+          : selectedTournamentId;
+
+      if (!token || !normalizedId) {
+        setAccessOwner(null);
+        setAccessAdmins([]);
+        setPendingInvites([]);
+        setShareLinkInfo(TOURNAMENT_SHARE_LINK_DEFAULTS);
+        setSharingError("");
+        setSharingLoading(false);
+        return null;
+      }
+
+      if (showLoading) {
+        setSharingLoading(true);
+      }
+
+      try {
+        const payload = await fetchJson(`${API_URL}/api/tournaments/${normalizedId}/access`, {
+          headers: authHeaders(),
+        });
+
+        setAccessOwner(payload?.owner || null);
+        setAccessAdmins(Array.isArray(payload?.admins) ? payload.admins : []);
+        setPendingInvites(Array.isArray(payload?.pendingInvites) ? payload.pendingInvites : []);
+        setShareLinkInfo(normalizeShareLinkPayload(payload?.shareLink));
+        setSharingError("");
+        setSelectedTournament((current) => {
+          if (!current || String(current?._id || "") !== normalizedId) {
+            return current;
+          }
+
+          return {
+            ...current,
+            accessRole: payload?.callerRole || current.accessRole,
+            isOwner: Boolean(payload?.isOwner),
+          };
+        });
+
+        return payload;
+      } catch (error) {
+        setAccessOwner(null);
+        setAccessAdmins([]);
+        setPendingInvites([]);
+        setShareLinkInfo(TOURNAMENT_SHARE_LINK_DEFAULTS);
+        setSharingError(error?.message || "Unable to load sharing access");
+        return null;
+      } finally {
+        if (showLoading) {
+          setSharingLoading(false);
+        }
+      }
+    },
+    [authHeaders, fetchJson, selectedTournamentId, token]
+  );
+
   const loadTournaments = useCallback(
     async ({ preferredTournamentId } = {}) => {
       if (!token) {
@@ -567,6 +658,17 @@ function TournamentsTab({
         setTeamLinksError("");
         setTeamLinksLoading(false);
         setTeamsLoading(false);
+        setAccessOwner(null);
+        setAccessAdmins([]);
+        setPendingInvites([]);
+        setShareLinkInfo(TOURNAMENT_SHARE_LINK_DEFAULTS);
+        setSharingLoading(false);
+        setSharingError("");
+        setSharingMessage("");
+        setShareEmailInput("");
+        setSharingActionBusy("");
+        setCopiedShareLink(false);
+        setLastInviteLink("");
         return;
       }
 
@@ -594,6 +696,8 @@ function TournamentsTab({
           setTeamLinksError(linkError?.message || "Unable to load team links");
         }
 
+        await refreshSharingAccess({ tournamentId: normalizedId });
+
         const normalizedTeams = Array.isArray(teamsPayload)
           ? teamsPayload.map((team) => ({
               _id: team?._id ? String(team._id) : "",
@@ -608,6 +712,7 @@ function TournamentsTab({
           : [];
 
         setSelectedTournament(tournamentPayload || null);
+        setRouteContextError("");
         setDetailsDraft(createDetailsDraft(tournamentPayload?.details));
         setDetailsError("");
         setDetailsMessage("");
@@ -623,19 +728,32 @@ function TournamentsTab({
         setTeamRows([]);
         setTeamLinks([]);
         setTeamLinksError("");
+        setAccessOwner(null);
+        setAccessAdmins([]);
+        setPendingInvites([]);
+        setShareLinkInfo(TOURNAMENT_SHARE_LINK_DEFAULTS);
+        setSharingLoading(false);
+        setSharingError("");
+        setSharingMessage("");
+        setShareEmailInput("");
+        setSharingActionBusy("");
+        setCopiedShareLink(false);
+        setLastInviteLink("");
+        setRouteContextError(error?.message || "Unable to load tournament");
         setTeamsError(error?.message || "Unable to load tournament teams");
       } finally {
         setTeamsLoading(false);
         setTeamLinksLoading(false);
       }
     },
-    [authHeaders, fetchJson, loadTeamLinks, toDraftRow, token]
+    [authHeaders, fetchJson, loadTeamLinks, refreshSharingAccess, toDraftRow, token]
   );
 
   useEffect(() => {
     if (!user || !token) {
       setTournaments([]);
       setSelectedTournamentId("");
+      setRouteContextError("");
       setSelectedTournament(null);
       setDetailsDraft(createDetailsDraft());
       setDetailsSaving(false);
@@ -648,14 +766,35 @@ function TournamentsTab({
       setTeamLinksLoading(false);
       setTeamLinkActionTeamId("");
       setCopiedTeamLinkTeamId("");
+      setAccessOwner(null);
+      setAccessAdmins([]);
+      setPendingInvites([]);
+      setShareLinkInfo(TOURNAMENT_SHARE_LINK_DEFAULTS);
+      setSharingLoading(false);
+      setSharingError("");
+      setSharingMessage("");
+      setShareEmailInput("");
+      setSharingActionBusy("");
+      setCopiedShareLink(false);
+      setLastInviteLink("");
       setTournamentsError("");
       setTeamsError("");
       setTeamsMessage("");
       return;
     }
 
-    loadTournaments();
-  }, [loadTournaments, token, user]);
+    if (normalizedMode === "hub") {
+      setRouteContextError("");
+      loadTournaments();
+      return;
+    }
+
+    setTournaments([]);
+    setTournamentsError("");
+    const routeTournamentId =
+      typeof initialTournamentId === "string" ? initialTournamentId.trim() : "";
+    setSelectedTournamentId(routeTournamentId);
+  }, [initialTournamentId, loadTournaments, normalizedMode, token, user]);
 
   useEffect(() => {
     const nextId = typeof initialTournamentId === "string" ? initialTournamentId.trim() : "";
@@ -682,7 +821,14 @@ function TournamentsTab({
     setNewTeamLocationLabel("");
     setCopiedTeamLinkTeamId("");
     setTeamLinkActionTeamId("");
+    setSharingMessage("");
+    setSharingError("");
+    setShareEmailInput("");
+    setSharingActionBusy("");
+    setCopiedShareLink(false);
+    setLastInviteLink("");
     if (normalizedMode === "hub") {
+      setRouteContextError("");
       setSelectedTournament(null);
       setDetailsDraft(createDetailsDraft());
       setTeamsInitial([]);
@@ -691,6 +837,19 @@ function TournamentsTab({
       setTeamLinksError("");
       setTeamLinksLoading(false);
       setTeamsLoading(false);
+      setAccessOwner(null);
+      setAccessAdmins([]);
+      setPendingInvites([]);
+      setShareLinkInfo(TOURNAMENT_SHARE_LINK_DEFAULTS);
+      setSharingLoading(false);
+      return;
+    }
+
+    if (!selectedTournamentId) {
+      setRouteContextError("Tournament not found. Open one from Tournament Hub.");
+      setSelectedTournament(null);
+      setTeamsInitial([]);
+      setTeamRows([]);
       return;
     }
 
@@ -700,10 +859,21 @@ function TournamentsTab({
   const canEditTeamRoster = selectedTournament?.status === "setup";
   const canEditTeamNames = selectedTournament?.status === "setup";
   const canEditTeamAssets = Boolean(selectedTournament);
+  const selectedFormatId =
+    typeof selectedTournament?.settings?.format?.formatId === "string"
+      ? selectedTournament.settings.format.formatId.trim()
+      : "";
+  const isLegacyOduFormat = selectedFormatId === "odu_15_5courts_v1";
+  const selectedTournamentRole = selectedTournament?.accessRole || (selectedTournament?.isOwner ? "owner" : "admin");
+  const selectedTournamentIsOwner = selectedTournamentRole === "owner";
   const currentTeamCount = teamRows.length;
 
   const teamWarnings = useMemo(() => {
     if (!selectedTournament) {
+      return [];
+    }
+
+    if (!isLegacyOduFormat) {
       return [];
     }
 
@@ -715,7 +885,7 @@ function TournamentsTab({
       warnings.push("Pool auto-fill uses the first 15 teams by card order.");
     }
     return warnings;
-  }, [currentTeamCount, selectedTournament]);
+  }, [currentTeamCount, isLegacyOduFormat, selectedTournament]);
   const detailsPreviewUrls = useMemo(
     () =>
       detailsDraft.mapImageSlots
@@ -724,6 +894,16 @@ function TournamentsTab({
         .slice(0, TOURNAMENT_DETAILS_MAP_SLOTS),
     [detailsDraft.mapImageSlots]
   );
+  const selectedTournamentPublicViewUrl = useMemo(() => {
+    const publicCode = typeof selectedTournament?.publicCode === "string"
+      ? selectedTournament.publicCode.trim()
+      : "";
+    if (!publicCode) {
+      return "";
+    }
+
+    return toAbsoluteUrl(`/t/${publicCode}`);
+  }, [selectedTournament?.publicCode]);
 
   const selectTournament = (nextId) => {
     const cleaned = typeof nextId === "string" ? nextId.trim() : "";
@@ -1006,6 +1186,259 @@ function TournamentsTab({
     [authHeaders, fetchJson, onShowToast, refreshTeamLinks, teamLinkActionTeamId, token]
   );
 
+  const handleCopyShareLink = useCallback(
+    async (link) => {
+      const normalizedLink = typeof link === "string" ? link.trim() : "";
+      if (!normalizedLink) {
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(normalizedLink);
+        setCopiedShareLink(true);
+        onShowToast?.("success", "Share link copied");
+        setTimeout(() => {
+          setCopiedShareLink(false);
+        }, 1400);
+      } catch {
+        onShowToast?.("error", "Unable to copy share link");
+      }
+    },
+    [onShowToast]
+  );
+
+  const handleCreateShareLink = useCallback(async () => {
+    if (!token || !selectedTournamentId || !selectedTournamentIsOwner || sharingActionBusy) {
+      return;
+    }
+
+    setSharingActionBusy("create-link");
+    setSharingError("");
+    setSharingMessage("");
+
+    try {
+      const payload = await fetchJson(`${API_URL}/api/tournaments/${selectedTournamentId}/share/link`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+
+      const normalized = normalizeShareLinkPayload(payload);
+      setShareLinkInfo(normalized);
+      setSharingMessage("Admin share link is ready.");
+      if (normalized.joinUrl) {
+        await handleCopyShareLink(normalized.joinUrl);
+      }
+    } catch (error) {
+      const message = error?.message || "Unable to create share link";
+      setSharingError(message);
+      onShowToast?.("error", message);
+    } finally {
+      setSharingActionBusy("");
+    }
+  }, [
+    authHeaders,
+    fetchJson,
+    handleCopyShareLink,
+    onShowToast,
+    selectedTournamentId,
+    selectedTournamentIsOwner,
+    sharingActionBusy,
+    token,
+  ]);
+
+  const handleSetShareLinkEnabled = useCallback(
+    async (enabled) => {
+      if (!token || !selectedTournamentId || !selectedTournamentIsOwner || sharingActionBusy) {
+        return;
+      }
+
+      setSharingActionBusy(enabled ? "enable-link" : "disable-link");
+      setSharingError("");
+      setSharingMessage("");
+
+      try {
+        const payload = await fetchJson(`${API_URL}/api/tournaments/${selectedTournamentId}/share/link`, {
+          method: "PATCH",
+          headers: authHeaders(true),
+          body: JSON.stringify({ enabled }),
+        });
+
+        setShareLinkInfo(normalizeShareLinkPayload(payload));
+        setSharingMessage(enabled ? "Share link enabled." : "Share link disabled.");
+      } catch (error) {
+        const message = error?.message || "Unable to update share link";
+        setSharingError(message);
+        onShowToast?.("error", message);
+      } finally {
+        setSharingActionBusy("");
+      }
+    },
+    [
+      authHeaders,
+      fetchJson,
+      onShowToast,
+      selectedTournamentId,
+      selectedTournamentIsOwner,
+      sharingActionBusy,
+      token,
+    ]
+  );
+
+  const handleInviteAdminByEmail = useCallback(
+    async (event) => {
+      event.preventDefault();
+
+      const normalizedEmail = normalizeText(shareEmailInput).toLowerCase();
+      if (!token || !selectedTournamentId || !selectedTournamentIsOwner || sharingActionBusy) {
+        return;
+      }
+
+      if (!normalizedEmail || !normalizedEmail.includes("@")) {
+        setSharingError("Enter a valid email address.");
+        return;
+      }
+
+      setSharingActionBusy("invite-email");
+      setSharingError("");
+      setSharingMessage("");
+      setLastInviteLink("");
+
+      try {
+        const payload = await fetchJson(`${API_URL}/api/tournaments/${selectedTournamentId}/share/email`, {
+          method: "POST",
+          headers: authHeaders(true),
+          body: JSON.stringify({
+            email: normalizedEmail,
+            role: "admin",
+          }),
+        });
+
+        await refreshSharingAccess({ tournamentId: selectedTournamentId, showLoading: false });
+        setShareEmailInput("");
+
+        const inviteLink = payload?.inviteUrl || payload?.invitePath || "";
+        if (inviteLink) {
+          setLastInviteLink(inviteLink);
+        }
+
+        if (payload?.granted) {
+          setSharingMessage("Admin access granted.");
+        } else if (payload?.emailDelivered) {
+          setSharingMessage("Invite sent by email.");
+        } else if (inviteLink) {
+          setSharingMessage("Invite created. Copy and send the invite link.");
+        } else {
+          setSharingMessage("Invite created.");
+        }
+      } catch (error) {
+        const message = error?.message || "Unable to send invite";
+        setSharingError(message);
+        onShowToast?.("error", message);
+      } finally {
+        setSharingActionBusy("");
+      }
+    },
+    [
+      authHeaders,
+      fetchJson,
+      onShowToast,
+      refreshSharingAccess,
+      selectedTournamentId,
+      selectedTournamentIsOwner,
+      shareEmailInput,
+      sharingActionBusy,
+      token,
+    ]
+  );
+
+  const handleRevokeAdminAccess = useCallback(
+    async (userId, displayName) => {
+      if (!token || !selectedTournamentId || !selectedTournamentIsOwner || !userId || sharingActionBusy) {
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `Remove admin access for ${displayName || "this user"}?`
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      setSharingActionBusy(`revoke-${userId}`);
+      setSharingError("");
+      setSharingMessage("");
+
+      try {
+        await fetchJson(`${API_URL}/api/tournaments/${selectedTournamentId}/access/${userId}`, {
+          method: "DELETE",
+          headers: authHeaders(),
+        });
+
+        await refreshSharingAccess({ tournamentId: selectedTournamentId, showLoading: false });
+        setSharingMessage("Admin access removed.");
+      } catch (error) {
+        const message = error?.message || "Unable to remove admin access";
+        setSharingError(message);
+        onShowToast?.("error", message);
+      } finally {
+        setSharingActionBusy("");
+      }
+    },
+    [
+      authHeaders,
+      fetchJson,
+      onShowToast,
+      refreshSharingAccess,
+      selectedTournamentId,
+      selectedTournamentIsOwner,
+      sharingActionBusy,
+      token,
+    ]
+  );
+
+  const handleLeaveTournament = useCallback(async () => {
+    if (!token || !selectedTournamentId || selectedTournamentIsOwner || sharingActionBusy) {
+      return;
+    }
+
+    const confirmed = window.confirm("Leave this tournament's admin access?");
+    if (!confirmed) {
+      return;
+    }
+
+    setSharingActionBusy("leave");
+    setSharingError("");
+    setSharingMessage("");
+
+    try {
+      await fetchJson(`${API_URL}/api/tournaments/${selectedTournamentId}/access/leave`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+
+      await loadTournaments({ preferredTournamentId: "" });
+      onShowToast?.("success", "You left the tournament");
+      navigate("/?tab=tournaments");
+    } catch (error) {
+      const message = error?.message || "Unable to leave tournament";
+      setSharingError(message);
+      onShowToast?.("error", message);
+    } finally {
+      setSharingActionBusy("");
+    }
+  }, [
+    authHeaders,
+    fetchJson,
+    loadTournaments,
+    navigate,
+    onShowToast,
+    selectedTournamentId,
+    selectedTournamentIsOwner,
+    sharingActionBusy,
+    token,
+  ]);
+
   const persistTeamOrder = useCallback(
     async (rows) => {
       const orderedTeamIds = rows.map((row) => row._id).filter(Boolean);
@@ -1110,7 +1543,7 @@ function TournamentsTab({
       onShowToast?.("success", "Tournament created");
 
       if (createdId) {
-        navigate(`/tournaments/${createdId}/phase1`);
+        navigate(`/tournaments/${createdId}/format`);
       }
     } catch (error) {
       const message = error?.message || "Unable to create tournament";
@@ -1293,6 +1726,7 @@ function TournamentsTab({
 
   return (
     <div className="tournaments-panel">
+      {showHubLayout && (
       <div className="tournaments-layout">
         {showCreateCard && (
           <section className="tournaments-card tournaments-create-card">
@@ -1372,40 +1806,22 @@ function TournamentsTab({
                       <span className="tournament-select-meta">
                         {formatDateLabel(tournament?.date)} · {formatStatusLabel(tournament?.status)}
                       </span>
-                      <span className="tournament-select-code">
-                        Code {tournament?.publicCode || "------"}
-                      </span>
                     </button>
 
                     <div className="tournament-list-actions">
-                      <a className="secondary-button" href={`/tournaments/${id}/details`}>
-                        Details
-                      </a>
                       <a className="secondary-button" href={`/tournaments/${id}/teams`}>
-                        Team Setup
+                        Open
                       </a>
-                      <a className="secondary-button" href={`/tournaments/${id}/phase1`}>
-                        Scheduling
-                      </a>
-                      <a className="secondary-button" href={`/tournaments/${id}/quick-scores`}>
-                        Quick Scores
-                      </a>
-                      <a
-                        className="secondary-button"
-                        href={`/t/${tournament?.publicCode || ""}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Public View
-                      </a>
-                      <button
-                        type="button"
-                        className="secondary-button tournament-delete-button"
-                        onClick={() => handleDeleteTournament(tournament)}
-                        disabled={deletingTournamentId === id}
-                      >
-                        {deletingTournamentId === id ? "Deleting..." : "Delete"}
-                      </button>
+                      {tournament?.isOwner && (
+                        <button
+                          type="button"
+                          className="secondary-button tournament-delete-button"
+                          onClick={() => handleDeleteTournament(tournament)}
+                          disabled={deletingTournamentId === id}
+                        >
+                          {deletingTournamentId === id ? "Deleting..." : "Delete"}
+                        </button>
+                      )}
                     </div>
                   </article>
                 );
@@ -1414,16 +1830,30 @@ function TournamentsTab({
           )}
         </section>
       </div>
+      )}
 
       {showDetailsSection && (
       <section className="tournaments-card tournaments-details-card">
+        <TournamentAdminNav
+          tournamentId={selectedTournamentId || initialTournamentId}
+          publicCode={selectedTournament?.publicCode || ""}
+          activeMainTab="details"
+        />
+        {routeContextError && (
+          <div className="tournaments-route-error">
+            <p className="error">{routeContextError}</p>
+            <a className="secondary-button" href="/?tab=tournaments">
+              Open Tournament Hub
+            </a>
+          </div>
+        )}
         <div className="tournaments-team-header">
           <div>
             <h2 className="secondary-title">Tournament Details</h2>
             {selectedTournament ? (
               <p className="subtle">Update public notes, maps, and venue information.</p>
             ) : (
-              <p className="subtle">Select a tournament to edit public details.</p>
+              <p className="subtle">Open a tournament from Tournament Hub to edit public details.</p>
             )}
           </div>
           <div className="tournaments-team-actions">
@@ -1439,7 +1869,7 @@ function TournamentsTab({
         </div>
 
         {!selectedTournament ? (
-          <p className="subtle">Choose a tournament from the list above to start editing details.</p>
+          <p className="subtle">Tournament details are available after selecting a tournament from Hub.</p>
         ) : (
           <>
             <div className="tournament-details-grid">
@@ -1458,7 +1888,7 @@ function TournamentsTab({
 
               <div className="tournament-team-card-fields">
                 <label className="input-label" htmlFor="tournament-facilities-info">
-                  Facilities / Court Notes
+                  Facilities / Court Notes (markdown supported)
                 </label>
                 <textarea
                   id="tournament-facilities-info"
@@ -1471,7 +1901,7 @@ function TournamentsTab({
 
               <div className="tournament-team-card-fields">
                 <label className="input-label" htmlFor="tournament-parking-info">
-                  Parking (optional)
+                  Parking (optional, markdown supported)
                 </label>
                 <textarea
                   id="tournament-parking-info"
@@ -1484,7 +1914,7 @@ function TournamentsTab({
 
               <div className="tournament-team-card-fields">
                 <label className="input-label" htmlFor="tournament-food-text">
-                  Food Info
+                  Food Info (markdown supported)
                 </label>
                 <textarea
                   id="tournament-food-text"
@@ -1541,6 +1971,208 @@ function TournamentsTab({
               )}
             </section>
 
+            <section className="tournament-team-links-panel">
+              <div className="tournament-team-links-header">
+                <h3>Sharing</h3>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() =>
+                    refreshSharingAccess({
+                      tournamentId: selectedTournamentId,
+                      showLoading: true,
+                    })
+                  }
+                  disabled={sharingLoading}
+                >
+                  {sharingLoading ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+
+              <p className="subtle">
+                Your role:{" "}
+                <strong>{selectedTournamentIsOwner ? "Owner" : "Admin"}</strong>
+              </p>
+
+              {accessOwner && (
+                <div className="tournament-team-link-row">
+                  <div className="tournament-team-link-meta">
+                    <strong>{accessOwner.displayName || accessOwner.email || "Owner"}</strong>
+                    <span className="subtle">Owner</span>
+                  </div>
+                </div>
+              )}
+
+              {accessAdmins.length > 0 ? (
+                <div className="tournament-team-links-list">
+                  {accessAdmins.map((entry) => (
+                    <article key={entry.userId} className="tournament-team-link-row">
+                      <div className="tournament-team-link-meta">
+                        <strong>{entry.displayName || entry.email || "Admin"}</strong>
+                        <span className="subtle">{entry.email || "admin"}</span>
+                      </div>
+                      {selectedTournamentIsOwner && (
+                        <div className="tournament-team-link-actions">
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() =>
+                              handleRevokeAdminAccess(
+                                entry.userId,
+                                entry.displayName || entry.email
+                              )
+                            }
+                            disabled={Boolean(sharingActionBusy)}
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="subtle">No additional admins yet.</p>
+              )}
+
+              {selectedTournamentIsOwner && pendingInvites.length > 0 && (
+                <div className="tournament-team-links-list">
+                  {pendingInvites.map((invite) => (
+                    <article key={invite.inviteId || invite.email} className="tournament-team-link-row">
+                      <div className="tournament-team-link-meta">
+                        <strong>{invite.email}</strong>
+                        <span className="subtle">
+                          Pending invite
+                          {invite.expiresAt
+                            ? ` · Expires ${new Date(invite.expiresAt).toLocaleString()}`
+                            : ""}
+                        </span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+
+              <div className="tournament-team-link-row">
+                <div className="tournament-team-link-meta">
+                  <strong>Public View Link</strong>
+                  {selectedTournamentPublicViewUrl ? (
+                    <code>{selectedTournamentPublicViewUrl}</code>
+                  ) : (
+                    <span className="subtle">Public link unavailable until tournament code is ready.</span>
+                  )}
+                </div>
+                <div className="tournament-team-link-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => handleCopyShareLink(selectedTournamentPublicViewUrl)}
+                    disabled={!selectedTournamentPublicViewUrl}
+                  >
+                    Copy Public Link
+                  </button>
+                </div>
+              </div>
+
+              {selectedTournamentIsOwner ? (
+                <>
+                  <form className="tournaments-form" onSubmit={handleInviteAdminByEmail}>
+                    <label className="input-label" htmlFor="tournament-share-email">
+                      Add admin by email
+                    </label>
+                    <div className="tournament-team-add-row">
+                      <input
+                        id="tournament-share-email"
+                        type="email"
+                        placeholder="admin@example.com"
+                        value={shareEmailInput}
+                        disabled={Boolean(sharingActionBusy)}
+                        onChange={(event) => setShareEmailInput(event.target.value)}
+                      />
+                      <button
+                        type="submit"
+                        className="secondary-button"
+                        disabled={Boolean(sharingActionBusy)}
+                      >
+                        {sharingActionBusy === "invite-email" ? "Inviting..." : "Invite Admin"}
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="tournament-team-link-row">
+                    <div className="tournament-team-link-meta">
+                      <strong>Admin Share Link</strong>
+                      {shareLinkInfo.joinUrl ? (
+                        <code>{shareLinkInfo.joinUrl}</code>
+                      ) : (
+                        <span className="subtle">No share link created yet.</span>
+                      )}
+                    </div>
+                    <div className="tournament-team-link-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={handleCreateShareLink}
+                        disabled={Boolean(sharingActionBusy)}
+                      >
+                        {sharingActionBusy === "create-link"
+                          ? "Creating..."
+                          : shareLinkInfo.joinUrl
+                            ? copiedShareLink
+                              ? "Copied"
+                              : "Copy Link"
+                            : "Create Link"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => handleSetShareLinkEnabled(!shareLinkInfo.enabled)}
+                        disabled={Boolean(sharingActionBusy) || !shareLinkInfo.joinUrl}
+                      >
+                        {sharingActionBusy === "disable-link" || sharingActionBusy === "enable-link"
+                          ? "Saving..."
+                          : shareLinkInfo.enabled
+                            ? "Disable Link"
+                            : "Enable Link"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {lastInviteLink && (
+                    <div className="tournament-team-link-row">
+                      <div className="tournament-team-link-meta">
+                        <strong>Latest Invite Link</strong>
+                        <code>{lastInviteLink}</code>
+                      </div>
+                      <div className="tournament-team-link-actions">
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => handleCopyShareLink(lastInviteLink)}
+                        >
+                          Copy Invite Link
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={handleLeaveTournament}
+                  disabled={Boolean(sharingActionBusy)}
+                >
+                  {sharingActionBusy === "leave" ? "Leaving..." : "Leave Tournament"}
+                </button>
+              )}
+
+              {sharingError && <p className="error">{sharingError}</p>}
+              {sharingMessage && (
+                <p className="subtle tournaments-team-success">{sharingMessage}</p>
+              )}
+            </section>
+
             {detailsError && <p className="error">{detailsError}</p>}
             {detailsMessage && <p className="subtle tournaments-team-success">{detailsMessage}</p>}
           </>
@@ -1550,6 +2182,19 @@ function TournamentsTab({
 
       {showTeamsSection && (
       <section className="tournaments-card tournaments-team-card">
+        <TournamentAdminNav
+          tournamentId={selectedTournamentId || initialTournamentId}
+          publicCode={selectedTournament?.publicCode || ""}
+          activeMainTab="teams"
+        />
+        {routeContextError && (
+          <div className="tournaments-route-error">
+            <p className="error">{routeContextError}</p>
+            <a className="secondary-button" href="/?tab=tournaments">
+              Open Tournament Hub
+            </a>
+          </div>
+        )}
         <div className="tournaments-team-header">
           <div>
             <h2 className="secondary-title">Team Setup</h2>
@@ -1559,7 +2204,7 @@ function TournamentsTab({
                 <strong>{formatStatusLabel(selectedTournament?.status)}</strong>
               </p>
             ) : (
-              <p className="subtle">Select a tournament to manage teams.</p>
+              <p className="subtle">Open a tournament from Tournament Hub to manage teams.</p>
             )}
           </div>
           <div className="tournaments-team-actions">
@@ -1627,7 +2272,7 @@ function TournamentsTab({
                         onClick={() => handleCopyTeamLink(entry.teamId, entry.teamLinkUrl)}
                         disabled={!entry.teamLinkUrl}
                       >
-                        {copiedTeamLinkTeamId === entry.teamId ? "Copied" : "Copy URL"}
+                        {copiedTeamLinkTeamId === entry.teamId ? "Copied" : "Copy Team Link"}
                       </button>
                       <button
                         type="button"

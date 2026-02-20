@@ -312,6 +312,78 @@ describe('phase1 pool + match generation routes', () => {
     expect(response.body.message).toMatch(/cannot appear in multiple/i);
   });
 
+  test('pool update supports 4-team pools when requiredTeamCount is 4', async () => {
+    const tournament = await createOwnedTournament();
+    const teams = await seedTournamentTeams(tournament._id, 4);
+
+    const pool = await Pool.create({
+      tournamentId: tournament._id,
+      phase: 'phase1',
+      stageKey: 'poolPlay1',
+      name: 'A',
+      requiredTeamCount: 4,
+      teamIds: [teams[0]._id, teams[1]._id, teams[2]._id],
+      homeCourt: 'SRC-1',
+    });
+
+    const response = await request(app)
+      .patch(`/api/pools/${pool._id}`)
+      .set(authHeader())
+      .send({
+        teamIds: teams.map((team) => team._id),
+      });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.requiredTeamCount).toBe(4);
+    expect(response.body.teamIds).toHaveLength(4);
+  });
+
+  test('pool assign-court rejects unknown venue court ids', async () => {
+    const tournament = await createOwnedTournament();
+    await Tournament.updateOne(
+      { _id: tournament._id },
+      {
+        $set: {
+          'settings.venue': {
+            facilities: [
+              {
+                facilityId: 'facility-main',
+                name: 'Main Facility',
+                courts: [
+                  {
+                    courtId: 'court-1',
+                    name: 'Court 1',
+                    isEnabled: true,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }
+    );
+
+    const pool = await Pool.create({
+      tournamentId: tournament._id,
+      phase: 'phase1',
+      stageKey: 'poolPlay1',
+      name: 'A',
+      requiredTeamCount: 3,
+      teamIds: [],
+      homeCourt: null,
+    });
+
+    const response = await request(app)
+      .put(`/api/pools/${pool._id}/assign-court`)
+      .set(authHeader())
+      .send({
+        assignedCourtId: 'unknown-court',
+      });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.message).toMatch(/assignedCourtId must reference an existing venue court/i);
+  });
+
   test('pool edit emits POOLS_UPDATED to tournament room', async () => {
     const tournament = await createOwnedTournament();
     await seedTournamentTeams(tournament._id);

@@ -170,5 +170,57 @@ describe('TournamentQuickScoresAdmin', () => {
     expect(screen.getByRole('button', { name: 'Unfinalize' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Save + Finalize' })).toBeDisabled();
+    expect(screen.getByText('Sets 2-1 • 25-18, 22-25, 15-11')).toBeInTheDocument();
+    expect(screen.queryByText(/Pts/)).not.toBeInTheDocument();
+  });
+
+  it('renders ended status rows with set-only summary', async () => {
+    const quickMatch = {
+      matchId: 'match-ended',
+      phase: 'phase1',
+      roundBlock: 1,
+      timeLabel: '9:00 AM',
+      facility: 'SRC',
+      court: 'SRC-2',
+      courtLabel: 'SRC Court 2',
+      teamA: { teamId: 'team-a', shortName: 'ALP' },
+      teamB: { teamId: 'team-b', shortName: 'BRV' },
+      status: 'ended',
+      startedAt: '2026-10-01T09:00:00.000Z',
+      endedAt: '2026-10-01T09:45:00.000Z',
+      finalizedAt: null,
+      scoreSummary: { setsA: 1, setsB: 1, pointsA: 45, pointsB: 43 },
+      completedSetScores: [
+        { setNo: 1, a: 25, b: 19 },
+        { setNo: 2, a: 20, b: 25 },
+      ],
+    };
+
+    globalThis.fetch.mockImplementation(async (url) => {
+      const asString = String(url);
+
+      if (asString.includes('/api/tournaments/tour-1') && !asString.includes('/matches/quick')) {
+        return {
+          ok: true,
+          json: async () => ({ _id: 'tour-1', name: 'Test Tournament', publicCode: 'ABC123' }),
+        };
+      }
+
+      if (asString.includes('/api/admin/tournaments/tour-1/matches/quick')) {
+        return {
+          ok: true,
+          json: async () => buildQuickPayload([quickMatch]),
+        };
+      }
+
+      throw new Error(`Unhandled fetch URL: ${asString}`);
+    });
+
+    renderQuickScoresPage();
+
+    await screen.findByText('Quick Enter Scores');
+    expect(screen.getByText('ENDED')).toBeInTheDocument();
+    expect(screen.getByText('Sets 1-1 • 25-19, 20-25')).toBeInTheDocument();
+    expect(screen.queryByText(/Pts/)).not.toBeInTheDocument();
   });
 });

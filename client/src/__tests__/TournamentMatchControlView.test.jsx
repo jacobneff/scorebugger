@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import TournamentMatchControlView from '../components/TournamentMatchControlView.jsx';
@@ -51,6 +51,10 @@ describe('TournamentMatchControlView', () => {
     globalThis.fetch = vi.fn();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('shows locked score buttons in scheduled status and allows manual score inputs', () => {
     render(
       <TournamentMatchControlView
@@ -70,7 +74,7 @@ describe('TournamentMatchControlView', () => {
     const user = userEvent.setup();
     globalThis.fetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ status: 'live' }),
+      json: async () => ({ status: 'live', startedAt: '2026-01-01T10:00:00.000Z', endedAt: null }),
     });
 
     render(
@@ -85,9 +89,9 @@ describe('TournamentMatchControlView', () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/matches/match-1/status'),
+        expect.stringContaining('/api/matches/match-1/start'),
         expect.objectContaining({
-          method: 'PATCH',
+          method: 'POST',
         })
       );
     });
@@ -117,6 +121,62 @@ describe('TournamentMatchControlView', () => {
     expect(await screen.findByText('Unable to set live status')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Increase Home score' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Increase Away score' })).toBeDisabled();
+  });
+
+  it('ends a live match through the end endpoint', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        status: 'ended',
+        startedAt: '2026-01-01T10:00:00.000Z',
+        endedAt: '2026-01-01T10:12:00.000Z',
+      }),
+    });
+
+    render(
+      <TournamentMatchControlView
+        matchId="match-1"
+        scoreboardId="board-1"
+        initialStatus="live"
+        initialStartedAt="2026-01-01T10:00:00.000Z"
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'End Match' }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/matches/match-1/end'),
+        expect.objectContaining({
+          method: 'POST',
+        })
+      );
+    });
+
+    expect(screen.getByText('Ended')).toBeInTheDocument();
+  });
+
+  it('renders timer based on startedAt and updates over time', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T10:00:00.000Z'));
+
+    render(
+      <TournamentMatchControlView
+        matchId="match-1"
+        scoreboardId="board-1"
+        initialStatus="live"
+        initialStartedAt="2026-01-01T09:59:00.000Z"
+      />
+    );
+
+    expect(screen.getByText(/LIVE 01:00/)).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect(screen.getByText(/LIVE 01:02/)).toBeInTheDocument();
   });
 
   it('applies manual score values for catch-up scoring', async () => {

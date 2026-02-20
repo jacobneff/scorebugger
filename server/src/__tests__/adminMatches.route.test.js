@@ -358,6 +358,7 @@ describe('admin quick scoring routes', () => {
         roundBlock: 1,
         court: 'SRC-2',
         courtLabel: 'SRC Court 2',
+        completedSetScores: [{ a: 21, b: 25, setNo: 1 }],
         setScores: [{ a: 21, b: 25 }],
         teamA: expect.objectContaining({ shortName: 'ALP' }),
         teamB: expect.objectContaining({ shortName: 'BRV' }),

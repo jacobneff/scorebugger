@@ -219,7 +219,7 @@ describe('playoff generation + progression routes', () => {
     await setScoreboardSets(goldR145.scoreboardId, true);
 
     const finalize = await request(app)
-      .post(`/api/matches/${goldR145._id}/finalize`)
+      .post(`/api/matches/${goldR145._id}/finalize?override=true`)
       .set(authHeader());
 
     expect(finalize.statusCode).toBe(200);
@@ -248,7 +248,7 @@ describe('playoff generation + progression routes', () => {
 
     await setScoreboardSets(goldR145.scoreboardId, true);
     const finalizeGold = await request(app)
-      .post(`/api/matches/${goldR145._id}/finalize`)
+      .post(`/api/matches/${goldR145._id}/finalize?override=true`)
       .set(authHeader());
     expect(finalizeGold.statusCode).toBe(200);
 
@@ -262,7 +262,7 @@ describe('playoff generation + progression routes', () => {
 
     await setScoreboardSets(silverR145.scoreboardId, false);
     const finalizeSilver = await request(app)
-      .post(`/api/matches/${silverR145._id}/finalize`)
+      .post(`/api/matches/${silverR145._id}/finalize?override=true`)
       .set(authHeader());
     expect(finalizeSilver.statusCode).toBe(200);
 
@@ -315,19 +315,19 @@ describe('playoff generation + progression routes', () => {
 
     await setScoreboardSets(bronzeR145.scoreboardId, true);
     const finalizeBronzeR145 = await request(app)
-      .post(`/api/matches/${bronzeR145._id}/finalize`)
+      .post(`/api/matches/${bronzeR145._id}/finalize?override=true`)
       .set(authHeader());
     expect(finalizeBronzeR145.statusCode).toBe(200);
 
     await setScoreboardSets(bronzeR123.scoreboardId, false);
     const finalizeBronzeR123 = await request(app)
-      .post(`/api/matches/${bronzeR123._id}/finalize`)
+      .post(`/api/matches/${bronzeR123._id}/finalize?override=true`)
       .set(authHeader());
     expect(finalizeBronzeR123.statusCode).toBe(200);
 
     await setScoreboardSets(bronzeR2.scoreboardId, false);
     const finalizeBronzeR2 = await request(app)
-      .post(`/api/matches/${bronzeR2._id}/finalize`)
+      .post(`/api/matches/${bronzeR2._id}/finalize?override=true`)
       .set(authHeader());
     expect(finalizeBronzeR2.statusCode).toBe(200);
 
@@ -362,17 +362,17 @@ describe('playoff generation + progression routes', () => {
     const goldFinal = byKey['gold:R3:final'];
 
     await setScoreboardSets(goldR145.scoreboardId, true);
-    await request(app).post(`/api/matches/${goldR145._id}/finalize`).set(authHeader());
+    await request(app).post(`/api/matches/${goldR145._id}/finalize?override=true`).set(authHeader());
 
     await setScoreboardSets(goldR123.scoreboardId, true);
-    await request(app).post(`/api/matches/${goldR123._id}/finalize`).set(authHeader());
+    await request(app).post(`/api/matches/${goldR123._id}/finalize?override=true`).set(authHeader());
 
     await setScoreboardSets(goldR2.scoreboardId, false);
-    await request(app).post(`/api/matches/${goldR2._id}/finalize`).set(authHeader());
+    await request(app).post(`/api/matches/${goldR2._id}/finalize?override=true`).set(authHeader());
 
     await setScoreboardSets(goldFinal.scoreboardId, true);
     const finalizeFinal = await request(app)
-      .post(`/api/matches/${goldFinal._id}/finalize`)
+      .post(`/api/matches/${goldFinal._id}/finalize?override=true`)
       .set(authHeader());
 
     expect(finalizeFinal.statusCode).toBe(200);
@@ -463,5 +463,48 @@ describe('playoff generation + progression routes', () => {
         matchLabel: 'Silver 1 vs W(4/5)',
       })
     );
+  });
+
+  test('non-legacy public/admin playoffs endpoints fall back to schedule-plan placeholders before generation', async () => {
+    const tournament = await createOwnedTournament();
+
+    await TournamentTeam.insertMany(
+      Array.from({ length: 14 }, (_, index) => ({
+        tournamentId: tournament._id,
+        name: `Team ${index + 1}`,
+        shortName: `T${index + 1}`,
+        seed: index + 1,
+      })),
+      { ordered: true }
+    );
+
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({
+        formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+      });
+    expect(apply.statusCode).toBe(200);
+
+    const [ownerResponse, publicResponse] = await Promise.all([
+      request(app)
+        .get(`/api/tournaments/${tournament._id}/playoffs`)
+        .set(authHeader()),
+      request(app).get(`/api/tournaments/code/${tournament.publicCode}/playoffs`),
+    ]);
+
+    expect(ownerResponse.statusCode).toBe(200);
+    expect(publicResponse.statusCode).toBe(200);
+    expect(ownerResponse.body.matches).toEqual([]);
+    expect(publicResponse.body.matches).toEqual([]);
+    expect(ownerResponse.body.opsSchedule.length).toBeGreaterThan(0);
+    expect(publicResponse.body.opsSchedule.length).toBeGreaterThan(0);
+
+    const ownerScheduleText = JSON.stringify(ownerResponse.body.opsSchedule);
+    const publicScheduleText = JSON.stringify(publicResponse.body.opsSchedule);
+    expect(ownerScheduleText).toContain('W(');
+    expect(publicScheduleText).toContain('W(');
+    expect(ownerScheduleText).not.toContain('0v0');
+    expect(publicScheduleText).not.toContain('0v0');
   });
 });

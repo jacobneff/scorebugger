@@ -102,7 +102,8 @@ describe('TournamentTeamsAdmin', () => {
 
     render(<TournamentTeamsAdmin />);
 
-    expect(await screen.findByText('Your Tournaments')).toBeInTheDocument();
+    await screen.findAllByRole('heading', { name: 'Team Setup' });
+    expect(screen.queryByText('Your Tournaments')).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/Google Maps search/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^Latitude$/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^Longitude$/i)).not.toBeInTheDocument();

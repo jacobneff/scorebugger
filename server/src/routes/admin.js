@@ -4,7 +4,6 @@ const mongoose = require('mongoose');
 const { requireAuth } = require('../middleware/auth');
 const Match = require('../models/Match');
 const Scoreboard = require('../models/Scoreboard');
-const Tournament = require('../models/Tournament');
 const {
   emitScoreboardSummaryEvent,
 } = require('../services/tournamentRealtime');
@@ -13,6 +12,8 @@ const {
   findOwnedTournamentContext,
   serializeMatch,
 } = require('../services/matchLifecycle');
+const { syncSchedulePlan } = require('../services/schedulePlan');
+const { requireTournamentAdminContext } = require('../services/tournamentAccess');
 const {
   getFacilityFromCourt,
   mapCourtDisplayLabel,
@@ -415,8 +416,20 @@ router.post('/matches/:matchId/score', requireAuth, async (req, res, next) => {
           userId: req.user.id,
           io,
           tournamentCode: tournamentContext.publicCode,
+          override: true,
         })
       : serializeMatch(match.toObject());
+
+    if (shouldFinalize) {
+      await syncSchedulePlan({
+        tournamentId: match.tournamentId,
+        actorUserId: req.user.id,
+        io,
+        emitEvents: true,
+        emitPoolsUpdated:
+          (match.phase === 'phase1' || match.phase === 'phase2') && Boolean(match.poolId),
+      });
+    }
 
     const setWins = computeSetWins(setScores);
     const totalPoints = computeSetPointTotals(setScores);
@@ -471,13 +484,12 @@ router.get('/tournaments/:id/matches/quick', requireAuth, async (req, res, next)
       ? normalizeCourtCode(req.query.court)
       : null;
 
-    const tournament = await Tournament.findOne({
-      _id: id,
-      createdByUserId: req.user.id,
-    })
-      .select('_id timezone settings.schedule')
-      .lean();
-
+    const accessContext = await requireTournamentAdminContext(
+      id,
+      req.user.id,
+      '_id timezone settings.schedule'
+    );
+    const tournament = accessContext?.tournament || null;
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found or unauthorized' });
     }
@@ -538,6 +550,11 @@ router.get('/tournaments/:id/matches/quick', requireAuth, async (req, res, next)
             ? match.scoreboardId
             : null;
         const resultSummary = buildScoreSummaryFromResult(match?.result);
+        const completedSetScores = buildSetScoresForQuickMatch(match, scoreboard).map((set, index) => ({
+          setNo: index + 1,
+          a: safeNonNegativeNumber(set?.a),
+          b: safeNonNegativeNumber(set?.b),
+        }));
 
         return {
           matchId: toIdString(match?._id),
@@ -550,9 +567,15 @@ router.get('/tournaments/:id/matches/quick', requireAuth, async (req, res, next)
           teamA: formatTeamSnippet(match?.teamAId),
           teamB: formatTeamSnippet(match?.teamBId),
           status: match?.status || 'scheduled',
+          startedAt: match?.startedAt || null,
+          endedAt: match?.endedAt || null,
           finalizedAt: match?.finalizedAt || null,
           scoreSummary: resultSummary || buildScoreSummaryFromScoreboard(scoreboard),
-          setScores: buildSetScoresForQuickMatch(match, scoreboard),
+          completedSetScores,
+          setScores: completedSetScores.map((set) => ({
+            a: set.a,
+            b: set.b,
+          })),
           scoreboardId: toIdString(scoreboard?._id || match?.scoreboardId),
           scoreboardCode: scoreboard?.code || null,
         };

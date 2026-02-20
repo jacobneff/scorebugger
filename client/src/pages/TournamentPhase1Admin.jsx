@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   DndContext,
   DragOverlay,
@@ -21,7 +21,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 import { API_URL } from '../config/env.js';
-import TournamentSchedulingTabs from '../components/TournamentSchedulingTabs.jsx';
+import TournamentAdminNav from '../components/TournamentAdminNav.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
@@ -37,6 +37,13 @@ import {
   buildTournamentMatchControlHref,
   getMatchStatusMeta,
 } from '../utils/tournamentMatchControl.js';
+import { formatElapsedTimer } from '../utils/matchTimer.js';
+import {
+  formatSetSummaryWithScores,
+  resolveCompletedSetScores,
+  toSetSummaryFromLiveSummary,
+  toSetSummaryFromScoreSummary,
+} from '../utils/matchSetSummary.js';
 import {
   TEAM_BANK_CONTAINER_ID,
   buildPoolSwapDragId,
@@ -59,6 +66,8 @@ const jsonHeaders = (token) => ({
 const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
 });
+
+const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 
 const formatShortTeamLabel = (team) => team?.shortName || team?.name || 'TBD';
 
@@ -127,7 +136,7 @@ function TeamCardPreview({ team }) {
   );
 }
 
-function PoolSwapHandle({ poolId, disabled }) {
+function PoolSwapHandle({ poolId, disabled, teamCount }) {
   const {
     attributes,
     listeners,
@@ -152,11 +161,11 @@ function PoolSwapHandle({ poolId, disabled }) {
       className={`phase1-pool-swap-handle ${isDragging ? 'is-dragging' : ''}`}
       disabled={disabled}
       style={style}
-      aria-label="Swap all 3 teams with another pool"
+      aria-label={`Swap all ${teamCount} teams with another pool`}
       {...attributes}
       {...listeners}
     >
-      Swap 3 Teams
+      Swap {teamCount} Teams
     </button>
   );
 }
@@ -224,21 +233,34 @@ const formatPointDiff = (value) => {
   const parsed = Number(value) || 0;
   return parsed > 0 ? `+${parsed}` : `${parsed}`;
 };
-const formatLiveSummary = (summary) =>
-  `Live: Sets ${summary.sets?.a ?? 0}-${summary.sets?.b ?? 0} • Pts ${summary.points?.a ?? 0}-${summary.points?.b ?? 0}`;
-const formatResultSetScores = (result) => {
-  if (!Array.isArray(result?.setScores) || result.setScores.length === 0) {
-    return '';
-  }
 
-  return result.setScores
-    .slice()
-    .sort((left, right) => (left?.setNo ?? 0) - (right?.setNo ?? 0))
-    .map((set) => `${set?.a ?? 0}-${set?.b ?? 0}`)
-    .join(', ');
+const getPoolRequiredTeamCount = (pool, fallback = 3) => {
+  const parsed = Number(pool?.requiredTeamCount);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+};
+
+const formatLiveSummary = (summary) =>
+  `Live: ${formatSetSummaryWithScores(
+    toSetSummaryFromLiveSummary(summary),
+    summary?.completedSetScores
+  )}`;
+const formatMatchSetSummary = (match) => {
+  const fallbackScoreSummary = {
+    setsA: Number(match?.result?.setsWonA) || 0,
+    setsB: Number(match?.result?.setsWonB) || 0,
+  };
+
+  return formatSetSummaryWithScores(
+    toSetSummaryFromScoreSummary(match?.scoreSummary || fallbackScoreSummary),
+    resolveCompletedSetScores(match)
+  );
 };
 
 function TournamentPhase1Admin() {
+  const navigate = useNavigate();
   const { id } = useParams();
   const { token, user, initializing } = useAuth();
 
@@ -254,11 +276,14 @@ function TournamentPhase1Admin() {
   const [savingPools, setSavingPools] = useState(false);
   const savingCourtAssignments = false;
   const [generateLoading, setGenerateLoading] = useState(false);
+  const [resettingTournament, setResettingTournament] = useState(false);
   const [standingsLoading, setStandingsLoading] = useState(false);
   const [matchActionId, setMatchActionId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [routeGuard, setRouteGuard] = useState('');
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
+  const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now());
   const [dragPreviewPools, setDragPreviewPools] = useState(null);
   const [activeDrag, setActiveDrag] = useState(null);
   const dragOriginPoolsRef = useRef(null);
@@ -351,7 +376,32 @@ function TournamentPhase1Admin() {
         loadMatches(),
         loadStandings(),
       ]);
+      const formatId =
+        typeof tournamentData?.settings?.format?.formatId === 'string'
+          ? tournamentData.settings.format.formatId.trim()
+          : '';
 
+      if (!formatId) {
+        setTournament(tournamentData);
+        setPools([]);
+        setTeams(teamData);
+        setMatches([]);
+        setStandings({ pools: [], overall: [] });
+        setRouteGuard('apply-format');
+        return;
+      }
+
+      if (formatId !== ODU_15_FORMAT_ID) {
+        setTournament(tournamentData);
+        setPools([]);
+        setTeams(teamData);
+        setMatches([]);
+        setStandings({ pools: [], overall: [] });
+        setRouteGuard('wrong-format');
+        return;
+      }
+
+      setRouteGuard('');
       setTournament(tournamentData);
       setPools(poolData);
       setTeams(teamData);
@@ -392,6 +442,26 @@ function TournamentPhase1Admin() {
   useEffect(() => {
     setLiveSummariesByMatchId({});
   }, [id]);
+
+  const hasLiveTimers = useMemo(
+    () =>
+      matches.some(
+        (match) => match?.status === 'live' && typeof match?.startedAt === 'string' && match.startedAt
+      ),
+    [matches]
+  );
+
+  useEffect(() => {
+    if (!hasLiveTimers) {
+      return undefined;
+    }
+
+    const timerId = window.setInterval(() => {
+      setElapsedNowMs(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [hasLiveTimers]);
 
   const handleTournamentRealtimeEvent = useCallback(
     (event) => {
@@ -454,14 +524,15 @@ function TournamentPhase1Admin() {
   const poolIssues = useMemo(
     () =>
       pools
-        .filter((pool) => pool.teamIds.length !== 3)
+        .filter((pool) => pool.teamIds.length !== getPoolRequiredTeamCount(pool))
         .map((pool) => {
-          if (pool.teamIds.length < 3) {
-            const missing = 3 - pool.teamIds.length;
+          const requiredTeamCount = getPoolRequiredTeamCount(pool);
+          if (pool.teamIds.length < requiredTeamCount) {
+            const missing = requiredTeamCount - pool.teamIds.length;
             return `Pool ${pool.name} needs ${missing} more team${missing === 1 ? '' : 's'}`;
           }
 
-          const extra = pool.teamIds.length - 3;
+          const extra = pool.teamIds.length - requiredTeamCount;
           return `Pool ${pool.name} has ${extra} extra team${extra === 1 ? '' : 's'}`;
         }),
     [pools]
@@ -639,6 +710,7 @@ function TournamentPhase1Admin() {
           id: activeId,
           poolId: sourcePoolId,
           poolName: sourcePool?.name || '',
+          teamCount: getPoolRequiredTeamCount(sourcePool),
         });
         setDragPreviewPools(originPools);
         return;
@@ -1047,6 +1119,37 @@ function TournamentPhase1Admin() {
     [fetchJson, matchActionId, refreshMatchesAndStandings, token]
   );
 
+  const handleResetTournament = useCallback(async () => {
+    if (!token || !id || resettingTournament || !tournament?.isOwner) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Reset this tournament?\n\nThis deletes all pools, matches, and linked scoreboards, clears standings overrides, and sets status back to setup. Teams, details, and format settings stay.'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setResettingTournament(true);
+    setError('');
+    setMessage('');
+
+    try {
+      await fetchJson(`${API_URL}/api/tournaments/${id}/reset`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      setMessage('Tournament reset. Redirecting to format setup.');
+      navigate(`/tournaments/${id}/format`, { replace: true });
+    } catch (resetError) {
+      setError(resetError.message || 'Unable to reset tournament');
+    } finally {
+      setResettingTournament(false);
+    }
+  }, [fetchJson, id, navigate, resettingTournament, token, tournament?.isOwner]);
+
   const canGenerate =
     pools.length === 5 &&
     poolIssues.length === 0 &&
@@ -1084,6 +1187,81 @@ function TournamentPhase1Admin() {
     );
   }
 
+  if (routeGuard === 'apply-format') {
+    return (
+      <main className="container">
+        <section className="card phase1-admin-card">
+          <div className="phase1-admin-header">
+            <div>
+              <h1 className="title">Pool Play 1 Setup</h1>
+              <p className="subtitle">
+                {tournament?.name || 'Tournament'} • Apply format before opening this page.
+              </p>
+              <TournamentAdminNav
+                tournamentId={id}
+                publicCode={tournament?.publicCode || ''}
+                activeMainTab="scheduling"
+                scheduling={{
+                  activeSubTab: 'phase1',
+                  showPhase2: true,
+                  phase1Label: 'Pool Play 1',
+                  phase1Href: `/tournaments/${id}/phase1`,
+                  phase2Label: 'Pool Play 2',
+                  phase2Href: `/tournaments/${id}/phase2`,
+                  playoffsHref: `/tournaments/${id}/playoffs`,
+                }}
+              />
+            </div>
+          </div>
+          <div className="tournaments-route-error">
+            <p className="error">Apply format first.</p>
+            <a className="secondary-button" href={`/tournaments/${id}/format`}>
+              Open Format Page
+            </a>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (routeGuard === 'wrong-format') {
+    return (
+      <main className="container">
+        <section className="card phase1-admin-card">
+          <div className="phase1-admin-header">
+            <div>
+              <h1 className="title">Pool Play 1 Setup</h1>
+              <p className="subtitle">
+                {tournament?.name || 'Tournament'} • This page is only for legacy ODU 15 tournaments.
+              </p>
+              <TournamentAdminNav
+                tournamentId={id}
+                publicCode={tournament?.publicCode || ''}
+                activeMainTab="scheduling"
+                scheduling={{
+                  activeSubTab: 'phase1',
+                  showPhase2: false,
+                  phase1Label: 'Pool Play Setup',
+                  phase1Href: `/tournaments/${id}/pool-play`,
+                  playoffsLabel: 'Playoffs Setup',
+                  playoffsHref: `/tournaments/${id}/playoffs`,
+                }}
+              />
+            </div>
+          </div>
+          <div className="tournaments-route-error">
+            <p className="error">
+              Wrong page for current format. Open Pool Play for this tournament.
+            </p>
+            <a className="secondary-button" href={`/tournaments/${id}/pool-play`}>
+              Open Pool Play
+            </a>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="container">
       <section className="card phase1-admin-card">
@@ -1094,12 +1272,22 @@ function TournamentPhase1Admin() {
               {tournament?.name || 'Tournament'} • Create pools, drag teams from Team Bank, then
               generate the fixed Pool Play 1 schedule.
             </p>
-            <TournamentSchedulingTabs tournamentId={id} activeTab="phase1" />
+            <TournamentAdminNav
+              tournamentId={id}
+              publicCode={tournament?.publicCode || ''}
+              activeMainTab="scheduling"
+              scheduling={{
+                activeSubTab: 'phase1',
+                showPhase2: true,
+                phase1Label: 'Pool Play 1',
+                phase1Href: `/tournaments/${id}/phase1`,
+                phase2Label: 'Pool Play 2',
+                phase2Href: `/tournaments/${id}/phase2`,
+                playoffsHref: `/tournaments/${id}/playoffs`,
+              }}
+            />
           </div>
           <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${id}/teams`}>
-              Manage Teams
-            </a>
             <button
               className="secondary-button"
               type="button"
@@ -1112,7 +1300,7 @@ function TournamentPhase1Admin() {
                 autofillLoading
               }
             >
-              {initLoading ? 'Creating...' : 'Create Pool Play 1 Pools'}
+              {initLoading ? 'Initializing Pools...' : 'Initialize Pools from Format Template'}
             </button>
             <button
               className="secondary-button"
@@ -1126,7 +1314,7 @@ function TournamentPhase1Admin() {
                 generateLoading
               }
             >
-              {autofillLoading ? 'Auto-filling...' : 'Auto-fill pools from team order'}
+              {autofillLoading ? 'Distributing...' : 'Distribute Teams by Ranking Order'}
             </button>
             <button
               className="primary-button"
@@ -1136,7 +1324,26 @@ function TournamentPhase1Admin() {
             >
               {generateLoading ? 'Generating...' : 'Generate Pool Play 1 Matches'}
             </button>
+            {tournament?.isOwner && (
+              <button
+                className="secondary-button danger-button"
+                type="button"
+                onClick={handleResetTournament}
+                disabled={resettingTournament}
+              >
+                {resettingTournament ? 'Resetting...' : 'Reset Tournament'}
+              </button>
+            )}
           </div>
+        </div>
+
+        <div className="phase1-action-help">
+          <p className="subtle">
+            Initialize creates or refreshes Pool Play 1 shells from the applied format template.
+          </p>
+          <p className="subtle">
+            Distribute applies serpentine team assignment using Team Setup ranking order.
+          </p>
         </div>
 
         {(savingPools || savingCourtAssignments) && (
@@ -1146,7 +1353,7 @@ function TournamentPhase1Admin() {
         )}
         {poolIssues.length > 0 && (
           <p className="error">
-            Each pool must have exactly 3 teams before generating matches. {poolIssues.join('; ')}.
+            Each pool must have its required team count before generating matches. {poolIssues.join('; ')}.
           </p>
         )}
         {courtIssues.length > 0 && (
@@ -1201,12 +1408,13 @@ function TournamentPhase1Admin() {
             <div className="phase1-pool-grid">
               {displayedPools.map((pool) => {
                 const poolTeams = getPoolTeams(pool);
+                const requiredTeamCount = getPoolRequiredTeamCount(pool);
 
                 return (
                   <section
                     key={pool._id}
                     className={`phase1-pool-column ${
-                      poolTeams.length === 3 ? '' : 'phase1-pool-column--invalid'
+                      poolTeams.length === requiredTeamCount ? '' : 'phase1-pool-column--invalid'
                     }`}
                   >
                     <PoolHeaderDropTarget poolId={pool._id} activeSwapPoolId={activeSwapPoolId}>
@@ -1214,6 +1422,7 @@ function TournamentPhase1Admin() {
                         <h2>Pool {pool.name}</h2>
                         <PoolSwapHandle
                           poolId={pool._id}
+                          teamCount={requiredTeamCount}
                           disabled={
                             savingPools ||
                             savingCourtAssignments ||
@@ -1224,7 +1433,7 @@ function TournamentPhase1Admin() {
                         />
                       </div>
                       <p>{pool.homeCourt ? mapCourtLabel(pool.homeCourt) : 'No home court'}</p>
-                      <p className="phase1-pool-count">{poolTeams.length}/3</p>
+                      <p className="phase1-pool-count">{poolTeams.length}/{requiredTeamCount}</p>
                     </PoolHeaderDropTarget>
 
                     <SortableContext
@@ -1259,7 +1468,7 @@ function TournamentPhase1Admin() {
             {activeDrag?.type === 'pool-swap' ? (
               <article className="phase1-pool-swap-overlay">
                 <strong>Pool {activeDrag.poolName || '?'}</strong>
-                <span>Swap 3 Teams</span>
+                <span>Swap {activeDrag.teamCount || 3} Teams</span>
               </article>
             ) : null}
           </DragOverlay>
@@ -1287,11 +1496,20 @@ function TournamentPhase1Admin() {
                         const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
                         const refLabel = formatShortTeamLabel(match?.refTeams?.[0]);
                         const matchStatusMeta = getMatchStatusMeta(match?.status);
-                        const resultSetScores = formatResultSetScores(match?.result);
+                        const liveSummary = match ? liveSummariesByMatchId[match._id] : null;
+                        const setSummaryLine = liveSummary
+                          ? formatLiveSummary(liveSummary)
+                          : formatMatchSetSummary(match);
+                        const liveTimerLabel =
+                          match?.status === 'live' && match?.startedAt
+                            ? formatElapsedTimer(match.startedAt, elapsedNowMs)
+                            : '';
                         const controlPanelHref = buildTournamentMatchControlHref({
                           matchId: match?._id,
                           scoreboardKey,
                           status: match?.status,
+                          startedAt: match?.startedAt,
+                          endedAt: match?.endedAt,
                         });
 
                         return (
@@ -1305,11 +1523,7 @@ function TournamentPhase1Admin() {
                                   )}`}
                                 </p>
                                 <p>Ref: {refLabel}</p>
-                                {liveSummariesByMatchId[match._id] && (
-                                  <p className="subtle">
-                                    {formatLiveSummary(liveSummariesByMatchId[match._id])}
-                                  </p>
-                                )}
+                                <p className="subtle">{setSummaryLine}</p>
                                 {controlPanelHref ? (
                                   <a
                                     href={controlPanelHref}
@@ -1329,12 +1543,9 @@ function TournamentPhase1Admin() {
                                   >
                                     {matchStatusMeta.label}
                                   </span>
-                                  {match.result && (
-                                    <span className="phase1-match-result">
-                                      Sets {match.result.setsWonA}-{match.result.setsWonB}
-                                      {resultSetScores ? ` • ${resultSetScores}` : ''}
-                                    </span>
-                                  )}
+                                  {liveTimerLabel ? (
+                                    <span className="phase1-match-result">LIVE {liveTimerLabel}</span>
+                                  ) : null}
                                 </div>
                                 <div className="phase1-match-actions">
                                   {match.status === 'final' ? (

@@ -3,7 +3,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { API_URL } from '../config/env.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useScoreboard } from '../hooks/useScoreboard.js';
-import { MATCH_STATUS, getMatchStatusMeta, normalizeMatchStatus } from '../utils/tournamentMatchControl.js';
+import { formatElapsedTimer } from '../utils/matchTimer.js';
+import {
+  MATCH_STATUS,
+  getMatchStatusMeta,
+  normalizeLifecycleTimestamp,
+  normalizeMatchStatus,
+} from '../utils/tournamentMatchControl.js';
 
 const FALLBACK_TEAMS = [
   {
@@ -52,12 +58,27 @@ function resolveMaxCompletedSets(scoreboard) {
   return count > 0 ? count : 3;
 }
 
-function TournamentMatchControlView({ matchId, scoreboardId, initialStatus = MATCH_STATUS.SCHEDULED }) {
+function TournamentMatchControlView({
+  matchId,
+  scoreboardId,
+  initialStatus = MATCH_STATUS.SCHEDULED,
+  initialStartedAt = '',
+  initialEndedAt = '',
+  onLifecycleChange = null,
+}) {
   const { token } = useAuth();
   const { scoreboard, loading, error, clearError, updateScoreboard } = useScoreboard(scoreboardId);
 
   const [matchStatus, setMatchStatus] = useState(() => normalizeMatchStatus(initialStatus));
+  const [matchStartedAt, setMatchStartedAt] = useState(() =>
+    normalizeLifecycleTimestamp(initialStartedAt)
+  );
+  const [matchEndedAt, setMatchEndedAt] = useState(() =>
+    normalizeLifecycleTimestamp(initialEndedAt)
+  );
+  const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now());
   const [startBusy, setStartBusy] = useState(false);
+  const [endBusy, setEndBusy] = useState(false);
   const [actionError, setActionError] = useState('');
   const [actionInfo, setActionInfo] = useState('');
   const [manualHome, setManualHome] = useState('0');
@@ -66,6 +87,14 @@ function TournamentMatchControlView({ matchId, scoreboardId, initialStatus = MAT
   useEffect(() => {
     setMatchStatus(normalizeMatchStatus(initialStatus));
   }, [initialStatus]);
+
+  useEffect(() => {
+    setMatchStartedAt(normalizeLifecycleTimestamp(initialStartedAt));
+  }, [initialStartedAt]);
+
+  useEffect(() => {
+    setMatchEndedAt(normalizeLifecycleTimestamp(initialEndedAt));
+  }, [initialEndedAt]);
 
   useEffect(() => {
     if (!error) {
@@ -97,10 +126,27 @@ function TournamentMatchControlView({ matchId, scoreboardId, initialStatus = MAT
 
   const maxCompletedSets = useMemo(() => resolveMaxCompletedSets(scoreboard), [scoreboard]);
   const statusMeta = useMemo(() => getMatchStatusMeta(matchStatus), [matchStatus]);
+  const liveTimer = useMemo(() => formatElapsedTimer(matchStartedAt, elapsedNowMs), [elapsedNowMs, matchStartedAt]);
 
   const isFinalized = matchStatus === MATCH_STATUS.FINAL;
   const isScoringLocked = matchStatus !== MATCH_STATUS.LIVE;
   const canSaveSet = !isFinalized && completedSets.length < maxCompletedSets;
+
+  useEffect(() => {
+    if (matchStatus !== MATCH_STATUS.LIVE || !matchStartedAt) {
+      return undefined;
+    }
+
+    const timerId = window.setInterval(() => {
+      setElapsedNowMs(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [matchStartedAt, matchStatus]);
+
+  useEffect(() => {
+    setElapsedNowMs(Date.now());
+  }, [matchStartedAt, matchStatus]);
 
   useEffect(() => {
     setManualHome(String(clampScore(teams[0]?.score)));
@@ -185,13 +231,11 @@ function TournamentMatchControlView({ matchId, scoreboardId, initialStatus = MAT
     setActionInfo('');
 
     try {
-      const response = await fetch(`${API_URL}/api/matches/${matchId}/status`, {
-        method: 'PATCH',
+      const response = await fetch(`${API_URL}/api/matches/${matchId}/start`, {
+        method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ status: MATCH_STATUS.LIVE }),
       });
       const payload = await response.json().catch(() => null);
 
@@ -199,7 +243,18 @@ function TournamentMatchControlView({ matchId, scoreboardId, initialStatus = MAT
         throw new Error(payload?.message || 'Unable to start match.');
       }
 
-      setMatchStatus(normalizeMatchStatus(payload?.status, MATCH_STATUS.LIVE));
+      const nextStatus = normalizeMatchStatus(payload?.status, MATCH_STATUS.LIVE);
+      const nextStartedAt = normalizeLifecycleTimestamp(payload?.startedAt) || new Date().toISOString();
+      const nextEndedAt = normalizeLifecycleTimestamp(payload?.endedAt);
+
+      setMatchStatus(nextStatus);
+      setMatchStartedAt(nextStartedAt);
+      setMatchEndedAt(nextEndedAt);
+      onLifecycleChange?.({
+        status: nextStatus,
+        startedAt: nextStartedAt,
+        endedAt: nextEndedAt,
+      });
       setActionError('');
       setActionInfo('Match is now live. Scoring controls unlocked.');
     } catch (startError) {
@@ -207,6 +262,62 @@ function TournamentMatchControlView({ matchId, scoreboardId, initialStatus = MAT
       setActionError(startError?.message || 'Unable to start match.');
     } finally {
       setStartBusy(false);
+    }
+  };
+
+  const handleEndMatch = async () => {
+    if (isFinalized || matchStatus !== MATCH_STATUS.LIVE || endBusy) {
+      return;
+    }
+
+    if (!matchId) {
+      setActionInfo('');
+      setActionError('Missing match identifier.');
+      return;
+    }
+
+    if (!token) {
+      setActionInfo('');
+      setActionError('You must be signed in to end this match.');
+      return;
+    }
+
+    setEndBusy(true);
+    setActionError('');
+    setActionInfo('');
+
+    try {
+      const response = await fetch(`${API_URL}/api/matches/${matchId}/end`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Unable to end match.');
+      }
+
+      const nextStatus = normalizeMatchStatus(payload?.status, MATCH_STATUS.ENDED);
+      const nextStartedAt = normalizeLifecycleTimestamp(payload?.startedAt);
+      const nextEndedAt = normalizeLifecycleTimestamp(payload?.endedAt) || new Date().toISOString();
+
+      setMatchStatus(nextStatus);
+      setMatchStartedAt(nextStartedAt);
+      setMatchEndedAt(nextEndedAt);
+      onLifecycleChange?.({
+        status: nextStatus,
+        startedAt: nextStartedAt,
+        endedAt: nextEndedAt,
+      });
+      setActionError('');
+      setActionInfo('Match ended. Finalize from schedule when ready.');
+    } catch (endError) {
+      setActionInfo('');
+      setActionError(endError?.message || 'Unable to end match.');
+    } finally {
+      setEndBusy(false);
     }
   };
 
@@ -296,7 +407,7 @@ function TournamentMatchControlView({ matchId, scoreboardId, initialStatus = MAT
         <div>
           <h1 className="title tournament-match-control__title">Tournament Match Control</h1>
           <p className="subtitle tournament-match-control__subtitle">
-            Code {scoreboard?.code || scoreboard?._id || 'Unknown'}
+            Live scoring controls
           </p>
         </div>
         <span className={`phase1-status-badge ${statusMeta.badgeClassName}`}>
@@ -316,11 +427,29 @@ function TournamentMatchControlView({ matchId, scoreboardId, initialStatus = MAT
               ? 'Starting...'
               : matchStatus === MATCH_STATUS.LIVE
                 ? 'Match Live'
-                : 'Start Match'}
+                : matchStatus === MATCH_STATUS.ENDED
+                  ? 'Restart Match'
+                  : 'Start Match'}
           </button>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={handleEndMatch}
+            disabled={isFinalized || matchStatus !== MATCH_STATUS.LIVE || endBusy}
+          >
+            {endBusy ? 'Ending...' : 'End Match'}
+          </button>
+          {matchStatus === MATCH_STATUS.LIVE && matchStartedAt && (
+            <p className="subtle tournament-match-control__timer">LIVE {liveTimer}</p>
+          )}
           {matchStatus === MATCH_STATUS.SCHEDULED && (
             <p className="subtle">
               Score buttons are locked until the match is started.
+            </p>
+          )}
+          {matchStatus === MATCH_STATUS.ENDED && (
+            <p className="subtle">
+              Match ended{matchEndedAt ? ` at ${new Date(matchEndedAt).toLocaleTimeString()}` : ''}. Finalize from admin schedule when confirmed.
             </p>
           )}
           {isFinalized && (

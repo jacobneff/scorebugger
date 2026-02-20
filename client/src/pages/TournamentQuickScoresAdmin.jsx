@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { API_URL } from '../config/env.js';
+import TournamentAdminNav from '../components/TournamentAdminNav.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
@@ -10,12 +11,28 @@ import {
   normalizeSetScoresInput,
   toSetScoreChips,
 } from '../utils/setScoreInput.js';
+import { formatElapsedTimer } from '../utils/matchTimer.js';
+import {
+  formatSetSummaryWithScores,
+  normalizeCompletedSetScores,
+  toSetSummaryFromLiveSummary,
+  toSetSummaryFromScoreSummary,
+} from '../utils/matchSetSummary.js';
 
-const PHASE_OPTIONS = [
-  { value: 'phase1', label: 'Pool Play 1' },
-  { value: 'phase2', label: 'Pool Play 2' },
-  { value: 'playoffs', label: 'Playoffs' },
-];
+const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
+const buildPhaseOptions = (formatId) => {
+  const supportsPhase2 = formatId === ODU_15_FORMAT_ID;
+  const options = [
+    { value: 'phase1', label: supportsPhase2 ? 'Pool Play 1' : 'Pool Play' },
+  ];
+
+  if (supportsPhase2) {
+    options.push({ value: 'phase2', label: 'Pool Play 2' });
+  }
+
+  options.push({ value: 'playoffs', label: 'Playoffs' });
+  return options;
+};
 
 const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
@@ -44,6 +61,10 @@ function statusLabel(status) {
     return 'FINAL';
   }
 
+  if (status === 'ended') {
+    return 'ENDED';
+  }
+
   if (status === 'live') {
     return 'LIVE';
   }
@@ -56,6 +77,10 @@ function statusBadgeClassName(status) {
     return 'phase1-status-badge--final';
   }
 
+  if (status === 'ended') {
+    return 'phase1-status-badge--ended';
+  }
+
   if (status === 'live') {
     return 'phase1-status-badge--live';
   }
@@ -63,12 +88,8 @@ function statusBadgeClassName(status) {
   return 'phase1-status-badge--scheduled';
 }
 
-function formatScoreSummary(summary) {
-  if (!summary) {
-    return 'Sets 0-0';
-  }
-
-  return `Sets ${summary.setsA ?? 0}-${summary.setsB ?? 0} • Pts ${summary.pointsA ?? 0}-${summary.pointsB ?? 0}`;
+function formatScoreSummary(summary, completedSetScores) {
+  return formatSetSummaryWithScores(toSetSummaryFromScoreSummary(summary), completedSetScores);
 }
 
 function TournamentQuickScoresAdmin() {
@@ -89,6 +110,7 @@ function TournamentQuickScoresAdmin() {
   const [inputByMatchId, setInputByMatchId] = useState({});
   const [parsedByMatchId, setParsedByMatchId] = useState({});
   const [toasts, setToasts] = useState([]);
+  const [elapsedNowMs, setElapsedNowMs] = useState(() => Date.now());
 
   const inputRefs = useRef({});
   const toastCounterRef = useRef(0);
@@ -222,6 +244,26 @@ function TournamentQuickScoresAdmin() {
     }
   }, [courtFilter, filters.courts, filters.roundBlocks, roundBlockFilter]);
 
+  const hasLiveTimers = useMemo(
+    () =>
+      matches.some(
+        (match) => match?.status === 'live' && typeof match?.startedAt === 'string' && match.startedAt
+      ),
+    [matches]
+  );
+
+  useEffect(() => {
+    if (!hasLiveTimers) {
+      return undefined;
+    }
+
+    const timerId = window.setInterval(() => {
+      setElapsedNowMs(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [hasLiveTimers]);
+
   const handleTournamentRealtimeEvent = useCallback(
     (event) => {
       if (!event || typeof event !== 'object') {
@@ -244,11 +286,10 @@ function TournamentQuickScoresAdmin() {
             return {
               ...match,
               scoreSummary: {
-                setsA: event.data?.sets?.a ?? 0,
-                setsB: event.data?.sets?.b ?? 0,
-                pointsA: event.data?.points?.a ?? 0,
-                pointsB: event.data?.points?.b ?? 0,
+                setsA: toSetSummaryFromLiveSummary(event.data).setsA,
+                setsB: toSetSummaryFromLiveSummary(event.data).setsB,
               },
+              completedSetScores: normalizeCompletedSetScores(event.data?.completedSetScores),
             };
           })
         );
@@ -269,9 +310,24 @@ function TournamentQuickScoresAdmin() {
     onEvent: handleTournamentRealtimeEvent,
   });
 
+  const formatId =
+    typeof tournament?.settings?.format?.formatId === 'string'
+      ? tournament.settings.format.formatId.trim()
+      : '';
+  const phaseOptions = useMemo(() => buildPhaseOptions(formatId), [formatId]);
+
+  useEffect(() => {
+    const hasActivePhase = phaseOptions.some((option) => option.value === phase);
+    if (!hasActivePhase) {
+      setPhase(phaseOptions[0]?.value || 'phase1');
+      setRoundBlockFilter('');
+      setCourtFilter('');
+    }
+  }, [phase, phaseOptions]);
+
   const phaseLabel = useMemo(
-    () => PHASE_OPTIONS.find((option) => option.value === phase)?.label || 'Pool Play 1',
-    [phase]
+    () => phaseOptions.find((option) => option.value === phase)?.label || 'Pool Play',
+    [phase, phaseOptions]
   );
 
   const getNextEditableMatchId = useCallback(
@@ -519,17 +575,11 @@ function TournamentQuickScoresAdmin() {
             <p className="subtitle">
               {tournament?.name || 'Tournament'} • {phaseLabel} • bulk score capture
             </p>
-          </div>
-          <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${id}/phase1`}>
-              Pool Play 1
-            </a>
-            <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-              Pool Play 2
-            </a>
-            <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
-              Playoffs
-            </a>
+            <TournamentAdminNav
+              tournamentId={id}
+              publicCode={tournament?.publicCode || ''}
+              activeMainTab="quick-scores"
+            />
           </div>
         </div>
 
@@ -544,7 +594,7 @@ function TournamentQuickScoresAdmin() {
                 setCourtFilter('');
               }}
             >
-              {PHASE_OPTIONS.map((option) => (
+              {phaseOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -594,18 +644,25 @@ function TournamentQuickScoresAdmin() {
               const matchId = match.matchId;
               const busyAction = rowBusy[matchId] || '';
               const isFinal = match.status === 'final';
+              const completedSetScores = normalizeCompletedSetScores(
+                match?.completedSetScores || match?.setScores
+              );
               const hasManualInput = Object.prototype.hasOwnProperty.call(inputByMatchId, matchId);
               const defaultFinalScoreLine =
-                isFinal && Array.isArray(match?.setScores)
-                  ? formatSetScoreLine(match.setScores)
+                isFinal && completedSetScores.length > 0
+                  ? formatSetScoreLine(completedSetScores)
                   : '';
               const inputValue = hasManualInput
                 ? inputByMatchId[matchId]
                 : defaultFinalScoreLine;
               const parsedSets =
                 parsedByMatchId[matchId] ||
-                (isFinal && Array.isArray(match?.setScores) ? match.setScores : null);
+                (completedSetScores.length > 0 ? completedSetScores : null);
               const chips = toSetScoreChips(parsedSets);
+              const liveTimerLabel =
+                match?.status === 'live' && match?.startedAt
+                  ? `LIVE ${formatElapsedTimer(match.startedAt, elapsedNowMs)}`
+                  : '';
 
               return (
                 <article key={matchId} className="quick-scores-row">
@@ -622,7 +679,10 @@ function TournamentQuickScoresAdmin() {
                       <span className={`phase1-status-badge ${statusBadgeClassName(match.status)}`}>
                         {statusLabel(match.status)}
                       </span>
-                      <span className="subtle">{formatScoreSummary(match.scoreSummary)}</span>
+                      {liveTimerLabel ? <span className="subtle">{liveTimerLabel}</span> : null}
+                      <span className="subtle">
+                        {formatScoreSummary(match.scoreSummary, completedSetScores)}
+                      </span>
                     </div>
                   </div>
 

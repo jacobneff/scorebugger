@@ -94,6 +94,13 @@ describe('TournamentDetailsAdmin', () => {
 
     const user = userEvent.setup();
     const specialNotesInput = await screen.findByLabelText('Special Notes (markdown supported)');
+    expect(screen.queryByText('Your Tournaments')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Tournament Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'All services' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Team Setup' })).toHaveAttribute('href', '/tournaments/tour-1/teams');
+    expect(screen.getByRole('link', { name: 'Scheduling' })).toHaveAttribute('href', '/tournaments/tour-1/format');
+    expect(screen.getByRole('link', { name: 'Quick Scores' })).toHaveAttribute('href', '/tournaments/tour-1/quick-scores');
+    expect(screen.getByRole('link', { name: 'Public View' })).toHaveAttribute('href', '/t/ABC123');
     await user.clear(specialNotesInput);
     await user.type(specialNotesInput, 'Bring your own water.');
     await user.click(screen.getByRole('button', { name: 'Save details' }));

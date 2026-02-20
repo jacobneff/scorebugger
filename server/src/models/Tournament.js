@@ -4,6 +4,7 @@ const FACILITY_DEFAULTS = {
   SRC: ['SRC-1', 'SRC-2', 'SRC-3'],
   VC: ['VC-1', 'VC-2'],
 };
+const DEFAULT_TOTAL_COURTS = 5;
 
 const SCORING_DEFAULTS = {
   setTargets: [25, 25, 15],
@@ -26,6 +27,19 @@ const TOURNAMENT_DETAILS_DEFAULTS = {
   mapImageUrls: [],
 };
 
+const toNormalizedCourtCode = (value) =>
+  typeof value === 'string' ? value.trim().toUpperCase() : '';
+
+const flattenFacilityCourts = (facilities) => {
+  const source = facilities && typeof facilities === 'object' ? facilities : {};
+  const srcCourts = Array.isArray(source.SRC) ? source.SRC : FACILITY_DEFAULTS.SRC;
+  const vcCourts = Array.isArray(source.VC) ? source.VC : FACILITY_DEFAULTS.VC;
+
+  return [...srcCourts, ...vcCourts]
+    .map((court) => toNormalizedCourtCode(court))
+    .filter(Boolean);
+};
+
 const StandingsPhaseOverridesSchema = new mongoose.Schema(
   {
     poolOrderOverrides: {
@@ -46,6 +60,177 @@ const StandingsPhaseOverridesSchema = new mongoose.Schema(
         },
       ],
       default: undefined,
+    },
+  },
+  { _id: false }
+);
+
+const SchedulePlanRankRefSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ['rankRef'],
+      required: true,
+      default: 'rankRef',
+    },
+    poolName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    rank: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 64,
+    },
+  },
+  { _id: false }
+);
+
+const SchedulePlanTeamRefSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ['teamId'],
+      required: true,
+      default: 'teamId',
+    },
+    teamId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TournamentTeam',
+      required: true,
+    },
+    sourceRankRef: {
+      type: SchedulePlanRankRefSchema,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const SchedulePlanParticipantSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ['rankRef', 'teamId'],
+      required: true,
+    },
+    poolName: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    rank: {
+      type: Number,
+      default: null,
+      min: 1,
+      max: 64,
+    },
+    teamId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TournamentTeam',
+      default: null,
+    },
+    sourceRankRef: {
+      type: SchedulePlanRankRefSchema,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const SchedulePlanSlotSchema = new mongoose.Schema(
+  {
+    slotId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    stageKey: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    roundBlock: {
+      type: Number,
+      default: null,
+    },
+    timeIndex: {
+      type: Number,
+      default: null,
+    },
+    courtId: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    facilityId: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    kind: {
+      type: String,
+      enum: ['match', 'lunch'],
+      default: 'match',
+    },
+    participants: {
+      type: [SchedulePlanParticipantSchema],
+      default: [],
+    },
+    ref: {
+      type: SchedulePlanParticipantSchema,
+      default: null,
+    },
+    byeRefs: {
+      type: [SchedulePlanParticipantSchema],
+      default: undefined,
+    },
+    matchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Match',
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const VenueCourtSchema = new mongoose.Schema(
+  {
+    courtId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    isEnabled: {
+      type: Boolean,
+      default: true,
+    },
+  },
+  { _id: false }
+);
+
+const VenueFacilitySchema = new mongoose.Schema(
+  {
+    facilityId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    courts: {
+      type: [VenueCourtSchema],
+      default: [],
     },
   },
   { _id: false }
@@ -126,6 +311,62 @@ const TournamentSchema = new mongoose.Schema(
         lunchDurationMinutes: {
           type: Number,
           default: SCHEDULE_DEFAULTS.lunchDurationMinutes,
+        },
+      },
+      format: {
+        formatId: {
+          type: String,
+          default: null,
+          trim: true,
+        },
+        totalCourts: {
+          type: Number,
+          default: DEFAULT_TOTAL_COURTS,
+          min: 1,
+          max: 64,
+        },
+        activeCourts: {
+          type: [String],
+          default: function resolveDefaultActiveCourts() {
+            return flattenFacilityCourts(this?.facilities);
+          },
+          set: (value) =>
+            Array.isArray(value)
+              ? Array.from(
+                  new Set(
+                    value
+                      .map((entry) => toNormalizedCourtCode(entry))
+                      .filter(Boolean)
+                  )
+                )
+              : [],
+          validate: {
+            validator(value) {
+              if (!Array.isArray(value)) {
+                return false;
+              }
+
+              const availableCourts = new Set(flattenFacilityCourts(this?.facilities));
+              if (availableCourts.size === 0) {
+                return true;
+              }
+
+              return value.every((court) => availableCourts.has(toNormalizedCourtCode(court)));
+            },
+            message: 'activeCourts must be a subset of the tournament facilities.',
+          },
+        },
+      },
+      venue: {
+        facilities: {
+          type: [VenueFacilitySchema],
+          default: [],
+        },
+      },
+      schedulePlan: {
+        slots: {
+          type: [SchedulePlanSlotSchema],
+          default: [],
         },
       },
     },

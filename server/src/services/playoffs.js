@@ -705,10 +705,19 @@ function resolveSuggestedRefTeamId(match, matchesByKey, teamsById) {
   return resolveTeamIdFromRefRule(refRule, matchesByKey);
 }
 
-async function recomputePlayoffBracketProgression(tournamentId, bracket) {
+async function recomputePlayoffBracketProgression(tournamentId, bracket, options = {}) {
   const normalizedBracket = normalizeBracket(bracket);
+  const allowUnknownBracket = options?.allowUnknownBracket === true;
+  const hasManagedRefRules = PLAYOFF_BRACKETS.includes(normalizedBracket);
 
-  if (!PLAYOFF_BRACKETS.includes(normalizedBracket)) {
+  if (!normalizedBracket) {
+    return {
+      updatedMatchIds: [],
+      clearedMatchIds: [],
+    };
+  }
+
+  if (!hasManagedRefRules && !allowUnknownBracket) {
     return {
       updatedMatchIds: [],
       clearedMatchIds: [],
@@ -788,7 +797,9 @@ async function recomputePlayoffBracketProgression(tournamentId, bracket) {
       matchesNeedingSave.set(toIdString(match._id), match);
     }
 
-    const hasManagedRefRule = Boolean(DEFAULT_REF_SOURCE_BY_MATCH_KEY[match?.bracketMatchKey]);
+    const hasManagedRefRule =
+      hasManagedRefRules &&
+      Boolean(DEFAULT_REF_SOURCE_BY_MATCH_KEY[match?.bracketMatchKey]);
     if (Number(match.roundBlock) > 7 && hasManagedRefRule) {
       const suggestedRefTeamId = toIdString(resolveSuggestedRefTeamId(match, matchesByKey, teamsById));
       const currentRefTeamIds = Array.isArray(match.refTeamIds)

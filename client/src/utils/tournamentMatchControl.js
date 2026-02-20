@@ -1,6 +1,7 @@
 const MATCH_STATUS = {
   SCHEDULED: 'scheduled',
   LIVE: 'live',
+  ENDED: 'ended',
   FINAL: 'final',
 };
 
@@ -36,6 +37,14 @@ function getMatchStatusMeta(status) {
     };
   }
 
+  if (normalized === MATCH_STATUS.ENDED) {
+    return {
+      value: MATCH_STATUS.ENDED,
+      label: 'Ended',
+      badgeClassName: 'phase1-status-badge--ended',
+    };
+  }
+
   return {
     value: MATCH_STATUS.SCHEDULED,
     label: 'Scheduled',
@@ -43,7 +52,16 @@ function getMatchStatusMeta(status) {
   };
 }
 
-function buildTournamentMatchControlHref({ matchId, scoreboardKey, status }) {
+function normalizeLifecycleTimestamp(value) {
+  if (!value) {
+    return '';
+  }
+
+  const asDate = new Date(value);
+  return Number.isNaN(asDate.getTime()) ? '' : asDate.toISOString();
+}
+
+function buildTournamentMatchControlHref({ matchId, scoreboardKey, status, startedAt, endedAt }) {
   const normalizedMatchId = typeof matchId === 'string' ? matchId.trim() : '';
   const normalizedScoreboardKey =
     typeof scoreboardKey === 'string' ? scoreboardKey.trim() : '';
@@ -52,13 +70,27 @@ function buildTournamentMatchControlHref({ matchId, scoreboardKey, status }) {
     return '';
   }
 
-  const query = new URLSearchParams({
-    status: normalizeMatchStatus(status),
-  });
+  const query = new URLSearchParams({ status: normalizeMatchStatus(status) });
+  const normalizedStartedAt = normalizeLifecycleTimestamp(startedAt);
+  const normalizedEndedAt = normalizeLifecycleTimestamp(endedAt);
+
+  if (normalizedStartedAt) {
+    query.set('startedAt', normalizedStartedAt);
+  }
+
+  if (normalizedEndedAt) {
+    query.set('endedAt', normalizedEndedAt);
+  }
 
   return `/tournaments/matches/${encodeURIComponent(normalizedMatchId)}/control/${encodeURIComponent(
     normalizedScoreboardKey
   )}?${query.toString()}`;
 }
 
-export { MATCH_STATUS, buildTournamentMatchControlHref, getMatchStatusMeta, normalizeMatchStatus };
+export {
+  MATCH_STATUS,
+  buildTournamentMatchControlHref,
+  getMatchStatusMeta,
+  normalizeLifecycleTimestamp,
+  normalizeMatchStatus,
+};

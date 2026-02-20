@@ -57,4 +57,22 @@ describe('formatRoundBlockStartTime', () => {
     expect(formatRoundBlockStartTime(1, tournamentWithMissingSchedule)).toBe('9:00 AM');
     expect(formatRoundBlockStartTime(2, tournamentWithInvalidSchedule)).toBe('10:00 AM');
   });
+
+  it('delays blocks at/after lunch by lunch duration', () => {
+    const tournament = {
+      timezone: 'America/New_York',
+      settings: {
+        schedule: {
+          dayStartTime: '09:00',
+          matchDurationMinutes: 60,
+          lunchStartTime: '15:00',
+          lunchDurationMinutes: 30,
+        },
+      },
+    };
+
+    expect(formatRoundBlockStartTime(6, tournament)).toBe('2:00 PM');
+    expect(formatRoundBlockStartTime(7, tournament)).toBe('3:30 PM');
+    expect(formatRoundBlockStartTime(8, tournament)).toBe('4:30 PM');
+  });
 });

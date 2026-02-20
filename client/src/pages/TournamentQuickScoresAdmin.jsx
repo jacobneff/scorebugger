@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { API_URL } from '../config/env.js';
+import TournamentAdminNav from '../components/TournamentAdminNav.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
@@ -574,19 +575,11 @@ function TournamentQuickScoresAdmin() {
             <p className="subtitle">
               {tournament?.name || 'Tournament'} • {phaseLabel} • bulk score capture
             </p>
-          </div>
-          <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${id}/format`}>
-              {phaseOptions[0]?.label || 'Pool Play'}
-            </a>
-            {phaseOptions.some((option) => option.value === 'phase2') && (
-              <a className="secondary-button" href={`/tournaments/${id}/phase2`}>
-                Pool Play 2
-              </a>
-            )}
-            <a className="secondary-button" href={`/tournaments/${id}/playoffs`}>
-              Playoffs
-            </a>
+            <TournamentAdminNav
+              tournamentId={id}
+              publicCode={tournament?.publicCode || ''}
+              activeMainTab="quick-scores"
+            />
           </div>
         </div>
 

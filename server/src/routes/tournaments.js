@@ -3572,6 +3572,69 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
   }
 });
 
+// POST /api/tournaments/:id/reset -> owner-only reset of schedule/results while keeping teams/details
+router.post('/:id/reset', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const ownerContext = await requireTournamentOwnerContext(id, req.user.id, 'publicCode');
+    const tournament = ownerContext?.tournament || null;
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const matchDeletion = await deleteMatchesAndLinkedScoreboards({ tournamentId: id });
+    const poolsDeletion = await Pool.deleteMany({ tournamentId: id });
+
+    await Tournament.updateOne(
+      { _id: id },
+      {
+        $set: {
+          status: 'setup',
+        },
+        $unset: {
+          standingsOverrides: '',
+        },
+      }
+    );
+
+    const deleted = {
+      pools: Number(poolsDeletion?.deletedCount || 0),
+      matches: Array.isArray(matchDeletion?.deletedMatchIds)
+        ? matchDeletion.deletedMatchIds.length
+        : 0,
+      scoreboards: Array.isArray(matchDeletion?.deletedScoreboardIds)
+        ? matchDeletion.deletedScoreboardIds.length
+        : 0,
+    };
+
+    emitTournamentEventFromRequest(
+      req,
+      tournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.TOURNAMENT_RESET,
+      {
+        tournamentId: toIdString(id),
+        status: 'setup',
+        deleted,
+      }
+    );
+
+    return res.json({
+      reset: true,
+      tournamentId: toIdString(id),
+      status: 'setup',
+      deleted,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // PATCH /api/tournaments/:id/details -> tournament-admin details content update
 router.patch('/:id/details', requireAuth, async (req, res, next) => {
   try {

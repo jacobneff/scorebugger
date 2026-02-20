@@ -42,6 +42,7 @@ const TOURNAMENT_DETAILS_DEFAULTS = Object.freeze({
   mapImageUrls: [],
 });
 const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
+const CROSSOVER_STAGE_KEY = 'crossover';
 
 const normalizePools = (pools) =>
   sortPhase1Pools(pools).map((pool) => ({
@@ -228,7 +229,27 @@ const formatLiveCardScoreSummary = ({ summary, completedSetScores }) => {
   );
 };
 
-const isHttpUrl = (value) => /^https?:\/\//i.test(value || '');
+const toSafeHttpUrl = (value) => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '';
+    }
+
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+};
 
 const renderInlineMarkdown = (text, keyPrefix) => {
   if (!text) {
@@ -246,11 +267,16 @@ const renderInlineMarkdown = (text, keyPrefix) => {
       nodes.push(text.slice(cursor, match.index));
     }
 
-    nodes.push(
-      <a key={`${keyPrefix}-link-${index}`} href={match[2]} target="_blank" rel="noreferrer">
-        {match[1]}
-      </a>
-    );
+    const safeHref = toSafeHttpUrl(match[2]);
+    if (safeHref) {
+      nodes.push(
+        <a key={`${keyPrefix}-link-${index}`} href={safeHref} target="_blank" rel="noreferrer">
+          {match[1]}
+        </a>
+      );
+    } else {
+      nodes.push(match[0]);
+    }
     cursor = match.index + match[0].length;
     index += 1;
   }
@@ -359,6 +385,7 @@ function TournamentPublicView() {
   const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
   const [details, setDetails] = useState(() => TOURNAMENT_DETAILS_DEFAULTS);
   const [liveMatches, setLiveMatches] = useState([]);
+  const [publicTeamCount, setPublicTeamCount] = useState(0);
 
   const loadPublicData = useCallback(
     async ({ silent = false } = {}) => {
@@ -439,7 +466,12 @@ function TournamentPublicView() {
           typeof tournamentPayload?.tournament?.settings?.format?.formatId === 'string'
             ? tournamentPayload.tournament.settings.format.formatId.trim()
             : '';
-        const supportsPhase2 = !tournamentFormatId || tournamentFormatId === ODU_15_FORMAT_ID;
+        const payloadTeamCount = Array.isArray(tournamentPayload?.teams)
+          ? tournamentPayload.teams.length
+          : 0;
+        const supportsPhase2 =
+          tournamentFormatId === ODU_15_FORMAT_ID ||
+          (!tournamentFormatId && Number(payloadTeamCount) === 15);
         if (!phase2StandingsResponse.ok && supportsPhase2) {
           throw new Error(phase2StandingsPayload?.message || 'Unable to load Pool Play 2 standings');
         }
@@ -457,6 +489,7 @@ function TournamentPublicView() {
         }
 
         setTournament(tournamentPayload.tournament);
+        setPublicTeamCount(payloadTeamCount);
         setDetails(normalizeTournamentDetails(detailsPayload?.details));
         setLiveMatches(Array.isArray(liveMatchesPayload) ? liveMatchesPayload : []);
         setPools(normalizePools(poolPayload));
@@ -613,13 +646,111 @@ function TournamentPublicView() {
     onEvent: handleTournamentEvent,
   });
 
-  const scheduleLookup = useMemo(() => buildPhase1ScheduleLookup(matches), [matches]);
   const formatId =
     typeof tournament?.settings?.format?.formatId === 'string'
       ? tournament.settings.format.formatId.trim()
       : '';
-  const supportsPhase2 = !formatId || formatId === ODU_15_FORMAT_ID;
+  const hasPhase2StandingsData =
+    (Array.isArray(standingsByPhase?.phase2?.pools) && standingsByPhase.phase2.pools.length > 0) ||
+    (Array.isArray(standingsByPhase?.phase2?.overall) && standingsByPhase.phase2.overall.length > 0);
+  const supportsPhase2 =
+    formatId === ODU_15_FORMAT_ID ||
+    (!formatId && Number(publicTeamCount) === 15) ||
+    hasPhase2StandingsData;
   const phase1Label = supportsPhase2 ? 'Pool Play 1' : 'Pool Play';
+  const phase2Label = 'Pool Play 2';
+  const scheduleMatches = useMemo(
+    () =>
+      (Array.isArray(matches) ? matches : []).filter(
+        (match) => String(match?.phase || '').trim() === 'phase1'
+      ),
+    [matches]
+  );
+  const scheduleLookup = useMemo(() => buildPhase1ScheduleLookup(scheduleMatches), [scheduleMatches]);
+  const scheduleRoundBlocks = useMemo(() => {
+    const uniqueRoundBlocks = Array.from(
+      new Set(
+        scheduleMatches
+          .map((match) => Number(match?.roundBlock))
+          .filter((roundBlock) => Number.isFinite(roundBlock) && roundBlock > 0)
+      )
+    ).sort((left, right) => left - right);
+    return uniqueRoundBlocks.length > 0 ? uniqueRoundBlocks : PHASE1_ROUND_BLOCKS;
+  }, [scheduleMatches]);
+  const scheduleCourts = useMemo(() => {
+    const usedCourts = new Set(
+      scheduleMatches
+        .map((match) => (typeof match?.court === 'string' ? match.court.trim().toUpperCase() : ''))
+        .filter(Boolean)
+    );
+    const preferredCourts = Array.isArray(tournament?.settings?.format?.activeCourts)
+      ? tournament.settings.format.activeCourts
+      : [];
+    const preferredCourtSet = new Set(
+      preferredCourts
+        .map((courtCode) => (typeof courtCode === 'string' ? courtCode.trim().toUpperCase() : ''))
+        .filter(Boolean)
+    );
+    const orderedCourts = PHASE1_COURT_ORDER.filter(
+      (courtCode) => usedCourts.has(courtCode) || preferredCourtSet.has(courtCode)
+    );
+    return orderedCourts.length > 0 ? orderedCourts : PHASE1_COURT_ORDER;
+  }, [scheduleMatches, tournament]);
+  const hasCrossoverMatches = useMemo(
+    () => scheduleMatches.some((match) => match?.stageKey === CROSSOVER_STAGE_KEY),
+    [scheduleMatches]
+  );
+  const scheduleHeading = hasCrossoverMatches
+    ? `${phase1Label} + Crossover Schedule`
+    : `${phase1Label} Schedule`;
+  const areCrossoverInputsFinalized = useMemo(() => {
+    const precursorMatches = scheduleMatches.filter(
+      (match) => String(match?.stageKey || '').trim() !== CROSSOVER_STAGE_KEY
+    );
+    if (precursorMatches.length === 0) {
+      return false;
+    }
+
+    return precursorMatches.every((match) => {
+      const normalizedStatus = String(match?.status || '')
+        .trim()
+        .toLowerCase();
+      return Boolean(match?.result) || normalizedStatus === 'final' || normalizedStatus === 'ended';
+    });
+  }, [scheduleMatches]);
+  const getScheduleMatchLabel = useCallback(
+    (match) => {
+      const stageKey = String(match?.stageKey || '').trim();
+      if (stageKey === CROSSOVER_STAGE_KEY) {
+        return 'Crossover';
+      }
+      if (stageKey === 'poolPlay2') {
+        return phase2Label;
+      }
+      if (stageKey === 'poolPlay1') {
+        return phase1Label;
+      }
+      return String(match?.phase || '').trim() === 'phase2' ? phase2Label : phase1Label;
+    },
+    [phase1Label, phase2Label]
+  );
+  const isPendingCrossoverMatch = useCallback(
+    (match) => {
+      const normalizedStatus = String(match?.status || '')
+        .trim()
+        .toLowerCase();
+      if (String(match?.stageKey || '').trim() !== CROSSOVER_STAGE_KEY) {
+        return false;
+      }
+
+      if (normalizedStatus === 'live' || normalizedStatus === 'final' || normalizedStatus === 'ended') {
+        return false;
+      }
+
+      return !areCrossoverInputsFinalized;
+    },
+    [areCrossoverInputsFinalized]
+  );
   const activeStandings =
     activeStandingsTab === 'phase2'
       ? standingsByPhase.phase2
@@ -667,6 +798,7 @@ function TournamentPublicView() {
   const hasParkingInfo = Boolean(details?.parkingInfo?.trim());
   const hasFoodText = Boolean(details?.foodInfo?.text?.trim());
   const hasFoodLink = Boolean(details?.foodInfo?.linkUrl?.trim());
+  const safeFoodLinkUrl = toSafeHttpUrl(details?.foodInfo?.linkUrl);
   const hasFood = hasFoodText || hasFoodLink;
   const hasMaps = Array.isArray(details?.mapImageUrls) && details.mapImageUrls.length > 0;
   const hasAnyDetails =
@@ -814,7 +946,9 @@ function TournamentPublicView() {
                 {hasFacilitiesInfo ? (
                   <article className="tournament-public-details-section">
                     <h3>Facilities / Court Notes</h3>
-                    <p>{details.facilitiesInfo}</p>
+                    <div className="tournament-details-markdown">
+                      {renderBasicMarkdown(details.facilitiesInfo)}
+                    </div>
                   </article>
                 ) : null}
 
@@ -840,9 +974,13 @@ function TournamentPublicView() {
                 {hasFood ? (
                   <article className="tournament-public-details-section">
                     <h3>Food</h3>
-                    {hasFoodText ? <p>{details.foodInfo.text}</p> : null}
-                    {hasFoodLink && isHttpUrl(details.foodInfo.linkUrl) ? (
-                      <a href={details.foodInfo.linkUrl} target="_blank" rel="noreferrer">
+                    {hasFoodText ? (
+                      <div className="tournament-details-markdown">
+                        {renderBasicMarkdown(details.foodInfo.text)}
+                      </div>
+                    ) : null}
+                    {hasFoodLink && safeFoodLinkUrl ? (
+                      <a href={safeFoodLinkUrl} target="_blank" rel="noreferrer">
                         Food details
                       </a>
                     ) : null}
@@ -852,7 +990,9 @@ function TournamentPublicView() {
                 {hasParkingInfo ? (
                   <article className="tournament-public-details-section">
                     <h3>Parking</h3>
-                    <p>{details.parkingInfo}</p>
+                    <div className="tournament-details-markdown">
+                      {renderBasicMarkdown(details.parkingInfo)}
+                    </div>
                   </article>
                 ) : null}
               </div>
@@ -883,38 +1023,51 @@ function TournamentPublicView() {
             </section>
 
             <section className="phase1-schedule">
-              <h2 className="secondary-title">{phase1Label} Schedule</h2>
-              <div className="phase1-table-wrap">
-                <table className="phase1-schedule-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      {PHASE1_COURT_ORDER.map((court) => (
-                        <th key={court}>{mapCourtLabel(court)}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {PHASE1_ROUND_BLOCKS.map((roundBlock) => (
-                      <tr key={roundBlock}>
-                        <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
-                        {PHASE1_COURT_ORDER.map((court) => {
-                          const match = scheduleLookup[`${roundBlock}-${court}`];
-                          const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
-                          const liveSummary = match ? liveSummariesByMatchId[match._id] : null;
+                  <h2 className="secondary-title">{scheduleHeading}</h2>
+                  <div className="phase1-table-wrap">
+                    <table className="phase1-schedule-table">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          {scheduleCourts.map((court) => (
+                            <th key={court}>{mapCourtLabel(court)}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {scheduleRoundBlocks.map((roundBlock) => (
+                          <tr key={roundBlock}>
+                            <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
+                            {scheduleCourts.map((court) => {
+                              const match = scheduleLookup[`${roundBlock}-${court}`];
+                              const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
+                              const liveSummary = match ? liveSummariesByMatchId[match._id] : null;
+                              const hideCrossoverMatchup = isPendingCrossoverMatch(match);
+                              const matchupLabel = hideCrossoverMatchup
+                                ? 'TBD vs TBD'
+                                : `${formatTeamLabel(match?.teamA)} vs ${formatTeamLabel(match?.teamB)}`;
+                              const refLabel = hideCrossoverMatchup
+                                ? 'TBD'
+                                : formatTeamLabel(match?.refTeams?.[0]);
+                              const stageLabel = getScheduleMatchLabel(match);
 
-                          return (
-                            <td key={`${roundBlock}-${court}`}>
-                              {match ? (
-                                <div className="phase1-match-cell">
-                                  <p>
-                                    <strong>Pool {match.poolName}</strong>
-                                    {`: ${formatTeamLabel(match.teamA)} vs ${formatTeamLabel(match.teamB)}`}
-                                  </p>
-                                  <p>Ref: {formatTeamLabel(match.refTeams?.[0])}</p>
-                                  {liveSummary && <p className="subtle">{formatLiveSummary(liveSummary)}</p>}
-                                  {scoreboardKey ? (
-                                    <a
+                              return (
+                                <td key={`${roundBlock}-${court}`}>
+                                  {match ? (
+                                    <div className="phase1-match-cell">
+                                      <p>
+                                        <strong>{match.poolName ? `Pool ${match.poolName}` : stageLabel}</strong>
+                                        {`: ${matchupLabel}`}
+                                      </p>
+                                      <p>Ref: {refLabel}</p>
+                                      {hideCrossoverMatchup ? (
+                                        <p className="subtle">
+                                          Crossover matchup pending completion of pool-play standings.
+                                        </p>
+                                      ) : null}
+                                      {liveSummary && <p className="subtle">{formatLiveSummary(liveSummary)}</p>}
+                                      {scoreboardKey ? (
+                                        <a
                                       href={`/board/${scoreboardKey}/display`}
                                       target="_blank"
                                       rel="noreferrer"
@@ -955,7 +1108,7 @@ function TournamentPublicView() {
                     type="button"
                     onClick={() => setActiveStandingsTab('phase2')}
                   >
-                    Pool Play 2
+                    {phase2Label}
                   </button>
                 )}
                 <button
@@ -1008,7 +1161,7 @@ function TournamentPublicView() {
                   {activeStandingsTab === 'phase1'
                     ? `${phase1Label} Overall`
                     : activeStandingsTab === 'phase2'
-                      ? 'Pool Play 2 Overall'
+                      ? `${phase2Label} Overall`
                       : 'Cumulative Overall'}
                 </h3>
                 <div className="phase1-table-wrap">

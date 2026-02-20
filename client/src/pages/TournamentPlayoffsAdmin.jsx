@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import { API_URL } from '../config/env.js';
-import TournamentSchedulingTabs from '../components/TournamentSchedulingTabs.jsx';
+import TournamentAdminNav from '../components/TournamentAdminNav.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import { formatRoundBlockStartTime, mapCourtLabel } from '../utils/phase1.js';
@@ -120,6 +120,7 @@ const getPlayoffRefReferenceLabel = (match) =>
   PLAYOFF_REF_REFERENCE_LABELS[match?.bracketMatchKey] || '';
 
 function TournamentPlayoffsAdmin() {
+  const navigate = useNavigate();
   const { id } = useParams();
   const { token, user, initializing } = useAuth();
 
@@ -133,6 +134,7 @@ function TournamentPlayoffsAdmin() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [generateLoading, setGenerateLoading] = useState(false);
+  const [resettingTournament, setResettingTournament] = useState(false);
   const [matchActionId, setMatchActionId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -336,6 +338,37 @@ function TournamentPlayoffsAdmin() {
     }
   }, [generateLoading, generatePlayoffs, id, token]);
 
+  const handleResetTournament = useCallback(async () => {
+    if (!token || !id || resettingTournament || !tournament?.isOwner) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Reset this tournament?\n\nThis deletes all pools, matches, and linked scoreboards, clears standings overrides, and sets status back to setup. Teams, details, and format settings stay.'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setResettingTournament(true);
+    setError('');
+    setMessage('');
+
+    try {
+      await fetchJson(`${API_URL}/api/tournaments/${id}/reset`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      setMessage('Tournament reset. Redirecting to format setup.');
+      navigate(`/tournaments/${id}/format`, { replace: true });
+    } catch (resetError) {
+      setError(resetError.message || 'Unable to reset tournament');
+    } finally {
+      setResettingTournament(false);
+    }
+  }, [fetchJson, id, navigate, resettingTournament, token, tournament?.isOwner]);
+
   const handleFinalizeMatch = useCallback(
     async (matchId) => {
       if (!token || !matchId || matchActionId) {
@@ -431,13 +464,17 @@ function TournamentPlayoffsAdmin() {
             <p className="subtitle">
               {tournament?.name || 'Tournament'} • Generate playoff brackets for the applied format.
             </p>
-            <TournamentSchedulingTabs
+            <TournamentAdminNav
               tournamentId={id}
-              activeTab="playoffs"
-              showPhase2={isLegacyOduFormat}
-              phase1Label={isLegacyOduFormat ? 'Pool Play 1' : 'Pool Play'}
-              phase1Href={isLegacyOduFormat ? `/tournaments/${id}/phase1` : `/tournaments/${id}/format`}
-              phase2Href={isLegacyOduFormat ? `/tournaments/${id}/phase2` : `/tournaments/${id}/format`}
+              publicCode={tournament?.publicCode || ''}
+              activeMainTab="scheduling"
+              scheduling={{
+                activeSubTab: 'playoffs',
+                showPhase2: isLegacyOduFormat,
+                phase1Label: isLegacyOduFormat ? 'Pool Play 1' : 'Pool Play',
+                phase1Href: isLegacyOduFormat ? `/tournaments/${id}/phase1` : `/tournaments/${id}/format`,
+                phase2Href: isLegacyOduFormat ? `/tournaments/${id}/phase2` : `/tournaments/${id}/format`,
+              }}
             />
           </div>
           <div className="phase1-admin-actions">
@@ -449,6 +486,16 @@ function TournamentPlayoffsAdmin() {
             >
               {generateLoading ? 'Generating Playoffs...' : 'Generate Playoffs'}
             </button>
+            {tournament?.isOwner && (
+              <button
+                className="secondary-button danger-button"
+                type="button"
+                onClick={handleResetTournament}
+                disabled={resettingTournament}
+              >
+                {resettingTournament ? 'Resetting...' : 'Reset Tournament'}
+              </button>
+            )}
           </div>
         </div>
 

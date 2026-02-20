@@ -39,7 +39,30 @@ const baseTournamentPayload = {
   teams: [],
 };
 
-function mockPublicFetch({ details, liveMatches }) {
+function mockPublicFetch({
+  details,
+  liveMatches,
+  tournamentPayload,
+  matches,
+  phase1Standings,
+  phase2Standings,
+  cumulativeStandings,
+}) {
+  const defaultTournamentPayload = {
+    ...baseTournamentPayload,
+    tournament: {
+      ...baseTournamentPayload.tournament,
+      settings: {
+        ...baseTournamentPayload.tournament.settings,
+      },
+    },
+  };
+  const resolvedTournamentPayload = tournamentPayload || defaultTournamentPayload;
+  const resolvedMatchPayload = Array.isArray(matches) ? matches : [];
+  const resolvedPhase1StandingsPayload = phase1Standings || { pools: [], overall: [] };
+  const resolvedPhase2StandingsPayload = phase2Standings || { pools: [], overall: [] };
+  const resolvedCumulativeStandingsPayload = cumulativeStandings || { pools: [], overall: [] };
+
   globalThis.fetch = vi.fn(async (url) => {
     const requestUrl = String(url);
 
@@ -60,7 +83,7 @@ function mockPublicFetch({ details, liveMatches }) {
     }
 
     if (requestUrl.endsWith('/api/tournaments/code/ABC123')) {
-      return jsonResponse(baseTournamentPayload);
+      return jsonResponse(resolvedTournamentPayload);
     }
 
     if (requestUrl.endsWith('/api/tournaments/code/ABC123/phase1/pools')) {
@@ -68,7 +91,7 @@ function mockPublicFetch({ details, liveMatches }) {
     }
 
     if (requestUrl.endsWith('/api/tournaments/code/ABC123/matches?phase=phase1')) {
-      return jsonResponse([]);
+      return jsonResponse(resolvedMatchPayload);
     }
 
     if (requestUrl.endsWith('/api/tournaments/code/ABC123/courts')) {
@@ -76,15 +99,15 @@ function mockPublicFetch({ details, liveMatches }) {
     }
 
     if (requestUrl.endsWith('/api/tournaments/code/ABC123/standings?phase=phase1')) {
-      return jsonResponse({ pools: [], overall: [] });
+      return jsonResponse(resolvedPhase1StandingsPayload);
     }
 
     if (requestUrl.endsWith('/api/tournaments/code/ABC123/standings?phase=phase2')) {
-      return jsonResponse({ pools: [], overall: [] });
+      return jsonResponse(resolvedPhase2StandingsPayload);
     }
 
     if (requestUrl.endsWith('/api/tournaments/code/ABC123/standings?phase=cumulative')) {
-      return jsonResponse({ pools: [], overall: [] });
+      return jsonResponse(resolvedCumulativeStandingsPayload);
     }
 
     if (requestUrl.endsWith('/api/tournaments/code/ABC123/playoffs')) {
@@ -128,11 +151,11 @@ describe('TournamentPublicView', () => {
       details: {
         specialNotes: 'Review [Venue Rules](https://example.com/rules) before warm-up.',
         foodInfo: {
-          text: 'Concessions are open at the lobby entrance.',
+          text: 'Snacks at **Lobby**. See [Menu](https://example.com/menu-doc).',
           linkUrl: 'https://example.com/menu',
         },
-        facilitiesInfo: 'Court 3 has a lower ceiling near the bleachers.',
-        parkingInfo: 'Use lot B after 8:00 AM.',
+        facilitiesInfo: 'Court 3 notes in [Court Guide](https://example.com/courts).',
+        parkingInfo: '- Use lot B after 8:00 AM.\n- Overflow at lot C.',
         mapImageUrls: ['https://example.com/map-1.png'],
       },
       liveMatches: [
@@ -175,10 +198,98 @@ describe('TournamentPublicView', () => {
       'href',
       'https://example.com/rules'
     );
+    expect(screen.getByRole('link', { name: 'Court Guide' })).toHaveAttribute(
+      'href',
+      'https://example.com/courts'
+    );
+    expect(screen.getByRole('link', { name: 'Menu' })).toHaveAttribute(
+      'href',
+      'https://example.com/menu-doc'
+    );
     expect(screen.getByRole('heading', { name: 'Facilities / Court Notes' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Maps' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Food' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Parking' })).toBeInTheDocument();
     expect(screen.getByAltText('Tournament map')).toBeInTheDocument();
+    expect(screen.getByText('Overflow at lot C.')).toBeInTheDocument();
+  });
+
+  it('uses single-pool-play standings tabs for 14-team format and defers crossover matchup labels', async () => {
+    mockPublicFetch({
+      details: {
+        specialNotes: '',
+        foodInfo: { text: '', linkUrl: '' },
+        facilitiesInfo: '',
+        parkingInfo: '',
+        mapImageUrls: [],
+      },
+      liveMatches: [],
+      tournamentPayload: {
+        tournament: {
+          ...baseTournamentPayload.tournament,
+          settings: {
+            ...baseTournamentPayload.tournament.settings,
+            format: {
+              formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+              activeCourts: ['SRC-1', 'SRC-2', 'SRC-3'],
+            },
+          },
+        },
+        teams: Array.from({ length: 14 }, (_, index) => ({
+          id: `team-${index + 1}`,
+          name: `Team ${index + 1}`,
+          shortName: `T${index + 1}`,
+          logoUrl: null,
+          orderIndex: index + 1,
+          seed: index + 1,
+        })),
+      },
+      matches: [
+        {
+          _id: 'pool-a-1',
+          phase: 'phase1',
+          stageKey: 'poolPlay1',
+          roundBlock: 1,
+          court: 'SRC-1',
+          poolName: 'A',
+          teamA: { shortName: 'A1' },
+          teamB: { shortName: 'A2' },
+          refTeams: [{ shortName: 'A3' }],
+          status: 'scheduled',
+          result: null,
+          scoreboardCode: 'POOLA1',
+        },
+        {
+          _id: 'cross-1',
+          phase: 'phase1',
+          stageKey: 'crossover',
+          roundBlock: 4,
+          court: 'SRC-2',
+          poolName: null,
+          teamA: { shortName: 'C1' },
+          teamB: { shortName: 'D1' },
+          refTeams: [{ shortName: 'C2' }],
+          status: 'scheduled',
+          result: null,
+          scoreboardCode: 'CROSS1',
+        },
+      ],
+      phase1Standings: { pools: [], overall: [] },
+      phase2Standings: { pools: [], overall: [] },
+      cumulativeStandings: { pools: [], overall: [] },
+    });
+
+    const user = userEvent.setup();
+    render(<TournamentPublicView />);
+
+    await user.click(await screen.findByRole('button', { name: 'Pools + Standings' }));
+
+    expect(await screen.findByRole('heading', { name: 'Pool Play + Crossover Schedule' })).toBeInTheDocument();
+    expect(
+      screen.getByText('Crossover matchup pending completion of pool-play standings.')
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pool Play' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pool Play 2' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cumulative' })).toBeInTheDocument();
   });
 });

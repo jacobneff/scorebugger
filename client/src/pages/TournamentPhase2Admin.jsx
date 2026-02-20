@@ -21,7 +21,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 import { API_URL } from '../config/env.js';
-import TournamentSchedulingTabs from '../components/TournamentSchedulingTabs.jsx';
+import TournamentAdminNav from '../components/TournamentAdminNav.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
@@ -312,6 +312,7 @@ function TournamentPhase2Admin() {
   const [savingPools, setSavingPools] = useState(false);
   const [poolsGenerateLoading, setPoolsGenerateLoading] = useState(false);
   const [generateLoading, setGenerateLoading] = useState(false);
+  const [resettingTournament, setResettingTournament] = useState(false);
   const [standingsLoading, setStandingsLoading] = useState(false);
   const [matchActionId, setMatchActionId] = useState('');
   const [error, setError] = useState('');
@@ -1143,6 +1144,37 @@ function TournamentPhase2Admin() {
     [fetchJson, matchActionId, refreshMatchesAndStandings, token]
   );
 
+  const handleResetTournament = useCallback(async () => {
+    if (!token || !id || resettingTournament || !tournament?.isOwner) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Reset this tournament?\n\nThis deletes all pools, matches, and linked scoreboards, clears standings overrides, and sets status back to setup. Teams, details, and format settings stay.'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setResettingTournament(true);
+    setError('');
+    setMessage('');
+
+    try {
+      await fetchJson(`${API_URL}/api/tournaments/${id}/reset`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      setMessage('Tournament reset. Redirecting to format setup.');
+      navigate(`/tournaments/${id}/format`, { replace: true });
+    } catch (resetError) {
+      setError(resetError.message || 'Unable to reset tournament');
+    } finally {
+      setResettingTournament(false);
+    }
+  }, [fetchJson, id, navigate, resettingTournament, token, tournament?.isOwner]);
+
   const getPoolTeams = (pool) =>
     (Array.isArray(pool?.teamIds) ? pool.teamIds : []).filter(
       (team) => team && typeof team === 'object' && team._id
@@ -1194,7 +1226,14 @@ function TournamentPhase2Admin() {
               {tournament?.name || 'Tournament'} • Build pools F-J from Pool Play 1 placements, then
               generate fixed rounds 4-6.
             </p>
-            <TournamentSchedulingTabs tournamentId={id} activeTab="phase2" />
+            <TournamentAdminNav
+              tournamentId={id}
+              publicCode={tournament?.publicCode || ''}
+              activeMainTab="scheduling"
+              scheduling={{
+                activeSubTab: 'phase2',
+              }}
+            />
           </div>
           <div className="phase1-admin-actions">
             <button
@@ -1215,6 +1254,16 @@ function TournamentPhase2Admin() {
             >
               {generateLoading ? 'Generating Matches...' : 'Generate Pool Play 2 Matches'}
             </button>
+            {tournament?.isOwner && (
+              <button
+                className="secondary-button danger-button"
+                type="button"
+                onClick={handleResetTournament}
+                disabled={resettingTournament}
+              >
+                {resettingTournament ? 'Resetting...' : 'Reset Tournament'}
+              </button>
+            )}
           </div>
         </div>
 

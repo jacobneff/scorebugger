@@ -513,6 +513,166 @@ describe('tournament routes', () => {
     expect(response.body.message).toMatch(/not found or unauthorized/i);
   });
 
+  test('POST /api/tournaments/:id/reset deletes schedule/results, preserves teams/details/format, and sets setup status', async () => {
+    const tournament = await Tournament.create({
+      name: 'Reset Me Tournament',
+      date: new Date('2026-08-20T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'RST001',
+      status: 'phase2',
+      settings: {
+        format: {
+          formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+          activeCourts: ['SRC-1', 'SRC-2', 'VC-1'],
+        },
+      },
+      details: {
+        specialNotes: 'Keep these details',
+      },
+      standingsOverrides: {
+        phase1: {
+          poolOrderOverrides: {},
+          overallOrderOverrides: [],
+        },
+      },
+      createdByUserId: user._id,
+    });
+
+    const [teamA, teamB] = await TournamentTeam.insertMany(
+      [
+        {
+          tournamentId: tournament._id,
+          name: 'Alpha',
+          shortName: 'ALP',
+          orderIndex: 1,
+        },
+        {
+          tournamentId: tournament._id,
+          name: 'Bravo',
+          shortName: 'BRV',
+          orderIndex: 2,
+        },
+      ],
+      { ordered: true }
+    );
+
+    await Pool.create({
+      tournamentId: tournament._id,
+      phase: 'phase1',
+      name: 'A',
+      teamIds: [teamA._id, teamB._id],
+      homeCourt: 'SRC-1',
+      requiredTeamCount: 2,
+    });
+
+    const scoreboard = await Scoreboard.create({
+      owner: user._id,
+      title: 'Reset test board',
+      teams: [
+        { name: 'ALP', score: 0 },
+        { name: 'BRV', score: 0 },
+      ],
+      sets: [],
+    });
+
+    await Match.create({
+      tournamentId: tournament._id,
+      phase: 'phase1',
+      roundBlock: 1,
+      facility: 'SRC',
+      court: 'SRC-1',
+      teamAId: teamA._id,
+      teamBId: teamB._id,
+      refTeamIds: [],
+      status: 'scheduled',
+      scoreboardId: scoreboard._id,
+    });
+
+    const response = await request(app)
+      .post(`/api/tournaments/${tournament._id}/reset`)
+      .set(authHeader());
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({
+      reset: true,
+      tournamentId: String(tournament._id),
+      status: 'setup',
+      deleted: {
+        pools: 1,
+        matches: 1,
+        scoreboards: 1,
+      },
+    });
+
+    const stored = await Tournament.findById(tournament._id).lean();
+    expect(stored.status).toBe('setup');
+    expect(stored.details?.specialNotes).toBe('Keep these details');
+    expect(stored.settings?.format?.formatId).toBe('classic_14_mixedpools_crossover_gold8_silver6_v1');
+    expect(stored.settings?.format?.activeCourts).toEqual(['SRC-1', 'SRC-2', 'VC-1']);
+    expect(stored.standingsOverrides).toBeUndefined();
+
+    expect(await TournamentTeam.countDocuments({ tournamentId: tournament._id })).toBe(2);
+    expect(await Pool.countDocuments({ tournamentId: tournament._id })).toBe(0);
+    expect(await Match.countDocuments({ tournamentId: tournament._id })).toBe(0);
+    expect(await Scoreboard.findById(scoreboard._id)).toBeNull();
+  });
+
+  test('POST /api/tournaments/:id/reset requires ownership', async () => {
+    const tournament = await Tournament.create({
+      name: 'Reset Ownership Tournament',
+      date: new Date('2026-08-20T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'RST002',
+      createdByUserId: user._id,
+    });
+
+    const intruder = await User.create({
+      email: 'intruder-reset@example.com',
+      passwordHash: 'hashed',
+      emailVerified: true,
+    });
+    const intruderToken = jwt.sign({ sub: intruder._id.toString() }, process.env.JWT_SECRET);
+
+    const response = await request(app)
+      .post(`/api/tournaments/${tournament._id}/reset`)
+      .set({
+        Authorization: `Bearer ${intruderToken}`,
+      });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body.message).toMatch(/not found or unauthorized/i);
+  });
+
+  test('POST /api/tournaments/:id/reset is idempotent when no pools/matches exist', async () => {
+    const tournament = await Tournament.create({
+      name: 'Reset Idempotent Tournament',
+      date: new Date('2026-08-20T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'RST003',
+      createdByUserId: user._id,
+    });
+
+    const first = await request(app)
+      .post(`/api/tournaments/${tournament._id}/reset`)
+      .set(authHeader());
+    const second = await request(app)
+      .post(`/api/tournaments/${tournament._id}/reset`)
+      .set(authHeader());
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.body).toEqual({
+      reset: true,
+      tournamentId: String(tournament._id),
+      status: 'setup',
+      deleted: {
+        pools: 0,
+        matches: 0,
+        scoreboards: 0,
+      },
+    });
+  });
+
   test('creating a team with shortName only defaults name and assigns incremental orderIndex', async () => {
     const tournament = await Tournament.create({
       name: 'Order Test',

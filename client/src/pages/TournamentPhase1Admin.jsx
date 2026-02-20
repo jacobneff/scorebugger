@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   DndContext,
   DragOverlay,
@@ -21,7 +21,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 import { API_URL } from '../config/env.js';
-import TournamentSchedulingTabs from '../components/TournamentSchedulingTabs.jsx';
+import TournamentAdminNav from '../components/TournamentAdminNav.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
@@ -260,6 +260,7 @@ const formatMatchSetSummary = (match) => {
 };
 
 function TournamentPhase1Admin() {
+  const navigate = useNavigate();
   const { id } = useParams();
   const { token, user, initializing } = useAuth();
 
@@ -275,6 +276,7 @@ function TournamentPhase1Admin() {
   const [savingPools, setSavingPools] = useState(false);
   const savingCourtAssignments = false;
   const [generateLoading, setGenerateLoading] = useState(false);
+  const [resettingTournament, setResettingTournament] = useState(false);
   const [standingsLoading, setStandingsLoading] = useState(false);
   const [matchActionId, setMatchActionId] = useState('');
   const [error, setError] = useState('');
@@ -1091,6 +1093,37 @@ function TournamentPhase1Admin() {
     [fetchJson, matchActionId, refreshMatchesAndStandings, token]
   );
 
+  const handleResetTournament = useCallback(async () => {
+    if (!token || !id || resettingTournament || !tournament?.isOwner) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Reset this tournament?\n\nThis deletes all pools, matches, and linked scoreboards, clears standings overrides, and sets status back to setup. Teams, details, and format settings stay.'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setResettingTournament(true);
+    setError('');
+    setMessage('');
+
+    try {
+      await fetchJson(`${API_URL}/api/tournaments/${id}/reset`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      setMessage('Tournament reset. Redirecting to format setup.');
+      navigate(`/tournaments/${id}/format`, { replace: true });
+    } catch (resetError) {
+      setError(resetError.message || 'Unable to reset tournament');
+    } finally {
+      setResettingTournament(false);
+    }
+  }, [fetchJson, id, navigate, resettingTournament, token, tournament?.isOwner]);
+
   const canGenerate =
     pools.length === 5 &&
     poolIssues.length === 0 &&
@@ -1138,19 +1171,19 @@ function TournamentPhase1Admin() {
               {tournament?.name || 'Tournament'} • Create pools, drag teams from Team Bank, then
               generate the fixed Pool Play 1 schedule.
             </p>
-            <TournamentSchedulingTabs
+            <TournamentAdminNav
               tournamentId={id}
-              activeTab="phase1"
-              showPhase2={
-                !tournament?.settings?.format?.formatId ||
-                tournament?.settings?.format?.formatId === 'odu_15_5courts_v1'
-              }
+              publicCode={tournament?.publicCode || ''}
+              activeMainTab="scheduling"
+              scheduling={{
+                activeSubTab: 'phase1',
+                showPhase2:
+                  !tournament?.settings?.format?.formatId ||
+                  tournament?.settings?.format?.formatId === 'odu_15_5courts_v1',
+              }}
             />
           </div>
           <div className="phase1-admin-actions">
-            <a className="secondary-button" href={`/tournaments/${id}/teams`}>
-              Manage Teams
-            </a>
             <button
               className="secondary-button"
               type="button"
@@ -1187,6 +1220,16 @@ function TournamentPhase1Admin() {
             >
               {generateLoading ? 'Generating...' : 'Generate Pool Play 1 Matches'}
             </button>
+            {tournament?.isOwner && (
+              <button
+                className="secondary-button danger-button"
+                type="button"
+                onClick={handleResetTournament}
+                disabled={resettingTournament}
+              >
+                {resettingTournament ? 'Resetting...' : 'Reset Tournament'}
+              </button>
+            )}
           </div>
         </div>
 

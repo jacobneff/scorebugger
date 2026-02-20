@@ -11,6 +11,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 import { API_URL } from "../config/env.js";
+import TournamentAdminNav from "./TournamentAdminNav.jsx";
 import TournamentDatePicker from "./TournamentDatePicker.jsx";
 
 const DEFAULT_TIMEZONE = "America/New_York";
@@ -445,11 +446,13 @@ function TournamentsTab({
   const [copiedShareLink, setCopiedShareLink] = useState(false);
   const [lastInviteLink, setLastInviteLink] = useState("");
   const [deletingTournamentId, setDeletingTournamentId] = useState("");
+  const [routeContextError, setRouteContextError] = useState("");
   const normalizedMode =
     mode === "details" || mode === "teams" ? mode : "hub";
   const showCreateCard = normalizedMode === "hub";
   const showDetailsSection = normalizedMode === "details";
   const showTeamsSection = normalizedMode === "teams";
+  const showHubLayout = normalizedMode === "hub";
 
   const makeRowId = useCallback(() => {
     rowCounterRef.current += 1;
@@ -709,6 +712,7 @@ function TournamentsTab({
           : [];
 
         setSelectedTournament(tournamentPayload || null);
+        setRouteContextError("");
         setDetailsDraft(createDetailsDraft(tournamentPayload?.details));
         setDetailsError("");
         setDetailsMessage("");
@@ -735,6 +739,7 @@ function TournamentsTab({
         setSharingActionBusy("");
         setCopiedShareLink(false);
         setLastInviteLink("");
+        setRouteContextError(error?.message || "Unable to load tournament");
         setTeamsError(error?.message || "Unable to load tournament teams");
       } finally {
         setTeamsLoading(false);
@@ -748,6 +753,7 @@ function TournamentsTab({
     if (!user || !token) {
       setTournaments([]);
       setSelectedTournamentId("");
+      setRouteContextError("");
       setSelectedTournament(null);
       setDetailsDraft(createDetailsDraft());
       setDetailsSaving(false);
@@ -777,8 +783,18 @@ function TournamentsTab({
       return;
     }
 
-    loadTournaments();
-  }, [loadTournaments, token, user]);
+    if (normalizedMode === "hub") {
+      setRouteContextError("");
+      loadTournaments();
+      return;
+    }
+
+    setTournaments([]);
+    setTournamentsError("");
+    const routeTournamentId =
+      typeof initialTournamentId === "string" ? initialTournamentId.trim() : "";
+    setSelectedTournamentId(routeTournamentId);
+  }, [initialTournamentId, loadTournaments, normalizedMode, token, user]);
 
   useEffect(() => {
     const nextId = typeof initialTournamentId === "string" ? initialTournamentId.trim() : "";
@@ -812,6 +828,7 @@ function TournamentsTab({
     setCopiedShareLink(false);
     setLastInviteLink("");
     if (normalizedMode === "hub") {
+      setRouteContextError("");
       setSelectedTournament(null);
       setDetailsDraft(createDetailsDraft());
       setTeamsInitial([]);
@@ -825,6 +842,14 @@ function TournamentsTab({
       setPendingInvites([]);
       setShareLinkInfo(TOURNAMENT_SHARE_LINK_DEFAULTS);
       setSharingLoading(false);
+      return;
+    }
+
+    if (!selectedTournamentId) {
+      setRouteContextError("Tournament not found. Open one from Tournament Hub.");
+      setSelectedTournament(null);
+      setTeamsInitial([]);
+      setTeamRows([]);
       return;
     }
 
@@ -860,6 +885,16 @@ function TournamentsTab({
         .slice(0, TOURNAMENT_DETAILS_MAP_SLOTS),
     [detailsDraft.mapImageSlots]
   );
+  const selectedTournamentPublicViewUrl = useMemo(() => {
+    const publicCode = typeof selectedTournament?.publicCode === "string"
+      ? selectedTournament.publicCode.trim()
+      : "";
+    if (!publicCode) {
+      return "";
+    }
+
+    return toAbsoluteUrl(`/t/${publicCode}`);
+  }, [selectedTournament?.publicCode]);
 
   const selectTournament = (nextId) => {
     const cleaned = typeof nextId === "string" ? nextId.trim() : "";
@@ -1682,6 +1717,7 @@ function TournamentsTab({
 
   return (
     <div className="tournaments-panel">
+      {showHubLayout && (
       <div className="tournaments-layout">
         {showCreateCard && (
           <section className="tournaments-card tournaments-create-card">
@@ -1764,25 +1800,8 @@ function TournamentsTab({
                     </button>
 
                     <div className="tournament-list-actions">
-                      <a className="secondary-button" href={`/tournaments/${id}/details`}>
-                        Details
-                      </a>
                       <a className="secondary-button" href={`/tournaments/${id}/teams`}>
-                        Team Setup
-                      </a>
-                      <a className="secondary-button" href={`/tournaments/${id}/format`}>
-                        Scheduling
-                      </a>
-                      <a className="secondary-button" href={`/tournaments/${id}/quick-scores`}>
-                        Quick Scores
-                      </a>
-                      <a
-                        className="secondary-button"
-                        href={`/t/${tournament?.publicCode || ""}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Public View
+                        Open
                       </a>
                       {tournament?.isOwner && (
                         <button
@@ -1802,16 +1821,30 @@ function TournamentsTab({
           )}
         </section>
       </div>
+      )}
 
       {showDetailsSection && (
       <section className="tournaments-card tournaments-details-card">
+        <TournamentAdminNav
+          tournamentId={selectedTournamentId || initialTournamentId}
+          publicCode={selectedTournament?.publicCode || ""}
+          activeMainTab="details"
+        />
+        {routeContextError && (
+          <div className="tournaments-route-error">
+            <p className="error">{routeContextError}</p>
+            <a className="secondary-button" href="/?tab=tournaments">
+              Open Tournament Hub
+            </a>
+          </div>
+        )}
         <div className="tournaments-team-header">
           <div>
             <h2 className="secondary-title">Tournament Details</h2>
             {selectedTournament ? (
               <p className="subtle">Update public notes, maps, and venue information.</p>
             ) : (
-              <p className="subtle">Select a tournament to edit public details.</p>
+              <p className="subtle">Open a tournament from Tournament Hub to edit public details.</p>
             )}
           </div>
           <div className="tournaments-team-actions">
@@ -1827,7 +1860,7 @@ function TournamentsTab({
         </div>
 
         {!selectedTournament ? (
-          <p className="subtle">Choose a tournament from the list above to start editing details.</p>
+          <p className="subtle">Tournament details are available after selecting a tournament from Hub.</p>
         ) : (
           <>
             <div className="tournament-details-grid">
@@ -1846,7 +1879,7 @@ function TournamentsTab({
 
               <div className="tournament-team-card-fields">
                 <label className="input-label" htmlFor="tournament-facilities-info">
-                  Facilities / Court Notes
+                  Facilities / Court Notes (markdown supported)
                 </label>
                 <textarea
                   id="tournament-facilities-info"
@@ -1859,7 +1892,7 @@ function TournamentsTab({
 
               <div className="tournament-team-card-fields">
                 <label className="input-label" htmlFor="tournament-parking-info">
-                  Parking (optional)
+                  Parking (optional, markdown supported)
                 </label>
                 <textarea
                   id="tournament-parking-info"
@@ -1872,7 +1905,7 @@ function TournamentsTab({
 
               <div className="tournament-team-card-fields">
                 <label className="input-label" htmlFor="tournament-food-text">
-                  Food Info
+                  Food Info (markdown supported)
                 </label>
                 <textarea
                   id="tournament-food-text"
@@ -2011,6 +2044,27 @@ function TournamentsTab({
                 </div>
               )}
 
+              <div className="tournament-team-link-row">
+                <div className="tournament-team-link-meta">
+                  <strong>Public View Link</strong>
+                  {selectedTournamentPublicViewUrl ? (
+                    <code>{selectedTournamentPublicViewUrl}</code>
+                  ) : (
+                    <span className="subtle">Public link unavailable until tournament code is ready.</span>
+                  )}
+                </div>
+                <div className="tournament-team-link-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => handleCopyShareLink(selectedTournamentPublicViewUrl)}
+                    disabled={!selectedTournamentPublicViewUrl}
+                  >
+                    Copy Public Link
+                  </button>
+                </div>
+              </div>
+
               {selectedTournamentIsOwner ? (
                 <>
                   <form className="tournaments-form" onSubmit={handleInviteAdminByEmail}>
@@ -2119,6 +2173,19 @@ function TournamentsTab({
 
       {showTeamsSection && (
       <section className="tournaments-card tournaments-team-card">
+        <TournamentAdminNav
+          tournamentId={selectedTournamentId || initialTournamentId}
+          publicCode={selectedTournament?.publicCode || ""}
+          activeMainTab="teams"
+        />
+        {routeContextError && (
+          <div className="tournaments-route-error">
+            <p className="error">{routeContextError}</p>
+            <a className="secondary-button" href="/?tab=tournaments">
+              Open Tournament Hub
+            </a>
+          </div>
+        )}
         <div className="tournaments-team-header">
           <div>
             <h2 className="secondary-title">Team Setup</h2>
@@ -2128,7 +2195,7 @@ function TournamentsTab({
                 <strong>{formatStatusLabel(selectedTournament?.status)}</strong>
               </p>
             ) : (
-              <p className="subtle">Select a tournament to manage teams.</p>
+              <p className="subtle">Open a tournament from Tournament Hub to manage teams.</p>
             )}
           </div>
           <div className="tournaments-team-actions">

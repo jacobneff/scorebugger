@@ -582,15 +582,19 @@ function generatePlayoffsFromFormat(tournamentId, bracketDef, overallSeeds) {
   }));
 }
 
-function schedulePlayoffMatches(matchPlans, activeCourts, startRoundBlock = 1) {
+function schedulePlayoffMatches(matchPlans, activeCourts, startRoundBlock = 1, options = {}) {
   const normalizedCourts = unique(activeCourts);
   const normalizedStartRoundBlock = toPositiveInteger(startRoundBlock) || 1;
+  const maxConcurrentCourts = toPositiveInteger(options?.maxConcurrentCourts);
+  const schedulingCourts = maxConcurrentCourts
+    ? normalizedCourts.slice(0, maxConcurrentCourts)
+    : normalizedCourts;
 
   if (!Array.isArray(matchPlans) || matchPlans.length === 0) {
     return [];
   }
 
-  if (normalizedCourts.length === 0) {
+  if (schedulingCourts.length === 0) {
     throw new Error('At least one active court is required for playoff scheduling.');
   }
 
@@ -623,11 +627,11 @@ function schedulePlayoffMatches(matchPlans, activeCourts, startRoundBlock = 1) {
         );
       });
 
-      for (let index = 0; index < roundMatches.length; index += normalizedCourts.length) {
-        const chunk = roundMatches.slice(index, index + normalizedCourts.length);
+      for (let index = 0; index < roundMatches.length; index += schedulingCourts.length) {
+        const chunk = roundMatches.slice(index, index + schedulingCourts.length);
 
         chunk.forEach((matchPlan, chunkIndex) => {
-          const court = normalizedCourts[chunkIndex];
+          const court = schedulingCourts[chunkIndex];
           scheduledMatches.push({
             ...matchPlan,
             roundBlock: currentRoundBlock,

@@ -80,11 +80,11 @@ const toOverallSeed = (bracket, bracketSeed) => {
   const offset = PLAYOFF_OVERALL_SEED_OFFSETS[normalizeBracket(bracket)];
   const seed = Number(bracketSeed);
 
-  if (!Number.isFinite(offset) || !Number.isFinite(seed)) {
+  if (!Number.isFinite(offset) || !Number.isFinite(seed) || seed <= 0) {
     return null;
   }
 
-  return offset + seed;
+  return offset + Math.floor(seed);
 };
 const formatBracketTeamLabel = (team, overallSeed) => {
   const hasResolvedTeam =
@@ -471,9 +471,10 @@ function TournamentPlayoffsAdmin() {
               scheduling={{
                 activeSubTab: 'playoffs',
                 showPhase2: isLegacyOduFormat,
-                phase1Label: isLegacyOduFormat ? 'Pool Play 1' : 'Pool Play',
+                phase1Label: isLegacyOduFormat ? 'Pool Play 1' : 'Pool Play Setup',
                 phase1Href: isLegacyOduFormat ? `/tournaments/${id}/phase1` : `/tournaments/${id}/pool-play`,
                 phase2Href: isLegacyOduFormat ? `/tournaments/${id}/phase2` : `/tournaments/${id}/pool-play`,
+                playoffsLabel: isLegacyOduFormat ? 'Playoffs' : 'Playoffs Setup',
               }}
             />
           </div>

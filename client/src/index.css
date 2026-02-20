@@ -2543,6 +2543,15 @@ textarea:focus {
   margin-top: 0.4rem;
 }
 
+.phase1-warning-group {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.phase1-warning-group .error {
+  margin: 0;
+}
+
 .format-input-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -3555,6 +3564,25 @@ textarea:focus {
 .venue-court-list {
   display: grid;
   gap: 0.45rem;
+}
+
+.venue-courts-count-input {
+  width: 100%;
+  max-width: 140px;
+  min-height: 2.2rem;
+  border-radius: 10px;
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  background: linear-gradient(180deg, rgba(239, 246, 255, 0.95), #ffffff);
+  color: #0f172a;
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.08);
+}
+
+.venue-courts-count-input:focus {
+  outline: 2px solid #2563eb;
+  border-color: transparent;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  background: #ffffff;
 }
 
 .venue-court-row {

@@ -78,6 +78,7 @@ const FORMAT_DEFINITIONS = Object.freeze([
         type: 'playoffs',
         key: 'playoffs',
         displayName: 'Playoffs',
+        maxConcurrentCourts: 4,
         brackets: [
           {
             name: 'Gold',

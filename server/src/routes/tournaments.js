@@ -999,6 +999,77 @@ async function resolveStageStartRoundBlock(tournamentId, formatDef, stageKey) {
   return maxRoundBlock + 1;
 }
 
+function getRoundRobinMatchCount(teamCount) {
+  const parsed = Number(teamCount);
+  if (!Number.isFinite(parsed) || parsed <= 1) {
+    return 0;
+  }
+
+  const normalized = Math.floor(parsed);
+  return Math.floor((normalized * (normalized - 1)) / 2);
+}
+
+async function resolveCrossoverStartRoundBlock({
+  tournamentId,
+  formatDef,
+  stageDef,
+  previousStage,
+  previousPhase,
+  sourcePools,
+}) {
+  const sourcePoolIds = (Array.isArray(sourcePools) ? sourcePools : [])
+    .map((pool) => pool?._id)
+    .filter(Boolean);
+
+  if (sourcePoolIds.length > 0) {
+    const sourcePoolMatches = await Match.find({
+      tournamentId,
+      poolId: { $in: sourcePoolIds },
+      ...(previousStage?.key
+        ? { $or: [{ stageKey: previousStage.key }, { stageKey: null }, { stageKey: { $exists: false } }] }
+        : previousPhase
+          ? { phase: previousPhase }
+          : {}),
+    })
+      .select('roundBlock')
+      .lean();
+    const maxRoundBlock = sourcePoolMatches.reduce((maxValue, match) => {
+      const roundBlock = Number(match?.roundBlock);
+      if (!Number.isFinite(roundBlock)) {
+        return maxValue;
+      }
+
+      return Math.max(maxValue, Math.floor(roundBlock));
+    }, 0);
+
+    if (maxRoundBlock > 0) {
+      return maxRoundBlock + 1;
+    }
+  }
+
+  const sourcePoolRoundCounts = (Array.isArray(sourcePools) ? sourcePools : []).map((pool) => {
+    const poolName = String(pool?.name || '').trim();
+    const stagePoolDef = Array.isArray(previousStage?.pools)
+      ? previousStage.pools.find((entry) => String(entry?.name || '').trim() === poolName)
+      : null;
+    const poolSize =
+      toPositiveInteger(stagePoolDef?.size)
+      || toPositiveInteger(pool?.requiredTeamCount)
+      || 0;
+    return getRoundRobinMatchCount(poolSize);
+  });
+  const sourceRoundCount = sourcePoolRoundCounts.reduce(
+    (maxValue, roundCount) => Math.max(maxValue, Number(roundCount) || 0),
+    0
+  );
+
+  if (sourceRoundCount > 0) {
+    return sourceRoundCount + 1;
+  }
+
+  return resolveStageStartRoundBlock(tournamentId, formatDef, stageDef.key);
+}
+
 function serializeTournamentDetails(details) {
   const source = details && typeof details === 'object' ? details : {};
   const rawFoodInfo = source.foodInfo && typeof source.foodInfo === 'object' ? source.foodInfo : {};
@@ -2895,10 +2966,11 @@ async function generateCrossoverStageMatches({
     .select('name shortName logoUrl seed')
     .lean();
   const teamsById = new Map(teams.map((team) => [toIdString(team._id), team]));
-  const startRoundBlock = await resolveStageStartRoundBlock(tournamentId, formatDef, stageDef.key);
+  const venueState = resolveTournamentVenueState(tournament);
+  const enabledVenueCourts = getEnabledCourts(venueState.venue);
   const normalizedActiveCourts = uniqueValues(activeCourts);
 
-  if (normalizedActiveCourts.length === 0) {
+  if (normalizedActiveCourts.length === 0 && enabledVenueCourts.length === 0) {
     throw new Error('At least one active court is required for crossover scheduling');
   }
 
@@ -2910,67 +2982,64 @@ async function generateCrossoverStageMatches({
       ? { $or: [{ stageKey: previousStage.key }, { stageKey: null }, { stageKey: { $exists: false } }] }
       : {}),
   })
-    .select('homeCourt')
+    .select('_id name requiredTeamCount homeCourt assignedCourtId assignedFacilityId')
     .lean();
+  const startRoundBlock = await resolveCrossoverStartRoundBlock({
+    tournamentId,
+    formatDef,
+    stageDef,
+    previousStage,
+    previousPhase,
+    sourcePools,
+  });
+  const sourcePoolByName = new Map(
+    sourcePools
+      .map((pool) => [String(pool?.name || '').trim(), pool])
+      .filter(([poolName]) => Boolean(poolName))
+  );
+  const sourcePoolCourts = fromPools
+    .map((poolName) => sourcePoolByName.get(String(poolName || '').trim()))
+    .map((pool) => findCourtInVenue(venueState.venue, pool?.assignedCourtId || pool?.homeCourt))
+    .filter((court) => court && court.isEnabled !== false);
+  const sourcePoolCourtIds = uniqueValues(
+    sourcePoolCourts.map((court) => toIdString(court?.courtId)).filter(Boolean)
+  );
 
-  const pickSingleFacility = (facilityCounts) => {
-    const entries = Array.from(facilityCounts.entries());
-    if (entries.length === 0) {
+  const activeVenueCourts = normalizedActiveCourts
+    .map((courtKey) => findCourtInVenue(venueState.venue, courtKey))
+    .filter((court) => court && court.isEnabled !== false);
+  const activeVenueCourtIds = uniqueValues(
+    activeVenueCourts.map((court) => toIdString(court?.courtId)).filter(Boolean)
+  );
+  const enabledVenueCourtIds = uniqueValues(
+    enabledVenueCourts.map((court) => toIdString(court?.courtId)).filter(Boolean)
+  );
+  const courtsForCrossover = sourcePoolCourtIds.length > 0
+    ? sourcePoolCourtIds
+    : activeVenueCourtIds.length > 0
+      ? activeVenueCourtIds
+      : enabledVenueCourtIds;
+
+  if (courtsForCrossover.length === 0) {
+    throw new Error('At least one enabled court is required for crossover scheduling');
+  }
+
+  // Crossover ref template (0-based match index):
+  //   Match 0: X#1 vs Y#1, ref = X#3  (leftTeams[2])
+  //   Match 1: X#2 vs Y#2, ref = Y#3  (rightTeams[2])
+  //   Match 2: X#3 vs Y#3, ref = Y#2  (rightTeams[1])
+  // This avoids a concurrent conflict where X#2 would otherwise ref Match 0
+  // while playing Match 1 when two crossover courts are available.
+  const getCrossoverRefTeamId = (matchIndex) => {
+    if (pairingCount >= 3) {
+      if (matchIndex === 0) return toIdString(leftTeams[2]?.teamId) || null;
+      if (matchIndex === 1) return toIdString(rightTeams[2]?.teamId) || null;
+      if (matchIndex === 2) return toIdString(rightTeams[1]?.teamId) || null;
       return null;
     }
 
-    entries.sort((left, right) => {
-      if (left[1] !== right[1]) {
-        return right[1] - left[1];
-      }
-
-      if (left[0] === 'VC' && right[0] === 'SRC') {
-        return -1;
-      }
-
-      if (left[0] === 'SRC' && right[0] === 'VC') {
-        return 1;
-      }
-
-      return String(left[0]).localeCompare(String(right[0]));
-    });
-
-    return entries[0][0];
-  };
-
-  const sourceFacilityCounts = sourcePools.reduce((lookup, pool) => {
-    const facility = getFacilityFromCourt(pool?.homeCourt);
-    if (!facility) {
-      return lookup;
-    }
-    lookup.set(facility, (lookup.get(facility) || 0) + 1);
-    return lookup;
-  }, new Map());
-  const activeFacilityCounts = normalizedActiveCourts.reduce((lookup, courtCode) => {
-    const facility = getFacilityFromCourt(courtCode);
-    if (!facility) {
-      return lookup;
-    }
-    lookup.set(facility, (lookup.get(facility) || 0) + 1);
-    return lookup;
-  }, new Map());
-  const preferredFacility =
-    pickSingleFacility(sourceFacilityCounts) || pickSingleFacility(activeFacilityCounts);
-  const crossoverCourts = preferredFacility
-    ? normalizedActiveCourts.filter(
-        (courtCode) => getFacilityFromCourt(courtCode) === preferredFacility
-      )
-    : [];
-  const courtsForCrossover = crossoverCourts.length > 0 ? crossoverCourts : [normalizedActiveCourts[0]];
-
-  // Crossover ref template (0-based match index):
-  //   Match 0: X#1 vs Y#1, ref = X#2  (leftTeams[1])
-  //   Match 1: X#2 vs Y#2, ref = Y#3  (rightTeams[2])
-  //   Match 2: X#3 vs Y#3, ref = Y#2  (rightTeams[1])
-  const getCrossoverRefTeamId = (matchIndex) => {
     if (matchIndex === 0) return toIdString(leftTeams[1]?.teamId) || null;
-    if (matchIndex === 1) return toIdString(rightTeams[2]?.teamId) || null;
-    if (matchIndex === 2) return toIdString(rightTeams[1]?.teamId) || null;
+    if (matchIndex === 1) return toIdString(rightTeams[1]?.teamId) || null;
     return null;
   };
 
@@ -3006,7 +3075,15 @@ async function generateCrossoverStageMatches({
         throw new Error('Crossover teams are missing from tournament roster');
       }
 
-      const court = getCrossoverCourt(index);
+      const requestedCourt = getCrossoverCourt(index);
+      const resolvedVenueCourt = findCourtInVenue(venueState.venue, requestedCourt);
+      const court = resolvedVenueCourt?.courtName || requestedCourt;
+      const facilityFromCourtCode = getFacilityFromCourt(court);
+      const facility =
+        facilityFromCourtCode
+        || resolvedVenueCourt?.facilityName
+        || getFacilityFromCourt(requestedCourt)
+        || null;
       const roundBlock = getCrossoverRoundBlock(index);
       const refTeamId = getCrossoverRefTeamId(index);
       const refTeamIds = refTeamId ? [refTeamId] : [];
@@ -3023,8 +3100,10 @@ async function generateCrossoverStageMatches({
         stageKey: stageDef.key,
         poolId: null,
         roundBlock,
-        facility: getFacilityFromCourt(court),
+        facility,
         court,
+        facilityId: resolvedVenueCourt?.facilityId || null,
+        courtId: resolvedVenueCourt?.courtId || null,
         teamAId: leftTeamId,
         teamBId: rightTeamId,
         refTeamIds,
@@ -3082,7 +3161,12 @@ async function generateGenericPlayoffStageMatches({
     generatePlayoffsFromFormat(tournamentId, bracketDef, overallSeeds)
   );
   const startRoundBlock = await resolveStageStartRoundBlock(tournamentId, formatDef, stageDef.key);
-  const scheduledMatches = schedulePlayoffMatches(allPlannedMatches, activeCourts, startRoundBlock);
+  const maxConcurrentCourts =
+    toPositiveInteger(stageDef?.maxConcurrentCourts) ||
+    toPositiveInteger(stageDef?.constraints?.maxConcurrentCourts);
+  const scheduledMatches = schedulePlayoffMatches(allPlannedMatches, activeCourts, startRoundBlock, {
+    maxConcurrentCourts,
+  });
   const initialTeamIds = uniqueValues(
     scheduledMatches
       .flatMap((match) => [toIdString(match.teamAId), toIdString(match.teamBId)])

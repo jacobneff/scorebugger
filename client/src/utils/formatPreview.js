@@ -21,6 +21,13 @@ const isNonEmptyString = (value) => typeof value === 'string' && value.trim().le
 const normalizeCourtCode = (value) =>
   typeof value === 'string' ? value.trim() : '';
 
+const formatPoolRankLabel = (poolName, rank) => {
+  if (!poolName || !Number.isFinite(Number(rank))) {
+    return '';
+  }
+  return `${poolName} (#${Number(rank)})`;
+};
+
 const uniqueCourts = (values) => {
   const seen = new Set();
 
@@ -230,22 +237,31 @@ const buildCrossoverRows = ({
   };
 
   const getRefLabel = (index) => {
-    if (index === 0) return leftSize >= 2 ? `${leftName}2` : null;
-    if (index === 1) return `${rightName}${pairingCount}`;
-    if (index === 2) return rightSize >= 2 ? `${rightName}2` : null;
+    if (pairingCount >= 3) {
+      if (index === 0) return formatPoolRankLabel(leftName, 3);
+      if (index === 1) return formatPoolRankLabel(rightName, 3);
+      if (index === 2) return formatPoolRankLabel(rightName, 2);
+      return null;
+    }
+
+    if (index === 0) return leftSize >= 2 ? formatPoolRankLabel(leftName, 2) : null;
+    if (index === 1) return rightSize >= 2 ? formatPoolRankLabel(rightName, 2) : null;
     return null;
   };
 
   const getByeLabel = (index) => {
-    if (pairingCount !== 3) {
+    if (pairingCount < 3) {
       return null;
     }
-    if (index === 0) {
-      return `${leftName}3`;
-    }
+
     if (index === 2) {
-      return `${leftName}1, ${leftName}2, ${rightName}1`;
+      return [
+        formatPoolRankLabel(leftName, 1),
+        formatPoolRankLabel(rightName, 1),
+        formatPoolRankLabel(leftName, 2),
+      ].join(', ');
     }
+
     return null;
   };
 
@@ -254,7 +270,7 @@ const buildCrossoverRows = ({
     roundBlock: getRoundBlock(index),
     court: getCourt(index),
     stageLabel,
-    matchLabel: `${leftName}${index + 1} vs ${rightName}${index + 1}`,
+    matchLabel: `${formatPoolRankLabel(leftName, index + 1)} vs ${formatPoolRankLabel(rightName, index + 1)}`,
     refLabel: getRefLabel(index),
     byeLabel: getByeLabel(index),
   }));
@@ -443,13 +459,60 @@ const buildBracketPlan = (bracketDef) => {
   return [];
 };
 
-const formatPlayoffSideLabel = ({ bracketLabel, seed, fromMatch }) => {
-  if (Number.isFinite(Number(seed))) {
-    return `${bracketLabel} ${Number(seed)}`;
+const toPositiveSeedNumber = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return Math.floor(parsed);
+};
+
+const toPlayoffMatchLookupKey = (bracketLabel, round, matchNo) => {
+  const normalizedBracketLabel = resolveBracketLabel(bracketLabel);
+  const normalizedRound = Number(round);
+  const normalizedMatchNo = Number(matchNo);
+  return `${normalizedBracketLabel}:${normalizedRound}:${normalizedMatchNo}`;
+};
+
+const formatPlayoffSourceMatchLabel = ({ bracketLabel, sourceMatch, fallbackFromMatch }) => {
+  const fallbackRound = Number(fallbackFromMatch?.round);
+  const fallbackMatchNo = Number(fallbackFromMatch?.matchNo);
+  const seedA = toPositiveSeedNumber(sourceMatch?.seedA);
+  const seedB = toPositiveSeedNumber(sourceMatch?.seedB);
+
+  if (seedA && seedB) {
+    return `${bracketLabel} ${seedA}v${seedB}`;
+  }
+
+  const round = Number.isFinite(Number(sourceMatch?.round))
+    ? Number(sourceMatch.round)
+    : fallbackRound;
+  const matchNo = Number.isFinite(Number(sourceMatch?.matchNo))
+    ? Number(sourceMatch.matchNo)
+    : fallbackMatchNo;
+  if (round > 0 && matchNo > 0) {
+    return `${bracketLabel} R${round} M${matchNo}`;
+  }
+
+  return `${bracketLabel} Match`;
+};
+
+const formatPlayoffSideLabel = ({ bracketLabel, seed, fromMatch, matchByRoundAndNo }) => {
+  const parsedSeed = toPositiveSeedNumber(seed);
+  if (parsedSeed) {
+    return `${bracketLabel} ${parsedSeed}`;
   }
 
   if (fromMatch?.round && fromMatch?.matchNo) {
-    return `W(${bracketLabel} R${fromMatch.round} M${fromMatch.matchNo})`;
+    const sourceMatch = matchByRoundAndNo.get(
+      toPlayoffMatchLookupKey(bracketLabel, fromMatch.round, fromMatch.matchNo)
+    );
+    return `W(${formatPlayoffSourceMatchLabel({
+      bracketLabel,
+      sourceMatch,
+      fallbackFromMatch: fromMatch,
+    })})`;
   }
 
   return 'TBD';
@@ -466,7 +529,23 @@ const buildPlayoffRows = ({ playoffStage, activeCourts, startRoundBlock }) => {
   );
   const plans = brackets.flatMap((bracketDef) => buildBracketPlan(bracketDef));
   const courts = uniqueCourts(activeCourts);
-  const schedulingCourts = courts.length > 0 ? courts : ['SRC-1'];
+  const parsedMaxConcurrentCourts = Number(
+    playoffStage?.maxConcurrentCourts ?? playoffStage?.constraints?.maxConcurrentCourts
+  );
+  const maxConcurrentCourts =
+    Number.isFinite(parsedMaxConcurrentCourts) && parsedMaxConcurrentCourts > 0
+      ? Math.floor(parsedMaxConcurrentCourts)
+      : null;
+  const schedulingCourtsRaw = maxConcurrentCourts
+    ? courts.slice(0, maxConcurrentCourts)
+    : courts;
+  const schedulingCourts = schedulingCourtsRaw.length > 0 ? schedulingCourtsRaw : ['SRC-1'];
+  const matchByRoundAndNo = new Map(
+    plans.map((plan) => [
+      toPlayoffMatchLookupKey(plan.bracketLabel, plan.round, plan.matchNo),
+      plan,
+    ])
+  );
   const byRound = new Map();
 
   plans.forEach((plan) => {
@@ -505,11 +584,13 @@ const buildPlayoffRows = ({ playoffStage, activeCourts, startRoundBlock }) => {
             bracketLabel,
             seed: match.seedA,
             fromMatch: match.fromA,
+            matchByRoundAndNo,
           });
           const teamBLabel = formatPlayoffSideLabel({
             bracketLabel,
             seed: match.seedB,
             fromMatch: match.fromB,
+            matchByRoundAndNo,
           });
 
           rows.push({

@@ -261,8 +261,18 @@ describe('tournament format routes + apply-format flow', () => {
     );
     expect(facilities).toEqual(['VC']);
     expect(
+      crossoverGenerate.body.every((match) => typeof match.courtId === 'string' && match.courtId)
+    ).toBe(true);
+    expect(
+      crossoverGenerate.body.every((match) => typeof match.facilityId === 'string' && match.facilityId)
+    ).toBe(true);
+    expect(
       crossoverGenerate.body.every((match) => String(match.court || '').startsWith('VC-'))
     ).toBe(true);
+    const crossoverRoundBlocks = crossoverGenerate.body
+      .map((match) => Number(match.roundBlock))
+      .sort((left, right) => left - right);
+    expect(crossoverRoundBlocks).toEqual([4, 4, 5]);
 
     const crossoverList = await request(app)
       .get(`/api/tournaments/${tournament._id}/stages/crossover/matches`)
@@ -322,6 +332,22 @@ describe('tournament format routes + apply-format flow', () => {
       .post(`/api/tournaments/${tournament._id}/stages/playoffs/matches/generate`)
       .set(authHeader());
     expect(playoffsGenerate.statusCode).toBe(201);
+    const generatedMatches = Array.isArray(playoffsGenerate.body) ? playoffsGenerate.body : [];
+    const playoffMatchesPerRoundBlock = generatedMatches.reduce((lookup, match) => {
+      const roundBlock = Number(match?.roundBlock);
+      if (!Number.isFinite(roundBlock)) {
+        return lookup;
+      }
+
+      const key = Math.floor(roundBlock);
+      lookup[key] = (lookup[key] || 0) + 1;
+      return lookup;
+    }, {});
+    const maxConcurrentMatches = Object.values(playoffMatchesPerRoundBlock).reduce(
+      (maxValue, count) => Math.max(maxValue, Number(count) || 0),
+      0
+    );
+    expect(maxConcurrentMatches).toBeLessThanOrEqual(4);
 
     const playoffs = await request(app)
       .get(`/api/tournaments/${tournament._id}/playoffs`)
@@ -512,6 +538,10 @@ describe('tournament format routes + apply-format flow', () => {
               requiredTeamCount: entry.teamIds.length,
               teamIds: entry.teamIds,
               homeCourt: entry.homeCourt,
+              ...(entry.assignedCourtId ? { assignedCourtId: entry.assignedCourtId } : {}),
+              ...(entry.assignedFacilityId
+                ? { assignedFacilityId: entry.assignedFacilityId }
+                : {}),
             },
           },
           upsert: true,
@@ -723,8 +753,7 @@ describe('tournament format routes + apply-format flow', () => {
 
     const roundBlocks = crossover.body.map((m) => m.roundBlock).sort((a, b) => a - b);
     // With 2 VC courts: M0 and M1 share same block, M2 is next block
-    expect(roundBlocks[0]).toBe(roundBlocks[1]);
-    expect(roundBlocks[2]).toBeGreaterThan(roundBlocks[1]);
+    expect(roundBlocks).toEqual([4, 4, 5]);
   });
 
   test('crossover with 1 court schedules matches sequentially', async () => {
@@ -732,9 +761,7 @@ describe('tournament format routes + apply-format flow', () => {
     const teams = await seedTeams(tournament._id, 14);
     const teamIds = teams.map((team) => team._id);
 
-    // Pool C (VC-1) and D (SRC-3): source facility counts VC=1, SRC=1 → tie → preferred = VC
-    // Active VC courts = only VC-1 (VC-2 not in activeCourts) → 1 court → sequential scheduling.
-    // All 4 pools have unique courts → no court conflict on pool play generation.
+    // Start with unique pool courts so pool-play generation succeeds.
     const apply = await request(app)
       .post(`/api/tournaments/${tournament._id}/apply-format`)
       .set(authHeader())
@@ -773,7 +800,26 @@ describe('tournament format routes + apply-format flow', () => {
       .set(authHeader());
     expect(phase1.statusCode).toBe(201);
 
-    // Only VC-1 available for crossover → 1 court
+    // Force source pools C and D onto the same court after pool-play generation.
+    const poolC = await Pool.findOne({
+      tournamentId: tournament._id,
+      phase: 'phase1',
+      name: 'C',
+    }).lean();
+    expect(poolC?.assignedCourtId).toBeTruthy();
+
+    await Pool.updateOne(
+      { tournamentId: tournament._id, phase: 'phase1', name: 'D' },
+      {
+        $set: {
+          assignedCourtId: poolC.assignedCourtId,
+          assignedFacilityId: poolC.assignedFacilityId || null,
+          homeCourt: poolC.homeCourt || 'VC-1',
+        },
+      }
+    );
+
+    // With one effective crossover court, matches should be sequential.
     const crossover = await request(app)
       .post(`/api/tournaments/${tournament._id}/stages/crossover/matches/generate`)
       .set(authHeader());
@@ -783,7 +829,104 @@ describe('tournament format routes + apply-format flow', () => {
 
     const roundBlocks = crossover.body.map((m) => m.roundBlock).sort((a, b) => a - b);
     // All three should have distinct round blocks (sequential)
-    expect(new Set(roundBlocks).size).toBe(3);
+    expect(roundBlocks).toEqual([4, 5, 6]);
+  });
+
+  test('crossover uses source pool assigned courts when court names are non-legacy', async () => {
+    const tournament = await createOwnedTournament('crossover-source-courts');
+    const teams = await seedTeams(tournament._id, 14);
+    const teamIds = teams.map((team) => team._id);
+
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({
+        formatId: FORMAT_14_ID,
+        totalCourts: 4,
+      });
+    expect(apply.statusCode).toBe(200);
+
+    const venueGet = await request(app)
+      .get(`/api/tournaments/${tournament._id}/venue`)
+      .set(authHeader());
+    expect(venueGet.statusCode).toBe(200);
+
+    const baseFacility = venueGet.body?.venue?.facilities?.[0];
+    const baseCourts = Array.isArray(baseFacility?.courts) ? baseFacility.courts : [];
+    expect(baseCourts.length).toBeGreaterThanOrEqual(4);
+
+    const renamedFacility = {
+      facilityId: baseFacility.facilityId,
+      name: 'Main Venue',
+      courts: baseCourts.slice(0, 4).map((court, index) => ({
+        courtId: court.courtId,
+        name: `East ${index + 1}`,
+        isEnabled: true,
+      })),
+    };
+
+    const venuePut = await request(app)
+      .put(`/api/tournaments/${tournament._id}/venue`)
+      .set(authHeader())
+      .send({
+        facilities: [renamedFacility],
+      });
+    expect(venuePut.statusCode).toBe(200);
+
+    const renamedCourts = venuePut.body?.venue?.facilities?.[0]?.courts || [];
+    const [courtA, courtB, courtC, courtD] = renamedCourts;
+    expect(courtA?.courtId).toBeTruthy();
+    expect(courtB?.courtId).toBeTruthy();
+    expect(courtC?.courtId).toBeTruthy();
+    expect(courtD?.courtId).toBeTruthy();
+
+    await Pool.bulkWrite(
+      [
+        { name: 'A', teamIds: teamIds.slice(0, 4), court: courtA },
+        { name: 'B', teamIds: teamIds.slice(4, 8), court: courtB },
+        { name: 'C', teamIds: teamIds.slice(8, 11), court: courtC },
+        { name: 'D', teamIds: teamIds.slice(11, 14), court: courtD },
+      ].map((entry) => ({
+        updateOne: {
+          filter: { tournamentId: tournament._id, phase: 'phase1', name: entry.name },
+          update: {
+            $set: {
+              stageKey: 'poolPlay1',
+              requiredTeamCount: entry.teamIds.length,
+              teamIds: entry.teamIds,
+              homeCourt: entry.court.name,
+              assignedCourtId: entry.court.courtId,
+              assignedFacilityId: renamedFacility.facilityId,
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: true }
+    );
+
+    const phase1 = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+    expect(phase1.statusCode).toBe(201);
+
+    const crossover = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/crossover/matches/generate`)
+      .set(authHeader());
+    expect(crossover.statusCode).toBe(201);
+    expect(crossover.body).toHaveLength(3);
+
+    const usedCourtIds = Array.from(
+      new Set(
+        crossover.body.map((match) => String(match?.courtId || '')).filter(Boolean)
+      )
+    );
+    expect(usedCourtIds).toEqual(expect.arrayContaining([courtC.courtId, courtD.courtId]));
+    expect(usedCourtIds).not.toContain(courtA.courtId);
+    expect(usedCourtIds).not.toContain(courtB.courtId);
+
+    const roundBlocks = crossover.body.map((match) => Number(match?.roundBlock)).sort((a, b) => a - b);
+    expect(roundBlocks).toEqual([4, 4, 5]);
   });
 
   test('crossover assigns correct refs per match template', async () => {
@@ -825,29 +968,24 @@ describe('tournament format routes + apply-format flow', () => {
 
     const c1 = poolC?.teams[0]?.teamId?.toString();
     const c2 = poolC?.teams[1]?.teamId?.toString();
+    const c3 = poolC?.teams[2]?.teamId?.toString();
     const d2 = poolD?.teams[1]?.teamId?.toString();
     const d3 = poolD?.teams[2]?.teamId?.toString();
 
-    // Match 0 (C#1 vs D#1): ref = C#2 (leftTeams[1])
+    // Match 0 (C#1 vs D#1): ref = C#3 (leftTeams[2])
     const m0 = matches.find((m) => m.teamAId === c1 || m.teamBId === c1);
-    expect(m0?.refTeamIds?.[0]).toBe(c2);
-
-    // Match 2 (C#3 vs D#3): ref = D#2 (rightTeams[1])
-    const m2 = matches.find(
-      (m, _idx) =>
-        m.roundBlock > matches[0].roundBlock ||
-        (m.teamAId !== c1 && m.teamBId !== c1 && m.refTeamIds?.[0] === d2)
-    );
-    if (m2) {
-      expect(m2.refTeamIds?.[0]).toBe(d2);
-    }
+    expect(m0?.refTeamIds?.[0]).toBe(c3);
 
     // Match 1 (C#2 vs D#2): ref = D#3 (rightTeams[2])
-    const m1 = matches.find(
-      (m) => m.teamAId !== c1 && m.teamBId !== c1 && m.refTeamIds?.[0] !== d2
-    );
+    const m1 = matches.find((m) => m.teamAId === c2 || m.teamBId === c2);
     if (m1 && d3) {
       expect(m1.refTeamIds?.[0]).toBe(d3);
+    }
+
+    // Match 2 (C#3 vs D#3): ref = D#2 (rightTeams[1])
+    const m2 = matches.find((m) => m.teamAId === c3 || m.teamBId === c3);
+    if (m2 && d2) {
+      expect(m2.refTeamIds?.[0]).toBe(d2);
     }
   });
 

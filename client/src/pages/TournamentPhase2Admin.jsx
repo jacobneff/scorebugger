@@ -1291,8 +1291,9 @@ function TournamentPhase2Admin() {
                 scheduling={{
                   activeSubTab: 'phase2',
                   showPhase2: false,
-                  phase1Label: 'Pool Play',
+                  phase1Label: 'Pool Play Setup',
                   phase1Href: `/tournaments/${id}/pool-play`,
+                  playoffsLabel: 'Playoffs Setup',
                   playoffsHref: `/tournaments/${id}/playoffs`,
                 }}
               />

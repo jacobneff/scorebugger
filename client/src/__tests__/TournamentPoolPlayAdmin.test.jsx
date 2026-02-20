@@ -143,6 +143,8 @@ describe('TournamentPoolPlayAdmin', () => {
                 type: 'crossover',
                 key: 'crossover',
                 displayName: 'Crossover',
+                fromPools: ['C', 'D'],
+                pairings: 'rankToRank',
               },
               {
                 type: 'playoffs',
@@ -156,6 +158,18 @@ describe('TournamentPoolPlayAdmin', () => {
 
       if (requestUrl.endsWith('/api/tournaments/tour-1/stages/poolPlay1/pools')) {
         return { ok: true, json: async () => [] };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/stages/poolPlay1/pools/init')) {
+        return {
+          ok: true,
+          json: async () => ([
+            { _id: 'pool-a', name: 'A', requiredTeamCount: 4, teamIds: [] },
+            { _id: 'pool-b', name: 'B', requiredTeamCount: 4, teamIds: [] },
+            { _id: 'pool-c', name: 'C', requiredTeamCount: 3, teamIds: [] },
+            { _id: 'pool-d', name: 'D', requiredTeamCount: 3, teamIds: [] },
+          ]),
+        };
       }
 
       if (requestUrl.endsWith('/api/tournaments/tour-1/stages/poolPlay1/matches')) {
@@ -180,15 +194,15 @@ describe('TournamentPoolPlayAdmin', () => {
     render(<TournamentPoolPlayAdmin />);
 
     expect(await screen.findByRole('heading', { name: 'Pool Play Setup' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Pool Play' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Pool Play Setup' })).toHaveAttribute(
       'href',
       '/tournaments/tour-1/pool-play'
     );
     expect(screen.queryByRole('link', { name: 'Pool Play 2' })).not.toBeInTheDocument();
 
     expect(
-      screen.getByRole('button', { name: 'Initialize Pools from Format Template' })
-    ).toBeInTheDocument();
+      screen.queryByRole('button', { name: 'Initialize Pools from Format Template' })
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'Distribute Teams by Ranking Order' })
     ).toBeInTheDocument();
@@ -197,6 +211,13 @@ describe('TournamentPoolPlayAdmin', () => {
       expect(
         globalThis.fetch.mock.calls.some(([url]) =>
           String(url).includes('/api/tournaments/tour-1/stages/poolPlay1/pools')
+        )
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(
+        globalThis.fetch.mock.calls.some(([url]) =>
+          String(url).includes('/api/tournaments/tour-1/stages/poolPlay1/pools/init')
         )
       ).toBe(true);
     });
@@ -212,5 +233,322 @@ describe('TournamentPoolPlayAdmin', () => {
         String(url).includes('/api/tournaments/tour-1/phase1/pools')
       )
     ).toBe(false);
+    expect(
+      screen.queryByText(/Crossover slots are placeholders by pool rank/i)
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/No matches generated yet\./i)).toBeInTheDocument();
+  });
+
+  it('renders crossover placeholders only after pool-play matches exist and does not overwrite pool-play slots', async () => {
+    globalThis.fetch.mockImplementation(async (url) => {
+      const requestUrl = String(url);
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1')) {
+        return {
+          ok: true,
+          json: async () => ({
+            _id: 'tour-1',
+            name: 'City Open',
+            publicCode: 'ABC123',
+            settings: {
+              format: {
+                formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+                totalCourts: 4,
+              },
+            },
+          }),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/teams')) {
+        return { ok: true, json: async () => [] };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/venue')) {
+        return {
+          ok: true,
+          json: async () => ({
+            totalCourts: 4,
+            venue: {
+              facilities: [
+                {
+                  facilityId: 'facility-main',
+                  name: 'Main Facility',
+                  courts: [
+                    { courtId: 'court-1', name: 'Court 1', isEnabled: true },
+                    { courtId: 'court-2', name: 'Court 2', isEnabled: true },
+                    { courtId: 'court-3', name: 'Court 3', isEnabled: true },
+                    { courtId: 'court-4', name: 'Court 4', isEnabled: true },
+                  ],
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournament-formats/classic_14_mixedpools_crossover_gold8_silver6_v1')) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+            stages: [
+              {
+                type: 'poolPlay',
+                key: 'poolPlay1',
+                displayName: 'Pool Play',
+                pools: [
+                  { name: 'A', size: 4 },
+                  { name: 'B', size: 4 },
+                  { name: 'C', size: 3 },
+                  { name: 'D', size: 3 },
+                ],
+              },
+              {
+                type: 'crossover',
+                key: 'crossover',
+                displayName: 'Crossover',
+                fromPools: ['C', 'D'],
+                pairings: 'rankToRank',
+              },
+            ],
+          }),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/stages/poolPlay1/pools')) {
+        return {
+          ok: true,
+          json: async () => ([
+            { _id: 'pool-a', name: 'A', requiredTeamCount: 4, teamIds: [], assignedCourtId: 'court-1', homeCourt: 'Court 1' },
+            { _id: 'pool-b', name: 'B', requiredTeamCount: 4, teamIds: [], assignedCourtId: 'court-2', homeCourt: 'Court 2' },
+            { _id: 'pool-c', name: 'C', requiredTeamCount: 3, teamIds: [], assignedCourtId: 'court-3', homeCourt: 'Court 3' },
+            { _id: 'pool-d', name: 'D', requiredTeamCount: 3, teamIds: [], assignedCourtId: 'court-4', homeCourt: 'Court 4' },
+          ]),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/stages/poolPlay1/pools/init')) {
+        return {
+          ok: true,
+          json: async () => ([
+            { _id: 'pool-a', name: 'A', requiredTeamCount: 4, teamIds: [], assignedCourtId: 'court-1', homeCourt: 'Court 1' },
+            { _id: 'pool-b', name: 'B', requiredTeamCount: 4, teamIds: [], assignedCourtId: 'court-2', homeCourt: 'Court 2' },
+            { _id: 'pool-c', name: 'C', requiredTeamCount: 3, teamIds: [], assignedCourtId: 'court-3', homeCourt: 'Court 3' },
+            { _id: 'pool-d', name: 'D', requiredTeamCount: 3, teamIds: [], assignedCourtId: 'court-4', homeCourt: 'Court 4' },
+          ]),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/stages/poolPlay1/matches')) {
+        return {
+          ok: true,
+          json: async () => ([
+            {
+              _id: 'pool-a-round4',
+              stageKey: 'poolPlay1',
+              roundBlock: 4,
+              courtId: 'court-1',
+              court: 'Court 1',
+              poolName: 'A',
+              teamA: { shortName: 'A1', name: 'A1' },
+              teamB: { shortName: 'A2', name: 'A2' },
+              refTeams: [{ shortName: 'A3', name: 'A3' }],
+              status: 'scheduled',
+            },
+            {
+              _id: 'pool-c-round3',
+              stageKey: 'poolPlay1',
+              roundBlock: 3,
+              courtId: 'court-3',
+              court: 'Court 3',
+              poolName: 'C',
+              teamA: { shortName: 'C1', name: 'C1' },
+              teamB: { shortName: 'C2', name: 'C2' },
+              refTeams: [{ shortName: 'C3', name: 'C3' }],
+              status: 'scheduled',
+            },
+            {
+              _id: 'pool-d-round3',
+              stageKey: 'poolPlay1',
+              roundBlock: 3,
+              courtId: 'court-4',
+              court: 'Court 4',
+              poolName: 'D',
+              teamA: { shortName: 'D1', name: 'D1' },
+              teamB: { shortName: 'D2', name: 'D2' },
+              refTeams: [{ shortName: 'D3', name: 'D3' }],
+              status: 'scheduled',
+            },
+          ]),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/stages/crossover/matches')) {
+        return { ok: true, json: async () => [] };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/standings?phase=phase1')) {
+        return { ok: true, json: async () => ({ pools: [], overall: [] }) };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/standings?phase=cumulative')) {
+        return { ok: true, json: async () => ({ pools: [], overall: [] }) };
+      }
+
+      throw new Error(`Unhandled fetch URL: ${requestUrl}`);
+    });
+
+    render(<TournamentPoolPlayAdmin />);
+
+    expect(await screen.findByRole('heading', { name: 'Pool Play Setup' })).toBeInTheDocument();
+    expect(
+      screen.getByText(/Crossover slots are placeholders by pool rank/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/C \(#1\) vs D \(#1\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/A1 vs A2/i)).toBeInTheDocument();
+  });
+
+  it('deduplicates schedule courts when matches mix courtId and legacy court name', async () => {
+    globalThis.fetch.mockImplementation(async (url) => {
+      const requestUrl = String(url);
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1')) {
+        return {
+          ok: true,
+          json: async () => ({
+            _id: 'tour-1',
+            name: 'City Open',
+            publicCode: 'ABC123',
+            settings: {
+              format: {
+                formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+                totalCourts: 4,
+              },
+            },
+          }),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/teams')) {
+        return { ok: true, json: async () => [] };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/venue')) {
+        return {
+          ok: true,
+          json: async () => ({
+            totalCourts: 4,
+            venue: {
+              facilities: [
+                {
+                  facilityId: 'facility-main',
+                  name: 'Main Facility',
+                  courts: [
+                    { courtId: 'court-1', name: 'Court 1', isEnabled: true },
+                    { courtId: 'court-2', name: 'Court 2', isEnabled: true },
+                    { courtId: 'court-3', name: 'Court 3', isEnabled: true },
+                    { courtId: 'court-4', name: 'Court 4', isEnabled: true },
+                  ],
+                },
+              ],
+            },
+          }),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournament-formats/classic_14_mixedpools_crossover_gold8_silver6_v1')) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+            stages: [
+              {
+                type: 'poolPlay',
+                key: 'poolPlay1',
+                displayName: 'Pool Play',
+                pools: [
+                  { name: 'A', size: 4 },
+                  { name: 'B', size: 4 },
+                  { name: 'C', size: 3 },
+                  { name: 'D', size: 3 },
+                ],
+              },
+              {
+                type: 'crossover',
+                key: 'crossover',
+                displayName: 'Crossover',
+                fromPools: ['C', 'D'],
+                pairings: 'rankToRank',
+              },
+            ],
+          }),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/stages/poolPlay1/pools')) {
+        return { ok: true, json: async () => [] };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/stages/poolPlay1/pools/init')) {
+        return { ok: true, json: async () => [] };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/stages/poolPlay1/matches')) {
+        return {
+          ok: true,
+          json: async () => ([
+            {
+              _id: 'pool-match-1',
+              stageKey: 'poolPlay1',
+              roundBlock: 1,
+              courtId: 'court-1',
+              court: 'Court 1',
+              poolName: 'A',
+              teamA: { shortName: 'A1', name: 'A1' },
+              teamB: { shortName: 'A2', name: 'A2' },
+              refTeams: [{ shortName: 'A3', name: 'A3' }],
+              status: 'scheduled',
+            },
+          ]),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/stages/crossover/matches')) {
+        return {
+          ok: true,
+          json: async () => ([
+            {
+              _id: 'crossover-match-1',
+              stageKey: 'crossover',
+              roundBlock: 2,
+              court: 'Court 1',
+              poolName: null,
+              teamA: { shortName: 'C (#1)', name: 'C (#1)' },
+              teamB: { shortName: 'D (#1)', name: 'D (#1)' },
+              refTeams: [{ shortName: 'C (#3)', name: 'C (#3)' }],
+              status: 'scheduled',
+            },
+          ]),
+        };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/standings?phase=phase1')) {
+        return { ok: true, json: async () => ({ pools: [], overall: [] }) };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/standings?phase=cumulative')) {
+        return { ok: true, json: async () => ({ pools: [], overall: [] }) };
+      }
+
+      throw new Error(`Unhandled fetch URL: ${requestUrl}`);
+    });
+
+    render(<TournamentPoolPlayAdmin />);
+
+    expect(await screen.findByRole('heading', { name: 'Pool Play Setup' })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getAllByRole('columnheader', { name: /Court 1/i })).toHaveLength(1);
+    });
   });
 });

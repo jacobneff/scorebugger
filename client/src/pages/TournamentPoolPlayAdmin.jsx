@@ -151,18 +151,42 @@ const normalizeVenuePayload = (payload, fallbackTotalCourts = DEFAULT_TOTAL_COUR
   };
 };
 
-const getScheduleCourtKey = (match) => {
+const getScheduleCourtKey = (match, venueCourtByName) => {
   const courtId = toIdString(match?.courtId);
   if (courtId) {
     return `id:${courtId}`;
   }
 
   if (typeof match?.court === 'string' && match.court.trim()) {
-    return `name:${match.court.trim().toLowerCase()}`;
+    const courtName = match.court.trim();
+    const venueCourt = venueCourtByName?.get(courtName.toLowerCase());
+    if (venueCourt?.courtId) {
+      return `id:${venueCourt.courtId}`;
+    }
+
+    return `name:${courtName.toLowerCase()}`;
   }
 
   return '';
 };
+
+const FINALIZED_MATCH_STATUSES = new Set(['final', 'ended']);
+
+const isMatchFinalized = (match) => {
+  const status = String(match?.status || '').trim().toLowerCase();
+  return Boolean(match?.result) || FINALIZED_MATCH_STATUSES.has(status);
+};
+
+const getRoundRobinMatchCountForPoolSize = (poolSize) => {
+  const normalizedPoolSize = Number(poolSize);
+  if (!Number.isFinite(normalizedPoolSize) || normalizedPoolSize <= 1) {
+    return 0;
+  }
+
+  return Math.floor((normalizedPoolSize * (normalizedPoolSize - 1)) / 2);
+};
+
+const formatPoolRankLabel = (poolName, rank) => `${poolName} (#${rank})`;
 
 const normalizeTeam = (team) => ({
   _id: String(team?._id || ''),
@@ -301,8 +325,14 @@ function TournamentPoolPlayAdmin() {
   const [activeDragTeamId, setActiveDragTeamId] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [poolActionMessage, setPoolActionMessage] = useState('');
   const formatDefRef = useRef(null);
   const stageReloadInFlightRef = useRef(false);
+  const autoInitStageKeyRef = useRef('');
+  const autoInitAttemptedRef = useRef(false);
+  const autoGenerateCrossoverAttemptKeyRef = useRef('');
+  const autoGenerateCrossoverInFlightRef = useRef(false);
+  const autoRepairCrossoverAttemptKeyRef = useRef('');
 
   const dragSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 
@@ -382,6 +412,7 @@ function TournamentPoolPlayAdmin() {
     if (!token || !id) return;
     setLoading(true);
     setError('');
+    setPoolActionMessage('');
 
     try {
       const [tournamentPayload, teamsPayload] = await Promise.all([
@@ -477,8 +508,9 @@ function TournamentPoolPlayAdmin() {
   const nonLegacySchedulingNav = {
     activeSubTab: 'phase1',
     showPhase2: false,
-    phase1Label: poolPlayStageLabel,
+    phase1Label: 'Pool Play Setup',
     phase1Href: `/tournaments/${id}/pool-play`,
+    playoffsLabel: 'Playoffs Setup',
     playoffsHref: `/tournaments/${id}/playoffs`,
   };
   const legacySchedulingNav = {
@@ -488,6 +520,7 @@ function TournamentPoolPlayAdmin() {
     phase1Href: `/tournaments/${id}/phase1`,
     phase2Label: 'Pool Play 2',
     phase2Href: `/tournaments/${id}/phase2`,
+    playoffsLabel: 'Playoffs',
     playoffsHref: `/tournaments/${id}/playoffs`,
   };
 
@@ -557,6 +590,15 @@ function TournamentPoolPlayAdmin() {
   );
   const venueCourtById = useMemo(
     () => new Map(flattenedVenueCourts.map((court) => [court.courtId, court])),
+    [flattenedVenueCourts]
+  );
+  const venueCourtByName = useMemo(
+    () =>
+      new Map(
+        flattenedVenueCourts
+          .map((court) => [String(court?.courtName || '').trim().toLowerCase(), court])
+          .filter(([courtName]) => Boolean(courtName))
+      ),
     [flattenedVenueCourts]
   );
   const venueCountMatchesFormat = configuredCourtCount === expectedTotalCourts;
@@ -701,6 +743,7 @@ function TournamentPoolPlayAdmin() {
     setSavingVenue(true);
     setError('');
     setMessage('');
+    setPoolActionMessage('');
 
     try {
       const payload = await fetchJson(`${API_URL}/api/tournaments/${id}/venue`, {
@@ -765,6 +808,7 @@ function TournamentPoolPlayAdmin() {
     setSavingCourtAssignments(true);
     setError('');
     setMessage('');
+    setPoolActionMessage('');
 
     try {
       for (const pool of changedPools) {
@@ -852,11 +896,12 @@ function TournamentPoolPlayAdmin() {
     }
   }, [persistPoolChanges, pools, refreshStageData, savingCourtAssignments, savingPools, savingVenue, teams]);
 
-  const handleInitializePools = useCallback(async () => {
+  const initializePoolsFromTemplate = useCallback(async () => {
     if (!poolPlayStage || initializingPools) return;
     setInitializingPools(true);
     setError('');
     setMessage('');
+    setPoolActionMessage('');
 
     try {
       const payload = await fetchJson(`${API_URL}/api/tournaments/${id}/stages/${poolPlayStage.key}/pools/init`, {
@@ -864,7 +909,7 @@ function TournamentPoolPlayAdmin() {
         headers: authHeaders(token),
       });
       setPools(Array.isArray(payload) ? payload.map((pool) => normalizePool(pool)) : []);
-      setMessage(`${poolPlayStageLabel} pools initialized from template.`);
+      setPoolActionMessage(`${poolPlayStageLabel} pools initialized from template.`);
     } catch (initError) {
       setError(initError.message || 'Unable to initialize pools');
     } finally {
@@ -872,11 +917,44 @@ function TournamentPoolPlayAdmin() {
     }
   }, [fetchJson, id, initializingPools, poolPlayStage, poolPlayStageLabel, token]);
 
+  useEffect(() => {
+    const nextStageKey = toIdString(poolPlayStage?.key);
+    if (autoInitStageKeyRef.current !== nextStageKey) {
+      autoInitStageKeyRef.current = nextStageKey;
+      autoInitAttemptedRef.current = false;
+    }
+  }, [poolPlayStage?.key]);
+
+  useEffect(() => {
+    if (!poolPlayStage || loading || initializingPools || savingPools || savingVenue || savingCourtAssignments) {
+      return;
+    }
+    if (pools.length > 0) {
+      return;
+    }
+    if (autoInitAttemptedRef.current) {
+      return;
+    }
+
+    autoInitAttemptedRef.current = true;
+    initializePoolsFromTemplate().catch(() => {});
+  }, [
+    initializePoolsFromTemplate,
+    initializingPools,
+    loading,
+    poolPlayStage,
+    pools.length,
+    savingCourtAssignments,
+    savingPools,
+    savingVenue,
+  ]);
+
   const handleAutofillPools = useCallback(async () => {
     if (!poolPlayStage || autofillingPools) return;
     setAutofillingPools(true);
     setError('');
     setMessage('');
+    setPoolActionMessage('');
 
     const runAutofill = async (force) => {
       const response = await fetch(`${API_URL}/api/tournaments/${id}/stages/${poolPlayStage.key}/pools/autofill${force ? '?force=true' : ''}`, {
@@ -897,7 +975,7 @@ function TournamentPoolPlayAdmin() {
       if (firstAttempt.requiresForce) {
         const shouldForce = window.confirm(`${firstAttempt.message}\n\nThis will overwrite current assignments. Continue?`);
         if (!shouldForce) {
-          setMessage(firstAttempt.message);
+          setPoolActionMessage(firstAttempt.message);
           return;
         }
 
@@ -906,7 +984,7 @@ function TournamentPoolPlayAdmin() {
       } else {
         setPools(Array.isArray(firstAttempt.payload) ? firstAttempt.payload.map((pool) => normalizePool(pool)) : []);
       }
-      setMessage('Teams distributed by ranking order.');
+      setPoolActionMessage('Teams distributed by ranking order.');
     } catch (autofillError) {
       setError(autofillError.message || 'Unable to distribute teams');
     } finally {
@@ -923,7 +1001,11 @@ function TournamentPoolPlayAdmin() {
     }
 
     if (pools.length === 0) {
-      issues.push('Initialize pools from the format template first.');
+      if (initializingPools) {
+        issues.push('Pool shells are being initialized from the applied format template.');
+      } else {
+        issues.push('Pool shells are missing. Re-apply format if they do not auto-initialize.');
+      }
       return issues;
     }
 
@@ -981,6 +1063,7 @@ function TournamentPoolPlayAdmin() {
     poolPlayStage,
     poolPlayStageLabel,
     pools.length,
+    initializingPools,
     venueCountMatchesFormat,
   ]);
 
@@ -996,6 +1079,7 @@ function TournamentPoolPlayAdmin() {
     setGeneratingMatches(true);
     setError('');
     setMessage('');
+    setPoolActionMessage('');
 
     const runGenerate = async (force) => {
       const response = await fetch(`${API_URL}/api/tournaments/${id}/stages/${poolPlayStage.key}/matches/generate${force ? '?force=true' : ''}`, {
@@ -1016,14 +1100,14 @@ function TournamentPoolPlayAdmin() {
       if (firstAttempt.requiresForce) {
         const shouldForce = window.confirm(`${firstAttempt.message}\n\nThis will delete and regenerate stage matches. Continue?`);
         if (!shouldForce) {
-          setMessage(firstAttempt.message);
+          setPoolActionMessage(firstAttempt.message);
           return;
         }
         await runGenerate(true);
       }
 
       await refreshStageData(formatDefRef.current);
-      setMessage(`${poolPlayStageLabel} matches generated.`);
+      setPoolActionMessage(`${poolPlayStageLabel} matches generated.`);
     } catch (generateError) {
       setError(generateError.message || 'Unable to generate matches');
     } finally {
@@ -1042,6 +1126,7 @@ function TournamentPoolPlayAdmin() {
     setResettingTournament(true);
     setError('');
     setMessage('');
+    setPoolActionMessage('');
 
     try {
       await fetchJson(`${API_URL}/api/tournaments/${id}/reset`, {
@@ -1057,8 +1142,471 @@ function TournamentPoolPlayAdmin() {
     }
   }, [fetchJson, id, navigate, resettingTournament, token, tournament?.isOwner]);
 
+  const crossoverSourcePoolNames = useMemo(
+    () =>
+      (Array.isArray(crossoverStage?.fromPools) ? crossoverStage.fromPools : [])
+        .map((poolName) => String(poolName || '').trim())
+        .filter(Boolean),
+    [crossoverStage?.fromPools]
+  );
+  const crossoverSourcePoolMatchTargets = useMemo(() => {
+    const poolSizesByName = new Map(
+      (Array.isArray(poolPlayStage?.pools) ? poolPlayStage.pools : [])
+        .map((poolDef) => [String(poolDef?.name || '').trim(), Number(poolDef?.size || 0)])
+        .filter(([poolName]) => Boolean(poolName))
+    );
+    const targetsByName = new Map();
+    crossoverSourcePoolNames.forEach((poolName) => {
+      const poolSize = poolSizesByName.get(poolName);
+      const targetMatches = getRoundRobinMatchCountForPoolSize(poolSize);
+      if (targetMatches > 0) {
+        targetsByName.set(poolName, targetMatches);
+      }
+    });
+    return targetsByName;
+  }, [crossoverSourcePoolNames, poolPlayStage?.pools]);
+  const areCrossoverSourcePoolsFinalized = useMemo(() => {
+    if (crossoverSourcePoolNames.length === 0) {
+      return false;
+    }
+
+    return crossoverSourcePoolNames.every((poolName) => {
+      const matchesForPool = poolPlayMatches.filter(
+        (match) => String(match?.poolName || '').trim() === poolName
+      );
+      const requiredMatchCount = crossoverSourcePoolMatchTargets.get(poolName) || 0;
+      if (requiredMatchCount <= 0 || matchesForPool.length < requiredMatchCount) {
+        return false;
+      }
+
+      const finalizedCount = matchesForPool.filter((match) => isMatchFinalized(match)).length;
+      return finalizedCount >= requiredMatchCount;
+    });
+  }, [crossoverSourcePoolMatchTargets, crossoverSourcePoolNames, poolPlayMatches]);
+  const crossoverTemplateMatches = useMemo(() => {
+    if (!crossoverStage || crossoverSourcePoolNames.length !== 2) {
+      return [];
+    }
+
+    const [leftPoolName, rightPoolName] = crossoverSourcePoolNames;
+    const sourcePoolMatchRows = poolPlayMatches.filter((match) =>
+      crossoverSourcePoolNames.includes(String(match?.poolName || '').trim())
+    );
+
+    // Keep schedule empty until Pool Play matches have been generated.
+    if (sourcePoolMatchRows.length === 0) {
+      return [];
+    }
+
+    const maxSourceRoundBlock = sourcePoolMatchRows.reduce((maxValue, match) => {
+      const roundBlock = Number(match?.roundBlock);
+      if (!Number.isFinite(roundBlock) || roundBlock <= 0) {
+        return maxValue;
+      }
+
+      return Math.max(maxValue, Math.floor(roundBlock));
+    }, 0);
+
+    if (maxSourceRoundBlock <= 0) {
+      return [];
+    }
+
+    const poolDefByName = new Map(
+      (Array.isArray(poolPlayStage?.pools) ? poolPlayStage.pools : [])
+        .map((poolDef) => [String(poolDef?.name || '').trim(), poolDef])
+        .filter(([poolName]) => Boolean(poolName))
+    );
+    const poolByName = new Map(
+      pools
+        .map((pool) => [String(pool?.name || '').trim(), pool])
+        .filter(([poolName]) => Boolean(poolName))
+    );
+    const leftPoolSize = Number(poolDefByName.get(leftPoolName)?.size || 0);
+    const rightPoolSize = Number(poolDefByName.get(rightPoolName)?.size || 0);
+    const pairingCount = Math.min(leftPoolSize, rightPoolSize);
+
+    if (!Number.isFinite(pairingCount) || pairingCount <= 0) {
+      return [];
+    }
+
+    const toCourtEntry = (court) => {
+      if (!court) {
+        return null;
+      }
+
+      const courtId = toIdString(court?.courtId);
+      const courtName =
+        typeof court?.courtName === 'string'
+          ? court.courtName.trim()
+          : typeof court?.name === 'string'
+            ? court.name.trim()
+            : '';
+
+      if (!courtId && !courtName) {
+        return null;
+      }
+
+      return {
+        courtId: courtId || null,
+        facilityId: toIdString(court?.facilityId) || null,
+        courtName: courtName || null,
+      };
+    };
+
+    const resolvePoolCourt = (poolName) => {
+      const pool = poolByName.get(poolName);
+      if (!pool) {
+        return null;
+      }
+
+      const assignedCourtId = toIdString(pool?.assignedCourtId);
+      if (assignedCourtId && venueCourtById.has(assignedCourtId)) {
+        return toCourtEntry(venueCourtById.get(assignedCourtId));
+      }
+
+      const homeCourtName =
+        typeof pool?.homeCourt === 'string' ? pool.homeCourt.trim().toLowerCase() : '';
+      if (homeCourtName && venueCourtByName.has(homeCourtName)) {
+        return toCourtEntry(venueCourtByName.get(homeCourtName));
+      }
+
+      return null;
+    };
+
+    const sourcePoolCourts = crossoverSourcePoolNames
+      .map((poolName) => resolvePoolCourt(poolName))
+      .filter(Boolean);
+    const sourceMatchCourts = sourcePoolMatchRows
+      .map((match) => {
+        const courtId = toIdString(match?.courtId);
+        if (courtId && venueCourtById.has(courtId)) {
+          return toCourtEntry(venueCourtById.get(courtId));
+        }
+
+        const courtName =
+          typeof match?.court === 'string' ? match.court.trim().toLowerCase() : '';
+        if (courtName && venueCourtByName.has(courtName)) {
+          return toCourtEntry(venueCourtByName.get(courtName));
+        }
+
+        return toCourtEntry({
+          courtId: courtId || null,
+          facilityId: null,
+          courtName: typeof match?.court === 'string' ? match.court.trim() : '',
+        });
+      })
+      .filter(Boolean);
+
+    const selectedCourts = [];
+    const seenCourtKeys = new Set();
+    [...sourcePoolCourts, ...sourceMatchCourts].forEach((court) => {
+      const key =
+        toIdString(court?.courtId)
+        || (typeof court?.courtName === 'string' ? court.courtName.trim().toLowerCase() : '');
+      if (!key || seenCourtKeys.has(key)) {
+        return;
+      }
+
+      seenCourtKeys.add(key);
+      selectedCourts.push(court);
+    });
+
+    if (selectedCourts.length === 0) {
+      flattenedVenueCourts
+        .filter((court) => court?.isEnabled !== false)
+        .forEach((court) => {
+          const normalized = toCourtEntry(court);
+          const key =
+            toIdString(normalized?.courtId)
+            || (typeof normalized?.courtName === 'string'
+              ? normalized.courtName.trim().toLowerCase()
+              : '');
+          if (!key || seenCourtKeys.has(key)) {
+            return;
+          }
+          seenCourtKeys.add(key);
+          selectedCourts.push(normalized);
+        });
+    }
+
+    if (selectedCourts.length === 0) {
+      return [];
+    }
+
+    const getRoundBlock = (index) => {
+      if (selectedCourts.length >= 2) {
+        return index <= 1 ? maxSourceRoundBlock + 1 : maxSourceRoundBlock + 2;
+      }
+      return maxSourceRoundBlock + 1 + index;
+    };
+
+    const getCourt = (index) => {
+      if (selectedCourts.length >= 2) {
+        return selectedCourts[index <= 1 ? index : 0];
+      }
+      return selectedCourts[0];
+    };
+
+    const getRefLabel = (index) => {
+      if (pairingCount >= 3) {
+        if (index === 0) return formatPoolRankLabel(leftPoolName, 3);
+        if (index === 1) return formatPoolRankLabel(rightPoolName, 3);
+        if (index === 2) return formatPoolRankLabel(rightPoolName, 2);
+        return '';
+      }
+
+      if (index === 0) return pairingCount >= 2 ? formatPoolRankLabel(leftPoolName, 2) : '';
+      if (index === 1) return pairingCount >= 2 ? formatPoolRankLabel(rightPoolName, 2) : '';
+      return '';
+    };
+
+    const getByeLabel = (index) => {
+      if (pairingCount < 3 || index !== 2) {
+        return '';
+      }
+
+      return [
+        formatPoolRankLabel(leftPoolName, 1),
+        formatPoolRankLabel(rightPoolName, 1),
+        formatPoolRankLabel(leftPoolName, 2),
+      ].join(', ');
+    };
+
+    return Array.from({ length: pairingCount }, (_, index) => {
+      const scheduledCourt = getCourt(index);
+      const teamALabel = formatPoolRankLabel(leftPoolName, index + 1);
+      const teamBLabel = formatPoolRankLabel(rightPoolName, index + 1);
+      const refLabel = getRefLabel(index);
+      const byeLabel = getByeLabel(index);
+
+      return {
+        _id: `crossover-template-${leftPoolName}-${rightPoolName}-${index + 1}`,
+        stageKey: crossoverStage.key,
+        roundBlock: getRoundBlock(index),
+        courtId: scheduledCourt?.courtId || null,
+        facilityId: scheduledCourt?.facilityId || null,
+        court: scheduledCourt?.courtName || null,
+        poolName: null,
+        status: 'scheduled',
+        teamA: { shortName: teamALabel, name: teamALabel },
+        teamB: { shortName: teamBLabel, name: teamBLabel },
+        refTeams: refLabel ? [{ shortName: refLabel, name: refLabel }] : [],
+        __isTemplate: true,
+        __templateByeLabel: byeLabel || null,
+      };
+    });
+  }, [
+    crossoverSourcePoolNames,
+    crossoverStage,
+    flattenedVenueCourts,
+    poolPlayMatches,
+    poolPlayStage?.pools,
+    pools,
+    venueCourtById,
+    venueCourtByName,
+  ]);
+  const crossoverTemplateRoundBlocks = useMemo(
+    () =>
+      crossoverTemplateMatches
+        .map((match) => Number(match?.roundBlock))
+        .filter((roundBlock) => Number.isFinite(roundBlock) && roundBlock > 0)
+        .sort((left, right) => left - right),
+    [crossoverTemplateMatches]
+  );
+  const crossoverRoundBlocks = useMemo(
+    () =>
+      crossoverMatches
+        .map((match) => Number(match?.roundBlock))
+        .filter((roundBlock) => Number.isFinite(roundBlock) && roundBlock > 0)
+        .sort((left, right) => left - right),
+    [crossoverMatches]
+  );
+  const crossoverRoundBlockMismatch = useMemo(() => {
+    if (crossoverMatches.length === 0 || crossoverTemplateRoundBlocks.length === 0) {
+      return false;
+    }
+
+    if (crossoverRoundBlocks.length !== crossoverTemplateRoundBlocks.length) {
+      return true;
+    }
+
+    return crossoverRoundBlocks.some((roundBlock, index) => (
+      roundBlock !== crossoverTemplateRoundBlocks[index]
+    ));
+  }, [crossoverMatches.length, crossoverRoundBlocks, crossoverTemplateRoundBlocks]);
+  const crossoverHasLegacyCourtAssignments = useMemo(
+    () =>
+      crossoverMatches.some((match) => {
+        const courtName = typeof match?.court === 'string' ? match.court.trim() : '';
+        return Boolean(courtName && !toIdString(match?.courtId));
+      }),
+    [crossoverMatches]
+  );
+  const crossoverHasStartedMatches = useMemo(
+    () =>
+      crossoverMatches.some((match) => {
+        const status = String(match?.status || '').trim().toLowerCase();
+        return status === 'live' || isMatchFinalized(match);
+      }),
+    [crossoverMatches]
+  );
+  const shouldAutoRepairCrossoverSchedule = Boolean(
+    crossoverStage?.key
+    && areCrossoverSourcePoolsFinalized
+    && crossoverMatches.length > 0
+    && crossoverTemplateMatches.length > 0
+    && !crossoverHasStartedMatches
+    && (crossoverRoundBlockMismatch || crossoverHasLegacyCourtAssignments)
+  );
+  const displayedCrossoverMatches = crossoverMatches.length > 0
+    ? crossoverMatches
+    : crossoverTemplateMatches;
+  const showingCrossoverTemplates = Boolean(crossoverStage)
+    && crossoverMatches.length === 0
+    && displayedCrossoverMatches.length > 0;
+  const crossoverTemplateNote = useMemo(() => {
+    const poolLabels = crossoverSourcePoolNames.map((poolName) => `Pool ${poolName}`);
+    const poolsText =
+      poolLabels.length === 0
+        ? 'the source pools'
+        : poolLabels.length === 1
+          ? poolLabels[0]
+          : `${poolLabels.slice(0, -1).join(', ')} and ${poolLabels[poolLabels.length - 1]}`;
+    const requiredCounts = crossoverSourcePoolNames
+      .map((poolName) => crossoverSourcePoolMatchTargets.get(poolName))
+      .filter((count) => Number.isFinite(count) && count > 0);
+    const matchesText =
+      requiredCounts.length > 0 && requiredCounts.every((count) => count === requiredCounts[0])
+        ? `${requiredCounts[0]} match${requiredCounts[0] === 1 ? '' : 'es'}`
+        : 'all matches';
+
+    return `Crossover slots are placeholders by pool rank. Complete ${matchesText} in ${poolsText} to auto-populate crossover matchups.`;
+  }, [crossoverSourcePoolMatchTargets, crossoverSourcePoolNames]);
+  const autoGenerateCrossoverMatches = useCallback(async ({
+    force = false,
+    successMessage = 'Crossover matches auto-populated from finalized source pool standings.',
+  } = {}) => {
+    if (!token || !id || !crossoverStage?.key) {
+      return;
+    }
+
+    const query = force ? '?force=true' : '';
+    const response = await fetch(
+      `${API_URL}/api/tournaments/${id}/stages/${crossoverStage.key}/matches/generate${query}`,
+      {
+        method: 'POST',
+        headers: authHeaders(token),
+      }
+    );
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok && response.status !== 409) {
+      throw new Error(payload?.message || 'Unable to auto-generate crossover matches');
+    }
+
+    await refreshStageData(formatDefRef.current);
+    if (response.status !== 409 && successMessage) {
+      setPoolActionMessage(successMessage);
+    }
+  }, [crossoverStage?.key, id, refreshStageData, token]);
+
+  useEffect(() => {
+    if (
+      !crossoverStage?.key
+      || !areCrossoverSourcePoolsFinalized
+      || crossoverMatches.length > 0
+      || generatingMatches
+      || savingPools
+      || savingVenue
+      || savingCourtAssignments
+      || stageReloadInFlightRef.current
+    ) {
+      return;
+    }
+
+    const finalizedCount = poolPlayMatches.filter((match) => isMatchFinalized(match)).length;
+    const attemptKey = `${crossoverStage.key}:${finalizedCount}:${crossoverSourcePoolNames.join(',')}`;
+
+    if (autoGenerateCrossoverAttemptKeyRef.current === attemptKey) {
+      return;
+    }
+    if (autoGenerateCrossoverInFlightRef.current) {
+      return;
+    }
+
+    autoGenerateCrossoverAttemptKeyRef.current = attemptKey;
+    autoGenerateCrossoverInFlightRef.current = true;
+    autoGenerateCrossoverMatches()
+      .catch((autoGenerateError) => {
+        setPoolActionMessage(
+          autoGenerateError?.message
+          || 'Crossover matchups are still pending. Finalize source pool matches to continue.'
+        );
+      })
+      .finally(() => {
+        autoGenerateCrossoverInFlightRef.current = false;
+      });
+  }, [
+    areCrossoverSourcePoolsFinalized,
+    autoGenerateCrossoverMatches,
+    crossoverMatches.length,
+    crossoverSourcePoolNames,
+    crossoverStage?.key,
+    generatingMatches,
+    poolPlayMatches,
+    savingCourtAssignments,
+    savingPools,
+    savingVenue,
+  ]);
+  useEffect(() => {
+    if (
+      !shouldAutoRepairCrossoverSchedule
+      || generatingMatches
+      || savingPools
+      || savingVenue
+      || savingCourtAssignments
+      || stageReloadInFlightRef.current
+    ) {
+      return;
+    }
+
+    const repairAttemptKey = `${crossoverStage?.key || ''}:${crossoverRoundBlocks.join(',')}:${Number(crossoverHasLegacyCourtAssignments)}`;
+    if (autoRepairCrossoverAttemptKeyRef.current === repairAttemptKey) {
+      return;
+    }
+    if (autoGenerateCrossoverInFlightRef.current) {
+      return;
+    }
+
+    autoRepairCrossoverAttemptKeyRef.current = repairAttemptKey;
+    autoGenerateCrossoverInFlightRef.current = true;
+    autoGenerateCrossoverMatches({
+      force: true,
+      successMessage: 'Crossover schedule refreshed to match format time slots and court assignments.',
+    })
+      .catch((autoGenerateError) => {
+        setPoolActionMessage(
+          autoGenerateError?.message
+          || 'Unable to refresh crossover schedule. Regenerate crossover matches after pool results finalize.'
+        );
+      })
+      .finally(() => {
+        autoGenerateCrossoverInFlightRef.current = false;
+      });
+  }, [
+    autoGenerateCrossoverMatches,
+    crossoverHasLegacyCourtAssignments,
+    crossoverRoundBlocks,
+    crossoverStage?.key,
+    generatingMatches,
+    savingCourtAssignments,
+    savingPools,
+    savingVenue,
+    shouldAutoRepairCrossoverSchedule,
+  ]);
+
   const allScheduleMatches = useMemo(
-    () => [...poolPlayMatches, ...crossoverMatches].sort((a, b) => {
+    () => [...poolPlayMatches, ...displayedCrossoverMatches].sort((a, b) => {
       const byRound = (Number(a?.roundBlock) || 0) - (Number(b?.roundBlock) || 0);
       if (byRound !== 0) return byRound;
       const courtA = toIdString(a?.courtId)
@@ -1067,7 +1615,7 @@ function TournamentPoolPlayAdmin() {
         || (typeof b?.court === 'string' ? b.court.trim() : '');
       return courtA.localeCompare(courtB);
     }),
-    [crossoverMatches, poolPlayMatches]
+    [displayedCrossoverMatches, poolPlayMatches]
   );
   const scheduleRoundBlocks = useMemo(
     () => Array.from(new Set(allScheduleMatches.map((match) => Number(match?.roundBlock)).filter(Boolean))).sort((a, b) => a - b),
@@ -1077,12 +1625,15 @@ function TournamentPoolPlayAdmin() {
     const usedCourts = new Map();
 
     allScheduleMatches.forEach((match) => {
-      const key = getScheduleCourtKey(match);
+      const key = getScheduleCourtKey(match, venueCourtByName);
       if (!key || usedCourts.has(key)) {
         return;
       }
 
-      const venueCourt = venueCourtById.get(toIdString(match?.courtId));
+      const venueCourt = venueCourtById.get(toIdString(match?.courtId))
+        || venueCourtByName.get(
+          typeof match?.court === 'string' ? match.court.trim().toLowerCase() : ''
+        );
       const baseLabel =
         venueCourt?.courtName
         || (typeof match?.court === 'string' ? match.court.trim() : '');
@@ -1103,20 +1654,38 @@ function TournamentPoolPlayAdmin() {
         key: `id:${court.courtId}`,
         label: court.courtName,
       }));
-  }, [allScheduleMatches, flattenedVenueCourts, venueCourtById]);
+  }, [allScheduleMatches, flattenedVenueCourts, venueCourtById, venueCourtByName]);
   const scheduleLookup = useMemo(() => {
     const lookup = {};
     allScheduleMatches.forEach((match) => {
-      const courtKey = getScheduleCourtKey(match);
+      const courtKey = getScheduleCourtKey(match, venueCourtByName);
       if (!courtKey) {
         return;
       }
 
       const key = `${Number(match?.roundBlock)}-${courtKey}`;
+      const existing = lookup[key];
+      if (!existing) {
+        lookup[key] = match;
+        return;
+      }
+
+      const existingIsTemplate = Boolean(existing?.__isTemplate);
+      const currentIsTemplate = Boolean(match?.__isTemplate);
+
+      if (!existingIsTemplate && currentIsTemplate) {
+        return;
+      }
+
+      if (existingIsTemplate && !currentIsTemplate) {
+        lookup[key] = match;
+        return;
+      }
+
       lookup[key] = match;
     });
     return lookup;
-  }, [allScheduleMatches]);
+  }, [allScheduleMatches, venueCourtByName]);
 
   const activeStandings = activeStandingsTab === 'cumulative'
     ? standingsByPhase.cumulative
@@ -1125,19 +1694,15 @@ function TournamentPoolPlayAdmin() {
   const isPendingCrossoverMatch = useCallback((match) => {
     if (!crossoverStage?.key) return false;
     if (String(match?.stageKey || '') !== String(crossoverStage.key)) return false;
-
-    const poolInputsFinalized = poolPlayMatches.length > 0 && poolPlayMatches.every((poolMatch) => {
-      const status = String(poolMatch?.status || '').toLowerCase();
-      return Boolean(poolMatch?.result) || status === 'final' || status === 'ended';
-    });
+    if (match?.__isTemplate) return false;
 
     const matchStatus = String(match?.status || '').toLowerCase();
     if (matchStatus === 'live' || matchStatus === 'final' || matchStatus === 'ended') {
       return false;
     }
 
-    return !poolInputsFinalized;
-  }, [crossoverStage?.key, poolPlayMatches]);
+    return !areCrossoverSourcePoolsFinalized;
+  }, [areCrossoverSourcePoolsFinalized, crossoverStage?.key]);
 
   if (initializing || loading) {
     return (
@@ -1226,25 +1791,6 @@ function TournamentPoolPlayAdmin() {
             />
           </div>
           <div className="phase1-admin-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={handleInitializePools}
-              disabled={initializingPools || savingPools || autofillingPools || generatingMatches || savingVenue || savingCourtAssignments}
-            >
-              {initializingPools ? 'Initializing Pools...' : 'Initialize Pools from Format Template'}
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={handleAutofillPools}
-              disabled={autofillingPools || savingPools || initializingPools || generatingMatches || savingVenue || savingCourtAssignments}
-            >
-              {autofillingPools ? 'Distributing...' : 'Distribute Teams by Ranking Order'}
-            </button>
-            <button className="primary-button" type="button" onClick={handleGenerateMatches} disabled={!canGenerateMatches || generatingMatches}>
-              {generatingMatches ? 'Generating...' : 'Generate Pool Play Matches'}
-            </button>
             {tournament?.isOwner && (
               <button className="secondary-button danger-button" type="button" onClick={handleResetTournament} disabled={resettingTournament}>
                 {resettingTournament ? 'Resetting...' : 'Reset Tournament'}
@@ -1253,14 +1799,11 @@ function TournamentPoolPlayAdmin() {
           </div>
         </div>
 
-        <div className="phase1-action-help">
-          <p className="subtle">Initialize builds or refreshes pool shells from the applied format template.</p>
-          <p className="subtle">Distribute applies serpentine team assignment using Team Setup ranking order.</p>
-        </div>
-
-        {(savingPools || savingCourtAssignments || savingVenue) && (
+        {(initializingPools || savingPools || savingCourtAssignments || savingVenue) && (
           <p className="subtle">
-            {savingVenue
+            {initializingPools
+              ? 'Initializing pool shells from format template...'
+              : savingVenue
               ? 'Saving venue setup...'
               : savingCourtAssignments
                 ? 'Saving pool court assignments...'
@@ -1268,12 +1811,6 @@ function TournamentPoolPlayAdmin() {
           </p>
         )}
 
-        {poolIssues.length > 0 && <p className="error">{poolIssues.join('; ')}</p>}
-        {generationBlockingIssues.length > 0 && (
-          <p className="error">
-            Generate Matches is disabled until the following are resolved: {generationBlockingIssues.join(' ')}
-          </p>
-        )}
         {error && <p className="error">{error}</p>}
         {message && <p className="subtle phase1-success">{message}</p>}
 
@@ -1375,7 +1912,7 @@ function TournamentPoolPlayAdmin() {
                   </label>
                   <input
                     id={`facility-courts-${facilityId}`}
-                    className="text-input"
+                    className="text-input venue-courts-count-input"
                     type="number"
                     min={1}
                     max={MAX_TOTAL_COURTS}
@@ -1483,6 +2020,36 @@ function TournamentPoolPlayAdmin() {
           />
         </section>
 
+        <div className="phase1-action-help">
+          <p className="subtle">Pools auto-initialize from the applied format template.</p>
+          <p className="subtle">Distribute applies serpentine team assignment using Team Setup ranking order.</p>
+        </div>
+
+        <div className="phase1-admin-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={handleAutofillPools}
+            disabled={autofillingPools || savingPools || initializingPools || generatingMatches || savingVenue || savingCourtAssignments}
+          >
+            {autofillingPools ? 'Distributing...' : 'Distribute Teams by Ranking Order'}
+          </button>
+          <button className="primary-button" type="button" onClick={handleGenerateMatches} disabled={!canGenerateMatches || generatingMatches}>
+            {generatingMatches ? 'Generating...' : 'Generate Pool Play Matches'}
+          </button>
+        </div>
+        {poolActionMessage && <p className="subtle phase1-success">{poolActionMessage}</p>}
+        {(poolIssues.length > 0 || generationBlockingIssues.length > 0) && (
+          <div className="phase1-warning-group">
+            {poolIssues.length > 0 && <p className="error">{poolIssues.join('; ')}</p>}
+            {generationBlockingIssues.length > 0 && (
+              <p className="error">
+                Generate Matches is disabled until the following are resolved: {generationBlockingIssues.join(' ')}
+              </p>
+            )}
+          </div>
+        )}
+
         {pools.length > 0 && (
           <DndContext sensors={dragSensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragCancel={handleDragCancel} onDragEnd={handleDragEnd}>
             <div className="phase1-pool-board">
@@ -1537,6 +2104,9 @@ function TournamentPoolPlayAdmin() {
 
         <section className="phase1-schedule">
           <h2 className="secondary-title">{crossoverStage ? `${poolPlayStageLabel} + ${crossoverStageLabel} Schedule` : `${poolPlayStageLabel} Schedule`}</h2>
+          {showingCrossoverTemplates ? (
+            <p className="subtle">{crossoverTemplateNote}</p>
+          ) : null}
           {allScheduleMatches.length === 0 ? (
             <p className="subtle">No matches generated yet.</p>
           ) : (
@@ -1554,17 +2124,42 @@ function TournamentPoolPlayAdmin() {
                       <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
                       {scheduleCourts.map((court) => {
                         const match = scheduleLookup[`${roundBlock}-${court.key}`];
+                        const isTemplateCrossover = Boolean(match?.__isTemplate);
                         const isPending = isPendingCrossoverMatch(match);
+                        const matchupLabel = isTemplateCrossover
+                          ? `${formatTeamLabel(match?.teamA)} vs ${formatTeamLabel(match?.teamB)}`
+                          : isPending
+                            ? 'TBD vs TBD'
+                            : `${formatTeamLabel(match?.teamA)} vs ${formatTeamLabel(match?.teamB)}`;
+                        const refLabel = isTemplateCrossover
+                          ? formatTeamLabel(match?.refTeams?.[0])
+                          : isPending
+                            ? 'TBD'
+                            : formatTeamLabel(match?.refTeams?.[0]);
+                        const stageLabel = match?.poolName
+                          ? `Pool ${match.poolName}`
+                          : isTemplateCrossover
+                            ? crossoverStageLabel
+                            : String(match?.stageKey || 'Stage');
+
                         return (
                           <td key={`${roundBlock}-${court.key}`}>
                             {match ? (
                               <div className="phase1-match-cell">
                                 <p>
-                                  <strong>{match.poolName ? `Pool ${match.poolName}` : String(match?.stageKey || 'Stage')}</strong>
-                                  {`: ${isPending ? 'TBD vs TBD' : `${formatTeamLabel(match?.teamA)} vs ${formatTeamLabel(match?.teamB)}`}`}
+                                  <strong>{stageLabel}</strong>
+                                  {`: ${matchupLabel}`}
                                 </p>
-                                <p>Ref: {isPending ? 'TBD' : formatTeamLabel(match?.refTeams?.[0])}</p>
-                                {isPending ? <p className="subtle">Crossover matchup pending completion of pool-play standings.</p> : null}
+                                <p>Ref: {refLabel}</p>
+                                {isPending ? (
+                                  <p className="subtle">Crossover matchup pending completion of pool-play standings.</p>
+                                ) : null}
+                                {isTemplateCrossover ? (
+                                  <p className="subtle">
+                                    Placeholder matchup from format template
+                                    {match?.__templateByeLabel ? ` • Bye: ${match.__templateByeLabel}` : ''}.
+                                  </p>
+                                ) : null}
                               </div>
                             ) : <span className="subtle">-</span>}
                           </td>

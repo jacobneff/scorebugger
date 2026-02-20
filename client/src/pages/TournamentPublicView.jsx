@@ -106,11 +106,11 @@ const toOverallSeed = (bracket, bracketSeed) => {
   const seed = Number(bracketSeed);
   const offset = PLAYOFF_OVERALL_SEED_OFFSETS[normalizeBracket(bracket)];
 
-  if (!Number.isFinite(seed) || !Number.isFinite(offset)) {
+  if (!Number.isFinite(seed) || !Number.isFinite(offset) || seed <= 0) {
     return null;
   }
 
-  return offset + seed;
+  return offset + Math.floor(seed);
 };
 const formatTeamWithOverallSeed = (team, overallSeed) => {
   const hasResolvedTeam =

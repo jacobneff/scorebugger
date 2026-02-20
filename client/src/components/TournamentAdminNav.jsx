@@ -36,7 +36,7 @@ function TournamentAdminNav({
         },
         {
           key: 'phase1',
-          label: scheduling?.phase1Label || 'Pool Play',
+          label: scheduling?.phase1Label || 'Pool Play Setup',
           href: scheduling?.phase1Href || `/tournaments/${id}/pool-play`,
         },
         ...(showPhase2
@@ -50,7 +50,7 @@ function TournamentAdminNav({
           : []),
         {
           key: 'playoffs',
-          label: 'Playoffs',
+          label: scheduling?.playoffsLabel || 'Playoffs Setup',
           href: scheduling?.playoffsHref || `/tournaments/${id}/playoffs`,
         },
       ]

@@ -572,8 +572,9 @@ function TournamentFormatAdmin() {
                 activeSubTab: 'format',
                 showPhase2: showLegacyPhase2,
                 phase1Label:
-                  appliedFirstPoolStage?.displayName
-                  || (showLegacyPhase2 ? 'Pool Play 1' : 'Pool Play'),
+                  showLegacyPhase2
+                    ? (appliedFirstPoolStage?.displayName || 'Pool Play 1')
+                    : 'Pool Play Setup',
                 phase1Href: showLegacyPhase2
                   ? `/tournaments/${id}/phase1`
                   : `/tournaments/${id}/pool-play`,
@@ -581,6 +582,7 @@ function TournamentFormatAdmin() {
                 phase2Href: showLegacyPhase2
                   ? `/tournaments/${id}/phase2`
                   : `/tournaments/${id}/pool-play`,
+                playoffsLabel: showLegacyPhase2 ? 'Playoffs' : 'Playoffs Setup',
                 playoffsHref: `/tournaments/${id}/playoffs`,
               }}
             />

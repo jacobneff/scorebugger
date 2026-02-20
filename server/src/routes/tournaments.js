@@ -2278,6 +2278,73 @@ function buildGenericPlayoffOpsSchedule(matches, bracketView) {
   });
 }
 
+function buildPlayoffOpsScheduleFromSchedulePlanSlots(slotViews) {
+  const playoffSlots = (Array.isArray(slotViews) ? slotViews : [])
+    .filter((slot) => normalizeSchedulePlanSlotKind(slot?.kind) === 'match')
+    .filter((slot) => Number.isFinite(Number(slot?.roundBlock)))
+    .sort((left, right) => {
+      const byRound = Number(left?.roundBlock) - Number(right?.roundBlock);
+      if (byRound !== 0) {
+        return byRound;
+      }
+
+      const byCourt = String(left?.courtCode || left?.courtLabel || '').localeCompare(
+        String(right?.courtCode || right?.courtLabel || '')
+      );
+      if (byCourt !== 0) {
+        return byCourt;
+      }
+
+      return String(left?.slotId || '').localeCompare(String(right?.slotId || ''));
+    });
+  const orderedRoundBlocks = uniqueValues(
+    playoffSlots
+      .map((slot) => Number(slot?.roundBlock))
+      .filter((roundBlock) => Number.isFinite(roundBlock))
+      .map((roundBlock) => Math.floor(roundBlock))
+      .sort((left, right) => left - right)
+  );
+
+  return orderedRoundBlocks.map((roundBlock, index) => {
+    const slots = playoffSlots
+      .filter((slot) => Number(slot?.roundBlock) === roundBlock)
+      .map((slot) => {
+        const participantA = slot?.participants?.[0] || null;
+        const participantB = slot?.participants?.[1] || null;
+        const teams = {
+          a: participantA?.label || slot?.teamA?.shortName || 'TBD',
+          b: participantB?.label || slot?.teamB?.shortName || 'TBD',
+        };
+
+        return {
+          roundBlock,
+          facility: slot?.facilityLabel || slot?.facility || getFacilityFromCourt(slot?.courtCode),
+          court: slot?.courtCode || slot?.courtLabel || null,
+          matchId: slot?.matchId || null,
+          matchLabel:
+            slot?.roundLabel
+            || slot?.matchupReferenceLabel
+            || slot?.matchupLabel
+            || 'Playoff Match',
+          bracket: slot?.bracket || null,
+          bracketRound: slot?.roundLabel || null,
+          teams,
+          refs:
+            slot?.refLabel && slot.refLabel !== 'TBD'
+              ? [slot.refLabel]
+              : [],
+          status: slot?.status === 'scheduled_tbd' ? 'scheduled' : slot?.status || 'scheduled',
+        };
+      });
+
+    return {
+      roundBlock,
+      label: `Playoff Round ${index + 1}`,
+      slots,
+    };
+  });
+}
+
 function buildGenericPlayoffPayload(matches, formatDef) {
   const bracketOrder = buildBracketOrder(formatDef, matches);
   const orderedMatches = sortPlayoffMatches(matches, { bracketOrder });
@@ -2790,40 +2857,54 @@ function serializeSchedulePlanSlotView({
     .slice(0, 2)
     .map((entry) => serializeSchedulePlanEntry(entry, teamsById))
     .filter(Boolean);
-  const matchTeamAParticipant =
-    participants[0]
-    || serializeSchedulePlanEntry(
-      { type: 'teamId', teamId: match?.teamAId?._id || match?.teamAId },
-      teamsById
-    );
-  const matchTeamBParticipant =
-    participants[1]
-    || serializeSchedulePlanEntry(
-      { type: 'teamId', teamId: match?.teamBId?._id || match?.teamBId },
-      teamsById
-    );
-  const normalizedParticipants = [matchTeamAParticipant, matchTeamBParticipant].filter(Boolean);
-  const resolvedParticipants = normalizedParticipants.length >= 2
-    ? normalizedParticipants
-    : participants;
+  const matchTeamAParticipant = serializeSchedulePlanEntry(
+    { type: 'teamId', teamId: match?.teamAId?._id || match?.teamAId },
+    teamsById
+  );
+  const matchTeamBParticipant = serializeSchedulePlanEntry(
+    { type: 'teamId', teamId: match?.teamBId?._id || match?.teamBId },
+    teamsById
+  );
+  const slotParticipantA = participants[0] || null;
+  const slotParticipantB = participants[1] || null;
+  const resolvedParticipantA = matchTeamAParticipant
+    ? {
+      ...matchTeamAParticipant,
+      referenceLabel:
+        slotParticipantA?.referenceLabel
+        || matchTeamAParticipant?.referenceLabel
+        || '',
+    }
+    : slotParticipantA;
+  const resolvedParticipantB = matchTeamBParticipant
+    ? {
+      ...matchTeamBParticipant,
+      referenceLabel:
+        slotParticipantB?.referenceLabel
+        || matchTeamBParticipant?.referenceLabel
+        || '',
+    }
+    : slotParticipantB;
+  const resolvedParticipants = [resolvedParticipantA, resolvedParticipantB].filter(Boolean);
   const refFromSlot = serializeSchedulePlanEntry(slot?.ref, teamsById);
   const refFromMatch =
     Array.isArray(match?.refTeamIds) &&
     match.refTeamIds.length > 0
-      ? serializeSchedulePlanEntry({ type: 'teamId', teamId: match.refTeamIds[0] }, teamsById)
+      ? serializeSchedulePlanEntry(
+        {
+          type: 'teamId',
+          teamId: match.refTeamIds[0]?._id || match.refTeamIds[0],
+        },
+        teamsById
+      )
       : null;
-  const shouldPreferMatchRef =
-    slot?.ref?.type !== 'rankRef'
-    && Array.isArray(match?.refTeamIds);
-  const ref = shouldPreferMatchRef
-    ? refFromMatch || refFromSlot || null
-    : refFromSlot || refFromMatch || null;
+  const ref = kind === 'lunch' ? null : refFromMatch || refFromSlot || null;
   const byeEntries = (Array.isArray(slot?.byeRefs) ? slot.byeRefs : [])
     .map((entry) => serializeSchedulePlanEntry(entry, teamsById))
     .filter(Boolean);
   if (byeEntries.length === 0 && match?.byeTeamId) {
     const byeFromMatch = serializeSchedulePlanEntry(
-      { type: 'teamId', teamId: match.byeTeamId },
+      { type: 'teamId', teamId: match?.byeTeamId?._id || match?.byeTeamId },
       teamsById
     );
     if (byeFromMatch) {
@@ -2890,14 +2971,18 @@ function serializeSchedulePlanSlotView({
     || FACILITY_LABELS[getFacilityFromCourt(courtCode)]
     || getFacilityFromCourt(courtCode)
     || '';
-  const matchupLabel = resolvedParticipants.length >= 2
-    ? `${resolvedParticipants[0]?.label || 'TBD'} vs ${resolvedParticipants[1]?.label || 'TBD'}`
-    : 'TBD vs TBD';
-  const matchupReferenceLabel = resolvedParticipants.length >= 2
-    ? `${resolvedParticipants[0]?.referenceLabel || resolvedParticipants[0]?.label || 'TBD'} vs ${resolvedParticipants[1]?.referenceLabel || resolvedParticipants[1]?.label || 'TBD'}`
-    : '';
-  const refLabel = ref?.label || 'TBD';
-  const refReferenceLabel = ref?.referenceLabel || ref?.label || '';
+  const matchupLabel = kind === 'lunch'
+    ? 'Lunch Break'
+    : resolvedParticipants.length >= 2
+      ? `${resolvedParticipants[0]?.label || 'TBD'} vs ${resolvedParticipants[1]?.label || 'TBD'}`
+      : 'TBD vs TBD';
+  const matchupReferenceLabel = kind === 'lunch'
+    ? ''
+    : resolvedParticipants.length >= 2
+      ? `${resolvedParticipants[0]?.referenceLabel || resolvedParticipants[0]?.label || 'TBD'} vs ${resolvedParticipants[1]?.referenceLabel || resolvedParticipants[1]?.label || 'TBD'}`
+      : '';
+  const refLabel = kind === 'lunch' ? null : ref?.label || 'TBD';
+  const refReferenceLabel = kind === 'lunch' ? null : ref?.referenceLabel || ref?.label || '';
   const byeLabel = byeEntries.map((entry) => entry?.label).filter(Boolean).join(', ');
   const scoreSummary = serializeCourtScheduleScore(match?.result)
     || serializeScoreSummaryFromScoreboard(scoreboard)
@@ -2951,6 +3036,13 @@ function serializeSchedulePlanSlotView({
         }
       : null,
     scoreboardCode: scoreboard?.code || null,
+    lunchDurationMinutes:
+      kind === 'lunch'
+        ? (
+          toPositiveInteger(tournament?.settings?.schedule?.lunchDurationMinutes)
+          || TOURNAMENT_SCHEDULE_DEFAULTS.lunchDurationMinutes
+        )
+        : null,
   };
 }
 
@@ -2988,6 +3080,335 @@ function sortSchedulePlanSlotsByTime(slots) {
 
     return String(left?.slotId || '').localeCompare(String(right?.slotId || ''));
   });
+}
+
+const SCHEDULE_PLAN_MATCH_SELECT = [
+  'phase',
+  'stageKey',
+  'plannedSlotId',
+  'poolId',
+  'bracket',
+  'bracketRound',
+  'roundBlock',
+  'facility',
+  'court',
+  'facilityId',
+  'courtId',
+  'teamAId',
+  'teamBId',
+  'refTeamIds',
+  'byeTeamId',
+  'status',
+  'startedAt',
+  'endedAt',
+  'result',
+  'scoreboardId',
+  'createdAt',
+].join(' ');
+
+function splitCommaQueryValues(value) {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((entry) => splitCommaQueryValues(entry))
+      .filter(Boolean);
+  }
+
+  if (!isNonEmptyString(value)) {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function normalizeSchedulePlanStageKeysFilter(value) {
+  return uniqueValues(splitCommaQueryValues(value));
+}
+
+function normalizeSchedulePlanKindsFilter(value) {
+  return uniqueValues(
+    splitCommaQueryValues(value)
+      .map((entry) => normalizeSchedulePlanSlotKind(entry))
+      .filter((entry) => entry === 'match' || entry === 'lunch')
+  );
+}
+
+function shouldIncludeSchedulePlanSlot(slot, stageKeysFilter = [], kindsFilter = []) {
+  const stageKeySet = new Set(Array.isArray(stageKeysFilter) ? stageKeysFilter : []);
+  const kindSet = new Set(Array.isArray(kindsFilter) ? kindsFilter : []);
+  const normalizedStageKey = isNonEmptyString(slot?.stageKey) ? slot.stageKey.trim() : '';
+  const normalizedKind = normalizeSchedulePlanSlotKind(slot?.kind);
+
+  if (stageKeySet.size > 0 && !stageKeySet.has(normalizedStageKey)) {
+    return false;
+  }
+
+  if (kindSet.size > 0 && !kindSet.has(normalizedKind)) {
+    return false;
+  }
+
+  return true;
+}
+
+function buildLegacySchedulePlanSlotFromMatch(match, index, tournament) {
+  const roundBlock = Number(match?.roundBlock);
+  const normalizedRoundBlock =
+    Number.isFinite(roundBlock) && roundBlock > 0
+      ? Math.floor(roundBlock)
+      : null;
+  const normalizedStageKey = isNonEmptyString(match?.stageKey)
+    ? match.stageKey.trim()
+    : isNonEmptyString(match?.phase)
+      ? match.phase.trim()
+      : 'match';
+  const fallbackSlotId = isNonEmptyString(match?.plannedSlotId)
+    ? match.plannedSlotId.trim()
+    : `legacy:${toIdString(match?._id) || index}`;
+
+  return {
+    slotId: fallbackSlotId,
+    stageKey: normalizedStageKey,
+    roundBlock: normalizedRoundBlock,
+    timeIndex:
+      normalizedRoundBlock !== null
+        ? resolveSchedulePlanRoundBlockStartMinutes(normalizedRoundBlock, tournament)
+        : null,
+    courtId:
+      (isNonEmptyString(match?.courtId) ? match.courtId.trim() : '')
+      || (isNonEmptyString(match?.court) ? match.court.trim() : '')
+      || null,
+    facilityId:
+      (isNonEmptyString(match?.facilityId) ? match.facilityId.trim() : '')
+      || (isNonEmptyString(match?.facility) ? match.facility.trim() : '')
+      || null,
+    kind: 'match',
+    participants: [],
+    ref: null,
+    byeRefs: [],
+    matchId: match?._id || null,
+  };
+}
+
+async function loadSchedulePlanSlotViews({
+  tournament,
+  formatContext,
+  phaseLabels = PHASE_LABELS,
+  stageDefinitions = new Map(),
+  stageLabels = new Map(),
+  stageKeysFilter = [],
+  kindsFilter = [],
+  includeLegacyFallback = true,
+  io = null,
+} = {}) {
+  const normalizedStageKeys = normalizeSchedulePlanStageKeysFilter(stageKeysFilter);
+  const normalizedKinds = normalizeSchedulePlanKindsFilter(kindsFilter);
+  const tournamentForTimeLabels = {
+    timezone: tournament?.timezone,
+    settings: {
+      schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+      venue: formatContext?.venue,
+    },
+  };
+
+  let schedulePlanSlots = Array.isArray(tournament?.settings?.schedulePlan?.slots)
+    ? tournament.settings.schedulePlan.slots
+    : [];
+  if (schedulePlanSlots.length === 0) {
+    const synced = await syncSchedulePlan({
+      tournamentId: tournament?._id,
+      actorUserId: null,
+      io,
+      emitEvents: false,
+    });
+    schedulePlanSlots = Array.isArray(synced?.slots) ? synced.slots : [];
+  }
+
+  const filteredSchedulePlanSlots = schedulePlanSlots.filter((slot) =>
+    shouldIncludeSchedulePlanSlot(slot, normalizedStageKeys, normalizedKinds)
+  );
+
+  const scheduleSlotIds = uniqueValues(
+    filteredSchedulePlanSlots
+      .map((slot) => (isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : ''))
+      .filter(Boolean)
+  );
+  const scheduleSlotMatchIds = uniqueValues(
+    filteredSchedulePlanSlots.map((slot) => toIdString(slot?.matchId)).filter(Boolean)
+  );
+  const scheduleMatchFilters = [];
+  if (scheduleSlotMatchIds.length > 0) {
+    scheduleMatchFilters.push({ _id: { $in: scheduleSlotMatchIds } });
+  }
+  if (scheduleSlotIds.length > 0) {
+    scheduleMatchFilters.push({ plannedSlotId: { $in: scheduleSlotIds } });
+  }
+
+  const scheduleMatches = scheduleMatchFilters.length > 0
+    ? await Match.find({
+        tournamentId: tournament._id,
+        $or: scheduleMatchFilters,
+      })
+        .select(SCHEDULE_PLAN_MATCH_SELECT)
+        .populate('poolId', 'name')
+        .populate('teamAId', 'name shortName logoUrl')
+        .populate('teamBId', 'name shortName logoUrl')
+        .populate('refTeamIds', 'name shortName logoUrl')
+        .populate('byeTeamId', 'name shortName logoUrl')
+        .populate('scoreboardId', 'code teams.score sets')
+        .lean()
+    : [];
+  const scheduleMatchByPlannedSlotId = new Map(
+    scheduleMatches
+      .map((match) => [
+        isNonEmptyString(match?.plannedSlotId) ? match.plannedSlotId.trim() : '',
+        match,
+      ])
+      .filter(([plannedSlotId]) => Boolean(plannedSlotId))
+  );
+  const scheduleMatchById = new Map(
+    scheduleMatches
+      .map((match) => [toIdString(match?._id), match])
+      .filter(([matchId]) => Boolean(matchId))
+  );
+  const hydratedSchedulePlanSlots = filteredSchedulePlanSlots.map((slot) => {
+    if (toIdString(slot?.matchId)) {
+      return slot;
+    }
+
+    const slotId = isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : '';
+    if (!slotId || !scheduleMatchByPlannedSlotId.has(slotId)) {
+      return slot;
+    }
+
+    return {
+      ...slot,
+      matchId: scheduleMatchByPlannedSlotId.get(slotId)?._id || null,
+    };
+  });
+
+  const scheduleTeamIds = uniqueValues(
+    [
+      ...hydratedSchedulePlanSlots.flatMap((slot) => {
+        const participantIds = (Array.isArray(slot?.participants) ? slot.participants : [])
+          .map((entry) => (entry?.type === 'teamId' ? toIdString(entry.teamId) : ''))
+          .filter(Boolean);
+        const refId = slot?.ref?.type === 'teamId' ? toIdString(slot.ref.teamId) : '';
+        const byeIds = (Array.isArray(slot?.byeRefs) ? slot.byeRefs : [])
+          .map((entry) => (entry?.type === 'teamId' ? toIdString(entry.teamId) : ''))
+          .filter(Boolean);
+        return [...participantIds, refId, ...byeIds].filter(Boolean);
+      }),
+      ...scheduleMatches.flatMap((match) => [
+        toIdString(match?.teamAId?._id || match?.teamAId),
+        toIdString(match?.teamBId?._id || match?.teamBId),
+        ...(Array.isArray(match?.refTeamIds)
+          ? match.refTeamIds.map((refTeam) => toIdString(refTeam?._id || refTeam))
+          : []),
+        toIdString(match?.byeTeamId?._id || match?.byeTeamId),
+      ]),
+    ].filter(Boolean)
+  );
+  const scheduleTeams = scheduleTeamIds.length > 0
+    ? await TournamentTeam.find({
+        _id: { $in: scheduleTeamIds },
+        tournamentId: tournament._id,
+      })
+        .select('name shortName logoUrl')
+        .lean()
+    : [];
+  const scheduleTeamsById = new Map(
+    scheduleTeams.map((scheduleTeam) => [toIdString(scheduleTeam?._id), scheduleTeam])
+  );
+
+  let scheduleSlotViews = sortSchedulePlanSlotsByTime(
+    hydratedSchedulePlanSlots.map((slot) =>
+      serializeSchedulePlanSlotView({
+        slot,
+        tournament: tournamentForTimeLabels,
+        formatDef: formatContext?.formatDef,
+        phaseLabels,
+        stageDefinitions,
+        stageLabels,
+        teamsById: scheduleTeamsById,
+        matchById: scheduleMatchById,
+      })
+    )
+  );
+
+  const shouldReturnMatchFallback =
+    includeLegacyFallback
+    && scheduleSlotViews.length === 0
+    && (normalizedKinds.length === 0 || normalizedKinds.includes('match'));
+  if (shouldReturnMatchFallback) {
+    const legacyMatchQuery = { tournamentId: tournament._id };
+    if (normalizedStageKeys.length > 0) {
+      legacyMatchQuery.$or = [
+        { stageKey: { $in: normalizedStageKeys } },
+        { phase: { $in: normalizedStageKeys } },
+      ];
+    }
+
+    const legacyMatches = await Match.find(legacyMatchQuery)
+      .select(SCHEDULE_PLAN_MATCH_SELECT)
+      .populate('poolId', 'name')
+      .populate('teamAId', 'name shortName logoUrl')
+      .populate('teamBId', 'name shortName logoUrl')
+      .populate('refTeamIds', 'name shortName logoUrl')
+      .populate('byeTeamId', 'name shortName logoUrl')
+      .populate('scoreboardId', 'code teams.score sets')
+      .lean();
+    const fallbackMatchById = new Map(
+      legacyMatches
+        .map((match) => [toIdString(match?._id), match])
+        .filter(([matchId]) => Boolean(matchId))
+    );
+    const fallbackTeamsById = new Map();
+    legacyMatches.forEach((match) => {
+      const teamAId = toIdString(match?.teamAId?._id || match?.teamAId);
+      const teamBId = toIdString(match?.teamBId?._id || match?.teamBId);
+      if (teamAId && match?.teamAId && typeof match.teamAId === 'object') {
+        fallbackTeamsById.set(teamAId, match.teamAId);
+      }
+      if (teamBId && match?.teamBId && typeof match.teamBId === 'object') {
+        fallbackTeamsById.set(teamBId, match.teamBId);
+      }
+
+      (Array.isArray(match?.refTeamIds) ? match.refTeamIds : []).forEach((refTeam) => {
+        const refTeamId = toIdString(refTeam?._id || refTeam);
+        if (refTeamId && refTeam && typeof refTeam === 'object') {
+          fallbackTeamsById.set(refTeamId, refTeam);
+        }
+      });
+
+      const byeTeamId = toIdString(match?.byeTeamId?._id || match?.byeTeamId);
+      if (byeTeamId && match?.byeTeamId && typeof match.byeTeamId === 'object') {
+        fallbackTeamsById.set(byeTeamId, match.byeTeamId);
+      }
+    });
+
+    scheduleSlotViews = sortSchedulePlanSlotsByTime(
+      legacyMatches.map((match, index) =>
+        serializeSchedulePlanSlotView({
+          slot: buildLegacySchedulePlanSlotFromMatch(match, index, tournamentForTimeLabels),
+          tournament: tournamentForTimeLabels,
+          formatDef: formatContext?.formatDef,
+          phaseLabels,
+          stageDefinitions,
+          stageLabels,
+          teamsById: fallbackTeamsById,
+          matchById: fallbackMatchById,
+        })
+      )
+    );
+  }
+
+  return {
+    slots: scheduleSlotViews,
+    stageKeys: normalizedStageKeys,
+    kinds: normalizedKinds,
+  };
 }
 
 function serializeLegacyCourtScheduleMatch(slotView) {
@@ -3036,6 +3457,7 @@ function createTeamTimelineEntry({ slotView, role, focusTeamId, index = 0 } = {}
   const roleMeta = TEAM_TIMELINE_ROLE_META[role] || TEAM_TIMELINE_ROLE_META.PLAY;
   const slotId = isNonEmptyString(slotView?.slotId) ? slotView.slotId.trim() : '';
   const normalizedRole = String(role || '').trim().toUpperCase();
+  const isLunch = normalizedRole === 'LUNCH';
   const participants = Array.isArray(slotView?.participants) ? slotView.participants : [];
   const teamA = slotView?.teamA || participants?.[0]?.team || null;
   const teamB = slotView?.teamB || participants?.[1]?.team || null;
@@ -3071,7 +3493,10 @@ function createTeamTimelineEntry({ slotView, role, focusTeamId, index = 0 } = {}
   } else if (normalizedRole === 'BYE') {
     summaryLabel = slotView?.poolName ? `BYE (Pool ${slotView.poolName})` : 'BYE';
   } else if (normalizedRole === 'LUNCH') {
-    summaryLabel = 'Lunch Break';
+    const lunchDurationMinutes =
+      toPositiveInteger(slotView?.lunchDurationMinutes)
+      || TOURNAMENT_SCHEDULE_DEFAULTS.lunchDurationMinutes;
+    summaryLabel = `Lunch Break (${lunchDurationMinutes} min)`;
   }
 
   return {
@@ -3087,7 +3512,7 @@ function createTeamTimelineEntry({ slotView, role, focusTeamId, index = 0 } = {}
     roundBlock: slotView?.roundBlock ?? null,
     timeIndex: Number.isFinite(Number(slotView?.timeIndex)) ? Number(slotView.timeIndex) : null,
     timeLabel: slotView?.timeLabel || '',
-    status: normalizedRole === 'LUNCH' ? 'scheduled' : slotView?.status || 'scheduled',
+    status: isLunch ? 'scheduled' : slotView?.status || 'scheduled',
     slotId: slotId || null,
     matchId: toIdString(slotView?.matchId) || null,
     plannedSlotId: isNonEmptyString(slotView?.plannedSlotId)
@@ -3105,14 +3530,14 @@ function createTeamTimelineEntry({ slotView, role, focusTeamId, index = 0 } = {}
     facilityLabel: slotView?.facilityLabel || null,
     matchupLabel: slotView?.matchupLabel || null,
     matchupReferenceLabel: slotView?.matchupReferenceLabel || null,
-    participants,
-    teamA,
-    teamB,
-    opponent: opponent || null,
-    ref: slotView?.ref || null,
-    refLabel: slotView?.refLabel || null,
-    refReferenceLabel: slotView?.refReferenceLabel || null,
-    byeParticipants: Array.isArray(slotView?.byeParticipants) ? slotView.byeParticipants : [],
+    participants: isLunch ? [] : participants,
+    teamA: isLunch ? null : teamA,
+    teamB: isLunch ? null : teamB,
+    opponent: isLunch ? null : (opponent || null),
+    ref: isLunch ? null : (slotView?.ref || null),
+    refLabel: isLunch ? null : (slotView?.refLabel || null),
+    refReferenceLabel: isLunch ? null : (slotView?.refReferenceLabel || null),
+    byeParticipants: isLunch ? [] : (Array.isArray(slotView?.byeParticipants) ? slotView.byeParticipants : []),
     byeLabel: slotView?.byeLabel || null,
     scoreSummary,
     completedSetScores,
@@ -3922,6 +4347,9 @@ async function generateGenericPlayoffStageMatches({
         roundBlock: plannedMatch.roundBlock,
         facility: plannedMatch.facility,
         court: plannedMatch.court,
+        plannedSlotId: isNonEmptyString(plannedMatch?.bracketMatchKey)
+          ? `playoffs:${plannedMatch.bracketMatchKey.trim()}`
+          : null,
         scoreboardId: scoreboard._id,
         status: 'scheduled',
       });
@@ -4138,128 +4566,18 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
         venue: formatContext.venue,
       },
     };
-
-    let schedulePlanSlots = Array.isArray(tournament?.settings?.schedulePlan?.slots)
-      ? tournament.settings.schedulePlan.slots
-      : [];
-    if (schedulePlanSlots.length === 0) {
-      const synced = await syncSchedulePlan({
-        tournamentId: tournament._id,
-        actorUserId: null,
-        io: req.app?.get('io'),
-        emitEvents: false,
-      });
-      schedulePlanSlots = Array.isArray(synced?.slots) ? synced.slots : [];
-    }
-
-    const scheduleSlotIds = uniqueValues(
-      schedulePlanSlots
-        .map((slot) => (isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : ''))
-        .filter(Boolean)
-    );
-    const scheduleSlotMatchIds = uniqueValues(
-      schedulePlanSlots.map((slot) => toIdString(slot?.matchId)).filter(Boolean)
-    );
-    const scheduleMatchFilters = [];
-    if (scheduleSlotMatchIds.length > 0) {
-      scheduleMatchFilters.push({ _id: { $in: scheduleSlotMatchIds } });
-    }
-    if (scheduleSlotIds.length > 0) {
-      scheduleMatchFilters.push({ plannedSlotId: { $in: scheduleSlotIds } });
-    }
-
-    const scheduleMatches = scheduleMatchFilters.length > 0
-      ? await Match.find({
-          tournamentId: tournament._id,
-          $or: scheduleMatchFilters,
-        })
-          .select(
-            'phase stageKey plannedSlotId poolId bracket bracketRound roundBlock facility court facilityId courtId teamAId teamBId refTeamIds byeTeamId status startedAt endedAt result scoreboardId createdAt'
-          )
-          .populate('teamAId', 'name shortName logoUrl')
-          .populate('teamBId', 'name shortName logoUrl')
-          .populate('refTeamIds', 'name shortName logoUrl')
-          .populate('byeTeamId', 'name shortName logoUrl')
-          .populate('poolId', 'name')
-          .populate('scoreboardId', 'code teams.score sets')
-          .lean()
-      : [];
-    const scheduleMatchByPlannedSlotId = new Map(
-      scheduleMatches
-        .map((match) => [
-          isNonEmptyString(match?.plannedSlotId) ? match.plannedSlotId.trim() : '',
-          match,
-        ])
-        .filter(([plannedSlotId]) => Boolean(plannedSlotId))
-    );
-    const scheduleMatchById = new Map(
-      scheduleMatches
-        .map((match) => [toIdString(match?._id), match])
-        .filter(([matchId]) => Boolean(matchId))
-    );
-    const hydratedSchedulePlanSlots = schedulePlanSlots.map((slot) => {
-      if (toIdString(slot?.matchId)) {
-        return slot;
-      }
-
-      const slotId = isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : '';
-      if (!slotId || !scheduleMatchByPlannedSlotId.has(slotId)) {
-        return slot;
-      }
-
-      return {
-        ...slot,
-        matchId: scheduleMatchByPlannedSlotId.get(slotId)?._id || null,
-      };
+    const schedulePlanResult = await loadSchedulePlanSlotViews({
+      tournament,
+      formatContext,
+      phaseLabels,
+      stageDefinitions,
+      stageLabels,
+      includeLegacyFallback: true,
+      io: req.app?.get('io'),
     });
-
-    const scheduleTeamIds = uniqueValues(
-      [
-        ...hydratedSchedulePlanSlots.flatMap((slot) => {
-          const participantIds = (Array.isArray(slot?.participants) ? slot.participants : [])
-            .map((entry) => (entry?.type === 'teamId' ? toIdString(entry.teamId) : ''))
-            .filter(Boolean);
-          const refId = slot?.ref?.type === 'teamId' ? toIdString(slot.ref.teamId) : '';
-          const byeIds = (Array.isArray(slot?.byeRefs) ? slot.byeRefs : [])
-            .map((entry) => (entry?.type === 'teamId' ? toIdString(entry.teamId) : ''))
-            .filter(Boolean);
-          return [...participantIds, refId, ...byeIds].filter(Boolean);
-        }),
-        ...scheduleMatches.flatMap((match) => [
-          toIdString(match?.teamAId?._id || match?.teamAId),
-          toIdString(match?.teamBId?._id || match?.teamBId),
-          ...(Array.isArray(match?.refTeamIds)
-            ? match.refTeamIds.map((refTeam) => toIdString(refTeam?._id || refTeam))
-            : []),
-          toIdString(match?.byeTeamId?._id || match?.byeTeamId),
-        ]),
-      ].filter(Boolean)
-    );
-    const scheduleTeams = scheduleTeamIds.length > 0
-      ? await TournamentTeam.find({
-          _id: { $in: scheduleTeamIds },
-          tournamentId: tournament._id,
-        })
-          .select('name shortName logoUrl')
-          .lean()
+    const scheduleSlotViews = Array.isArray(schedulePlanResult?.slots)
+      ? schedulePlanResult.slots
       : [];
-    const scheduleTeamsById = new Map(
-      scheduleTeams.map((scheduleTeam) => [toIdString(scheduleTeam?._id), scheduleTeam])
-    );
-    const scheduleSlotViews = sortSchedulePlanSlotsByTime(
-      hydratedSchedulePlanSlots.map((slot) =>
-        serializeSchedulePlanSlotView({
-          slot,
-          tournament: tournamentForTimeLabels,
-          formatDef: formatContext.formatDef,
-          phaseLabels,
-          stageDefinitions,
-          stageLabels,
-          teamsById: scheduleTeamsById,
-          matchById: scheduleMatchById,
-        })
-      )
-    );
 
     const relevantMatches = await Match.find({
       tournamentId: tournament._id,
@@ -4514,6 +4832,9 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
             timeLabel: formatSchedulePlanTimeLabel(lunchTimeMinutes, tournamentForTimeLabels),
             status: 'scheduled',
             matchupLabel: 'Lunch Break',
+            lunchDurationMinutes:
+              toPositiveInteger(lunchDurationMinutes)
+              || TOURNAMENT_SCHEDULE_DEFAULTS.lunchDurationMinutes,
             participants: [],
             byeParticipants: [],
           },
@@ -4666,277 +4987,32 @@ router.get('/code/:publicCode/courts/:courtCode/schedule', async (req, res, next
       ].filter(Boolean)
     );
 
-    let schedulePlanSlots = Array.isArray(tournament?.settings?.schedulePlan?.slots)
-      ? tournament.settings.schedulePlan.slots
-      : [];
-    if (schedulePlanSlots.length === 0) {
-      const synced = await syncSchedulePlan({
-        tournamentId: tournament._id,
-        io: req.app?.get('io'),
-        emitEvents: false,
-      });
-      schedulePlanSlots = Array.isArray(synced?.slots) ? synced.slots : [];
-    }
-
-    const courtSlots = (Array.isArray(schedulePlanSlots) ? schedulePlanSlots : []).filter((slot) => {
-      if (!isNonEmptyString(slot?.courtId)) {
-        return false;
-      }
-
-      const slotCourtId = slot.courtId.trim();
-      const slotVenueCourt = findCourtInVenue(formatContext.venue, slotCourtId);
-      const slotLookupKeys = new Set(
-        [
-          normalizeCourtLookupKey(slotCourtId),
-          normalizeCourtLookupKey(slotVenueCourt?.courtId),
-          normalizeCourtLookupKey(slotVenueCourt?.courtName),
-        ].filter(Boolean)
-      );
-
-      return Array.from(slotLookupKeys).some((lookupKey) => requestedCourtLookupKeys.has(lookupKey));
+    const schedulePlanResult = await loadSchedulePlanSlotViews({
+      tournament,
+      formatContext,
+      phaseLabels,
+      stageDefinitions,
+      stageLabels,
+      includeLegacyFallback: true,
+      io: req.app?.get('io'),
     });
-    const slotIds = uniqueValues(
-      courtSlots
-        .map((slot) => (isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : ''))
-        .filter(Boolean)
-    );
-    const slotMatchIds = uniqueValues(
-      courtSlots.map((slot) => toIdString(slot?.matchId)).filter(Boolean)
-    );
-    const matchFilterClauses = [];
-    if (slotMatchIds.length > 0) {
-      matchFilterClauses.push({ _id: { $in: slotMatchIds } });
-    }
-    if (slotIds.length > 0) {
-      matchFilterClauses.push({ plannedSlotId: { $in: slotIds } });
-    }
-    const scheduleMatches = matchFilterClauses.length > 0
-      ? await Match.find({
-          tournamentId: tournament._id,
-          $or: matchFilterClauses,
-        })
-          .select(
-            'phase stageKey plannedSlotId poolId bracket bracketRound roundBlock facility court facilityId courtId teamAId teamBId refTeamIds byeTeamId status startedAt endedAt result scoreboardId'
-          )
-          .populate('poolId', 'name')
-          .populate('teamAId', 'name shortName logoUrl')
-          .populate('teamBId', 'name shortName logoUrl')
-          .populate('refTeamIds', 'name shortName logoUrl')
-          .populate('byeTeamId', 'name shortName logoUrl')
-          .populate('scoreboardId', 'code teams.score sets')
-          .lean()
+    const allSlots = Array.isArray(schedulePlanResult?.slots)
+      ? schedulePlanResult.slots
       : [];
-    const matchById = new Map(
-      scheduleMatches.map((match) => [toIdString(match?._id), match]).filter(([matchId]) => Boolean(matchId))
+    const responseSlots = sortSchedulePlanSlotsByTime(
+      allSlots.filter((slot) => {
+        const lookupKeys = new Set(
+          [
+            normalizeCourtLookupKey(slot?.courtCode),
+            normalizeCourtLookupKey(slot?.courtLabel),
+          ].filter(Boolean)
+        );
+        return Array.from(lookupKeys).some((lookupKey) => requestedCourtLookupKeys.has(lookupKey));
+      })
     );
-    const matchByPlannedSlotId = new Map(
-      scheduleMatches
-        .map((match) => [
-          isNonEmptyString(match?.plannedSlotId) ? match.plannedSlotId.trim() : '',
-          match,
-        ])
-        .filter(([plannedSlotId]) => Boolean(plannedSlotId))
-    );
-    const hydratedCourtSlots = courtSlots.map((slot) => {
-      if (toIdString(slot?.matchId)) {
-        return slot;
-      }
-
-      const slotId = isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : '';
-      if (!slotId || !matchByPlannedSlotId.has(slotId)) {
-        return slot;
-      }
-
-      return {
-        ...slot,
-        matchId: matchByPlannedSlotId.get(slotId)?._id || null,
-      };
-    });
-    const teamIds = uniqueValues(
-      [
-        ...hydratedCourtSlots.flatMap((slot) => {
-          const participantIds = (Array.isArray(slot?.participants) ? slot.participants : [])
-            .map((entry) => (entry?.type === 'teamId' ? toIdString(entry.teamId) : ''))
-            .filter(Boolean);
-          const refId = slot?.ref?.type === 'teamId' ? toIdString(slot.ref.teamId) : '';
-          const byeIds = (Array.isArray(slot?.byeRefs) ? slot.byeRefs : [])
-            .map((entry) => (entry?.type === 'teamId' ? toIdString(entry.teamId) : ''))
-            .filter(Boolean);
-          return [...participantIds, refId, ...byeIds].filter(Boolean);
-        }),
-        ...scheduleMatches.flatMap((match) => [
-          toIdString(match?.teamAId?._id || match?.teamAId),
-          toIdString(match?.teamBId?._id || match?.teamBId),
-          ...(Array.isArray(match?.refTeamIds)
-            ? match.refTeamIds.map((refTeam) => toIdString(refTeam?._id || refTeam))
-            : []),
-          toIdString(match?.byeTeamId?._id || match?.byeTeamId),
-        ]),
-      ].filter(Boolean)
-    );
-    const teams = teamIds.length > 0
-      ? await TournamentTeam.find({
-          _id: { $in: teamIds },
-          tournamentId: tournament._id,
-        })
-          .select('name shortName logoUrl')
-          .lean()
-      : [];
-    const teamsById = new Map(teams.map((team) => [toIdString(team?._id), team]));
-    const slots = sortSchedulePlanSlotsByTime(
-      hydratedCourtSlots.map((slot) =>
-        serializeSchedulePlanSlotView({
-          slot,
-          tournament,
-          formatDef: formatContext.formatDef,
-          phaseLabels,
-          stageDefinitions,
-          stageLabels,
-          teamsById,
-          matchById,
-        })
-      )
-    );
-    const legacyMatches = slots
-      .filter((slot) => slot.kind === 'match')
+    const responseLegacyMatches = responseSlots
+      .filter((slot) => normalizeSchedulePlanSlotKind(slot?.kind) === 'match')
       .map((slot) => serializeLegacyCourtScheduleMatch(slot));
-    let responseSlots = slots;
-    let responseLegacyMatches = legacyMatches;
-
-    if (responseSlots.length === 0) {
-      const legacyCourtQueryValues = uniqueValues(
-        [
-          requestedCourtKey,
-          legacyCourtCode,
-          venueCourt?.courtId,
-          venueCourt?.courtName,
-        ]
-          .map((value) => (isNonEmptyString(value) ? value.trim() : ''))
-          .filter(Boolean)
-      );
-      const legacyCourtMatches = legacyCourtQueryValues.length > 0
-        ? await Match.find({
-            tournamentId: tournament._id,
-            $or: [
-              { courtId: { $in: legacyCourtQueryValues } },
-              { court: { $in: legacyCourtQueryValues } },
-            ],
-          })
-            .select(
-              'phase stageKey plannedSlotId poolId bracket bracketRound roundBlock facility court facilityId courtId teamAId teamBId refTeamIds byeTeamId status startedAt endedAt result scoreboardId createdAt'
-            )
-            .populate('poolId', 'name')
-            .populate('teamAId', 'name shortName logoUrl')
-            .populate('teamBId', 'name shortName logoUrl')
-            .populate('refTeamIds', 'name shortName logoUrl')
-            .populate('byeTeamId', 'name shortName logoUrl')
-            .populate('scoreboardId', 'code teams.score sets')
-            .lean()
-        : [];
-      const filteredLegacyCourtMatches = sortMatchesForCourtSchedule(
-        legacyCourtMatches.filter((match) => {
-          const legacyMatchVenueCourt = findCourtInVenue(
-            formatContext.venue,
-            match?.courtId || match?.court
-          );
-          const legacyMatchLookupKeys = new Set(
-            [
-              normalizeCourtLookupKey(match?.courtId),
-              normalizeCourtLookupKey(match?.court),
-              normalizeCourtLookupKey(legacyMatchVenueCourt?.courtId),
-              normalizeCourtLookupKey(legacyMatchVenueCourt?.courtName),
-            ].filter(Boolean)
-          );
-          return Array.from(legacyMatchLookupKeys).some((lookupKey) =>
-            requestedCourtLookupKeys.has(lookupKey)
-          );
-        })
-      );
-
-      if (filteredLegacyCourtMatches.length > 0) {
-        const fallbackMatchById = new Map(
-          filteredLegacyCourtMatches
-            .map((match) => [toIdString(match?._id), match])
-            .filter(([matchId]) => Boolean(matchId))
-        );
-        const fallbackTeamsById = new Map();
-        filteredLegacyCourtMatches.forEach((match) => {
-          const teamAId = toIdString(match?.teamAId?._id || match?.teamAId);
-          const teamBId = toIdString(match?.teamBId?._id || match?.teamBId);
-          if (teamAId && match?.teamAId && typeof match.teamAId === 'object') {
-            fallbackTeamsById.set(teamAId, match.teamAId);
-          }
-          if (teamBId && match?.teamBId && typeof match.teamBId === 'object') {
-            fallbackTeamsById.set(teamBId, match.teamBId);
-          }
-
-          (Array.isArray(match?.refTeamIds) ? match.refTeamIds : []).forEach((refTeam) => {
-            const refTeamId = toIdString(refTeam?._id || refTeam);
-            if (refTeamId && refTeam && typeof refTeam === 'object') {
-              fallbackTeamsById.set(refTeamId, refTeam);
-            }
-          });
-
-          const byeTeamId = toIdString(match?.byeTeamId?._id || match?.byeTeamId);
-          if (byeTeamId && match?.byeTeamId && typeof match.byeTeamId === 'object') {
-            fallbackTeamsById.set(byeTeamId, match.byeTeamId);
-          }
-        });
-
-        responseSlots = sortSchedulePlanSlotsByTime(
-          filteredLegacyCourtMatches.map((match, index) => {
-            const roundBlock = Number(match?.roundBlock);
-            const normalizedRoundBlock =
-              Number.isFinite(roundBlock) && roundBlock > 0
-                ? Math.floor(roundBlock)
-                : null;
-            const normalizedStageKey = isNonEmptyString(match?.stageKey)
-              ? match.stageKey.trim()
-              : isNonEmptyString(match?.phase)
-                ? match.phase.trim()
-                : 'match';
-            const fallbackSlotId = isNonEmptyString(match?.plannedSlotId)
-              ? match.plannedSlotId.trim()
-              : `legacy:${toIdString(match?._id) || index}`;
-
-            return serializeSchedulePlanSlotView({
-              slot: {
-                slotId: fallbackSlotId,
-                stageKey: normalizedStageKey,
-                roundBlock: normalizedRoundBlock,
-                timeIndex:
-                  normalizedRoundBlock !== null
-                    ? resolveSchedulePlanRoundBlockStartMinutes(normalizedRoundBlock, tournament)
-                    : null,
-                courtId:
-                  (isNonEmptyString(match?.courtId) ? match.courtId.trim() : '')
-                  || (isNonEmptyString(match?.court) ? match.court.trim() : '')
-                  || requestedCourtKey,
-                facilityId:
-                  (isNonEmptyString(match?.facilityId) ? match.facilityId.trim() : '')
-                  || (isNonEmptyString(match?.facility) ? match.facility.trim() : '')
-                  || null,
-                kind: 'match',
-                participants: [],
-                ref: null,
-                byeRefs: [],
-                matchId: match?._id || null,
-              },
-              tournament,
-              formatDef: formatContext.formatDef,
-              phaseLabels,
-              stageDefinitions,
-              stageLabels,
-              teamsById: fallbackTeamsById,
-              matchById: fallbackMatchById,
-            });
-          })
-        );
-        responseLegacyMatches = filteredLegacyCourtMatches.map((match) =>
-          serializeMatchForCourtSchedule(match, phaseLabels)
-        );
-      }
-    }
 
     return res.json({
       court: {
@@ -4952,6 +5028,50 @@ router.get('/code/:publicCode/courts/:courtCode/schedule', async (req, res, next
       },
       slots: responseSlots,
       matches: responseLegacyMatches,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/code/:publicCode/schedule-plan -> public schedulePlan slot views
+router.get('/code/:publicCode/schedule-plan', async (req, res, next) => {
+  try {
+    const publicCode = normalizePublicCode(req.params.publicCode);
+
+    if (!new RegExp(`^[A-Z0-9]{${CODE_LENGTH}}$`).test(publicCode)) {
+      return res.status(400).json({ message: 'Invalid tournament code' });
+    }
+
+    const tournament = await Tournament.findOne({ publicCode })
+      .select('_id timezone settings.schedule settings.schedulePlan settings.format settings.venue facilities')
+      .lean();
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found' });
+    }
+
+    const teamCount = await TournamentTeam.countDocuments({ tournamentId: tournament._id });
+    const formatContext = getTournamentFormatContext(tournament, teamCount);
+    const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
+    const stageDefinitions = buildStageDefinitionLookup(formatContext.formatDef);
+    const stageLabels = buildStageLabelLookup(formatContext.formatDef);
+    const includeLegacyFallback = parseBooleanFlag(req.query?.includeLegacyFallback, true);
+
+    const schedulePlanResult = await loadSchedulePlanSlotViews({
+      tournament,
+      formatContext,
+      phaseLabels,
+      stageDefinitions,
+      stageLabels,
+      stageKeysFilter: req.query?.stageKeys,
+      kindsFilter: req.query?.kinds,
+      includeLegacyFallback,
+      io: req.app?.get('io'),
+    });
+
+    return res.json({
+      slots: Array.isArray(schedulePlanResult?.slots) ? schedulePlanResult.slots : [],
     });
   } catch (error) {
     return next(error);
@@ -5046,7 +5166,7 @@ router.get('/code/:publicCode/playoffs', async (req, res, next) => {
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id name timezone status publicCode settings.schedule settings.format settings.venue facilities')
+      .select('_id name timezone status publicCode settings.schedule settings.schedulePlan settings.format settings.venue facilities')
       .lean();
 
     if (!tournament) {
@@ -5055,13 +5175,37 @@ router.get('/code/:publicCode/playoffs', async (req, res, next) => {
 
     const teamCount = await TournamentTeam.countDocuments({ tournamentId: tournament._id });
     const formatContext = getTournamentFormatContext(tournament, teamCount);
+    const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
+    const stageDefinitions = buildStageDefinitionLookup(formatContext.formatDef);
+    const stageLabels = buildStageLabelLookup(formatContext.formatDef);
 
     const matches = await loadMatchesForResponse({
       tournamentId: tournament._id,
       phase: 'playoffs',
     });
     const sanitizedMatches = matches.map(sanitizePlayoffMatchForPublic);
-    const payload = buildFormatAwarePlayoffPayload(sanitizedMatches, formatContext.formatDef);
+    let payload = buildFormatAwarePlayoffPayload(sanitizedMatches, formatContext.formatDef);
+    const isLegacyFormat = formatContext.formatDef?.id === DEFAULT_15_TEAM_FORMAT_ID;
+    if (!isLegacyFormat && (!Array.isArray(payload?.opsSchedule) || payload.opsSchedule.length === 0)) {
+      const schedulePlanResult = await loadSchedulePlanSlotViews({
+        tournament,
+        formatContext,
+        phaseLabels,
+        stageDefinitions,
+        stageLabels,
+        stageKeysFilter: ['playoffs'],
+        kindsFilter: ['match'],
+        includeLegacyFallback: false,
+        io: req.app?.get('io'),
+      });
+      const fallbackOpsSchedule = buildPlayoffOpsScheduleFromSchedulePlanSlots(schedulePlanResult?.slots);
+      if (fallbackOpsSchedule.length > 0) {
+        payload = {
+          ...payload,
+          opsSchedule: fallbackOpsSchedule,
+        };
+      }
+    }
 
     return res.json({
       tournament: {
@@ -6184,22 +6328,6 @@ router.post('/:id/stages/:stageKey/matches/generate', requireAuth, async (req, r
       return res.status(409).json({
         message: `${stageDef.displayName || stageDef.key} matches already generated. Re-run with ?force=true to regenerate.`,
       });
-    }
-
-    if (stageDef.type === 'crossover') {
-      const readiness = await evaluateCrossoverGenerationReadiness({
-        tournamentId: id,
-        formatDef: formatContext.formatDef,
-        stageDef,
-      });
-
-      if (!readiness.ready) {
-        return res.status(400).json({
-          message:
-            readiness.message
-            || 'Crossover matches cannot be generated until source pool matches are finalized.',
-        });
-      }
     }
 
     if (forceRegenerate) {
@@ -7335,13 +7463,38 @@ router.get('/:id/playoffs', requireAuth, async (req, res, next) => {
       ownedContext.tournament,
       ownedContext.teamCount
     );
+    const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
+    const stageDefinitions = buildStageDefinitionLookup(formatContext.formatDef);
+    const stageLabels = buildStageLabelLookup(formatContext.formatDef);
 
     const playoffMatches = await loadMatchesForResponse({
       tournamentId: id,
       phase: 'playoffs',
     });
+    let payload = buildFormatAwarePlayoffPayload(playoffMatches, formatContext.formatDef);
+    const isLegacyFormat = formatContext.formatDef?.id === DEFAULT_15_TEAM_FORMAT_ID;
+    if (!isLegacyFormat && (!Array.isArray(payload?.opsSchedule) || payload.opsSchedule.length === 0)) {
+      const schedulePlanResult = await loadSchedulePlanSlotViews({
+        tournament: ownedContext.tournament,
+        formatContext,
+        phaseLabels,
+        stageDefinitions,
+        stageLabels,
+        stageKeysFilter: ['playoffs'],
+        kindsFilter: ['match'],
+        includeLegacyFallback: false,
+        io: req.app?.get('io'),
+      });
+      const fallbackOpsSchedule = buildPlayoffOpsScheduleFromSchedulePlanSlots(schedulePlanResult?.slots);
+      if (fallbackOpsSchedule.length > 0) {
+        payload = {
+          ...payload,
+          opsSchedule: fallbackOpsSchedule,
+        };
+      }
+    }
 
-    return res.json(buildFormatAwarePlayoffPayload(playoffMatches, formatContext.formatDef));
+    return res.json(payload);
   } catch (error) {
     return next(error);
   }
@@ -7369,15 +7522,87 @@ router.get('/:id/playoffs/ops', requireAuth, async (req, res, next) => {
       ownedContext.tournament,
       ownedContext.teamCount
     );
+    const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
+    const stageDefinitions = buildStageDefinitionLookup(formatContext.formatDef);
+    const stageLabels = buildStageLabelLookup(formatContext.formatDef);
 
     const playoffMatches = await loadMatchesForResponse({
       tournamentId: id,
       phase: 'playoffs',
     });
-    const payload = buildFormatAwarePlayoffPayload(playoffMatches, formatContext.formatDef);
+    let payload = buildFormatAwarePlayoffPayload(playoffMatches, formatContext.formatDef);
+    const isLegacyFormat = formatContext.formatDef?.id === DEFAULT_15_TEAM_FORMAT_ID;
+    if (!isLegacyFormat && (!Array.isArray(payload?.opsSchedule) || payload.opsSchedule.length === 0)) {
+      const schedulePlanResult = await loadSchedulePlanSlotViews({
+        tournament: ownedContext.tournament,
+        formatContext,
+        phaseLabels,
+        stageDefinitions,
+        stageLabels,
+        stageKeysFilter: ['playoffs'],
+        kindsFilter: ['match'],
+        includeLegacyFallback: false,
+        io: req.app?.get('io'),
+      });
+      const fallbackOpsSchedule = buildPlayoffOpsScheduleFromSchedulePlanSlots(schedulePlanResult?.slots);
+      if (fallbackOpsSchedule.length > 0) {
+        payload = {
+          ...payload,
+          opsSchedule: fallbackOpsSchedule,
+        };
+      }
+    }
 
     return res.json({
       roundBlocks: payload.opsSchedule,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/:id/schedule-plan -> tournament-admin schedulePlan slot views
+router.get('/:id/schedule-plan', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const ownedContext = await getOwnedTournamentAndTeamCount(
+      id,
+      req.user.id,
+      'timezone settings.schedule settings.schedulePlan settings.format settings.venue facilities'
+    );
+
+    if (!ownedContext) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const formatContext = getTournamentFormatContext(
+      ownedContext.tournament,
+      ownedContext.teamCount
+    );
+    const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
+    const stageDefinitions = buildStageDefinitionLookup(formatContext.formatDef);
+    const stageLabels = buildStageLabelLookup(formatContext.formatDef);
+    const includeLegacyFallback = parseBooleanFlag(req.query?.includeLegacyFallback, true);
+
+    const schedulePlanResult = await loadSchedulePlanSlotViews({
+      tournament: ownedContext.tournament,
+      formatContext,
+      phaseLabels,
+      stageDefinitions,
+      stageLabels,
+      stageKeysFilter: req.query?.stageKeys,
+      kindsFilter: req.query?.kinds,
+      includeLegacyFallback,
+      io: req.app?.get('io'),
+    });
+
+    return res.json({
+      slots: Array.isArray(schedulePlanResult?.slots) ? schedulePlanResult.slots : [],
     });
   } catch (error) {
     return next(error);

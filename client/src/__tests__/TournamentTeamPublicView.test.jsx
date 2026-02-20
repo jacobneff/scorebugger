@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 
 import TournamentTeamPublicView from '../pages/TournamentTeamPublicView.jsx';
 
@@ -92,7 +92,9 @@ describe('TournamentTeamPublicView', () => {
             phaseLabel: 'Lunch',
             timeLabel: '12:00 PM',
             status: 'scheduled',
-            summaryLabel: 'Lunch Break',
+            summaryLabel: 'Lunch Break (45 min)',
+            lunchDurationMinutes: 45,
+            refLabel: 'SHOULD_NOT_RENDER',
           },
         ],
         matches: [],
@@ -111,7 +113,13 @@ describe('TournamentTeamPublicView', () => {
     expect(screen.getByText('ENDED')).toBeInTheDocument();
     expect(screen.getByText('Sets 1-1 • 25-20, 20-25')).toBeInTheDocument();
     expect(screen.queryByText(/Pts/)).not.toBeInTheDocument();
-    expect(screen.getByText('Lunch Break')).toBeInTheDocument();
+    const lunchSummary = screen.getByText('Lunch Break (45 min)');
+    expect(lunchSummary).toBeInTheDocument();
+    const lunchRow = lunchSummary.closest('article');
+    expect(lunchRow).toBeTruthy();
+    if (lunchRow) {
+      expect(within(lunchRow).queryByText(/Ref:/i)).not.toBeInTheDocument();
+    }
   });
 
   it('uses the next non-ended ref assignment in Next Up context', async () => {

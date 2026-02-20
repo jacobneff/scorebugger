@@ -27,6 +27,12 @@ import {
   mapCourtLabel,
 } from '../utils/phase1.js';
 import {
+  formatSetSummaryWithScores,
+  toSetSummaryFromLiveSummary,
+  toSetSummaryFromScoreSummary,
+} from '../utils/matchSetSummary.js';
+import { buildTournamentMatchControlHref } from '../utils/tournamentMatchControl.js';
+import {
   TEAM_BANK_CONTAINER_ID,
   buildTeamBankFromPools,
   buildTwoPassPoolPatchPlan,
@@ -151,25 +157,6 @@ const normalizeVenuePayload = (payload, fallbackTotalCourts = DEFAULT_TOTAL_COUR
   };
 };
 
-const getScheduleCourtKey = (match, venueCourtByName) => {
-  const courtId = toIdString(match?.courtId);
-  if (courtId) {
-    return `id:${courtId}`;
-  }
-
-  if (typeof match?.court === 'string' && match.court.trim()) {
-    const courtName = match.court.trim();
-    const venueCourt = venueCourtByName?.get(courtName.toLowerCase());
-    if (venueCourt?.courtId) {
-      return `id:${venueCourt.courtId}`;
-    }
-
-    return `name:${courtName.toLowerCase()}`;
-  }
-
-  return '';
-};
-
 const FINALIZED_MATCH_STATUSES = new Set(['final', 'ended']);
 
 const isMatchFinalized = (match) => {
@@ -235,6 +222,40 @@ const formatTeamLabel = (team) => team?.shortName || team?.name || 'TBD';
 const formatPointDiff = (value) => {
   const parsed = Number(value) || 0;
   return parsed > 0 ? `+${parsed}` : `${parsed}`;
+};
+
+const getScheduleStatusMeta = (status) => {
+  const normalized = typeof status === 'string' ? status.trim().toLowerCase() : '';
+
+  if (normalized === 'scheduled_tbd') {
+    return {
+      label: 'Scheduled / TBD',
+      className: 'court-schedule-status court-schedule-status--tbd',
+    };
+  }
+  if (normalized === 'live') {
+    return {
+      label: 'LIVE',
+      className: 'court-schedule-status court-schedule-status--live',
+    };
+  }
+  if (normalized === 'final') {
+    return {
+      label: 'FINAL',
+      className: 'court-schedule-status court-schedule-status--final',
+    };
+  }
+  if (normalized === 'ended') {
+    return {
+      label: 'ENDED',
+      className: 'court-schedule-status court-schedule-status--ended',
+    };
+  }
+
+  return {
+    label: 'Scheduled',
+    className: 'court-schedule-status court-schedule-status--scheduled',
+  };
 };
 
 function DraggableTeamCard({ team, disabled }) {
@@ -304,6 +325,7 @@ function TournamentPoolPlayAdmin() {
   const [pools, setPools] = useState([]);
   const [poolPlayMatches, setPoolPlayMatches] = useState([]);
   const [crossoverMatches, setCrossoverMatches] = useState([]);
+  const [schedulePlanSlots, setSchedulePlanSlots] = useState([]);
   const [venue, setVenue] = useState({ facilities: [], totalCourts: DEFAULT_TOTAL_COURTS });
   const [venueDraft, setVenueDraft] = useState({
     facilities: [],
@@ -326,6 +348,7 @@ function TournamentPoolPlayAdmin() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [poolActionMessage, setPoolActionMessage] = useState('');
+  const [liveSummariesByMatchId, setLiveSummariesByMatchId] = useState({});
   const formatDefRef = useRef(null);
   const stageReloadInFlightRef = useRef(false);
   const autoInitStageKeyRef = useRef('');
@@ -371,12 +394,13 @@ function TournamentPoolPlayAdmin() {
       setPools([]);
       setPoolPlayMatches([]);
       setCrossoverMatches([]);
+      setSchedulePlanSlots([]);
       setStandingsByPhase({ phase1: { pools: [], overall: [] }, cumulative: { pools: [], overall: [] } });
       return;
     }
 
     const nextCrossoverStage = getStageByType(formatToUse, 'crossover');
-    const [poolPayload, poolMatchPayload, phase1Standings, cumulativeStandings, crossoverPayload] = await Promise.all([
+    const [poolPayload, poolMatchPayload, phase1Standings, cumulativeStandings, crossoverPayload, schedulePlanPayload] = await Promise.all([
       fetchJson(`${API_URL}/api/tournaments/${id}/stages/${firstPoolStage.key}/pools`, { headers: authHeaders(token) }),
       fetchJson(`${API_URL}/api/tournaments/${id}/stages/${firstPoolStage.key}/matches`, { headers: authHeaders(token) }),
       fetchJson(`${API_URL}/api/tournaments/${id}/standings?phase=phase1`, { headers: authHeaders(token) }),
@@ -384,11 +408,18 @@ function TournamentPoolPlayAdmin() {
       nextCrossoverStage
         ? fetchJson(`${API_URL}/api/tournaments/${id}/stages/${nextCrossoverStage.key}/matches`, { headers: authHeaders(token) }).catch(() => [])
         : Promise.resolve([]),
+      fetchJson(
+        `${API_URL}/api/tournaments/${id}/schedule-plan?stageKeys=${encodeURIComponent(
+          [firstPoolStage.key, nextCrossoverStage?.key].filter(Boolean).join(',')
+        )}&kinds=match`,
+        { headers: authHeaders(token) }
+      ).catch(() => ({ slots: [] })),
     ]);
 
     setPools(Array.isArray(poolPayload) ? poolPayload.map((pool) => normalizePool(pool)) : []);
     setPoolPlayMatches(Array.isArray(poolMatchPayload) ? poolMatchPayload : []);
     setCrossoverMatches(Array.isArray(crossoverPayload) ? crossoverPayload : []);
+    setSchedulePlanSlots(Array.isArray(schedulePlanPayload?.slots) ? schedulePlanPayload.slots : []);
     setStandingsByPhase({
       phase1: normalizeStandings(phase1Standings),
       cumulative: normalizeStandings(cumulativeStandings),
@@ -413,6 +444,7 @@ function TournamentPoolPlayAdmin() {
     setLoading(true);
     setError('');
     setPoolActionMessage('');
+    setLiveSummariesByMatchId({});
 
     try {
       const [tournamentPayload, teamsPayload] = await Promise.all([
@@ -436,6 +468,7 @@ function TournamentPoolPlayAdmin() {
         setPools([]);
         setPoolPlayMatches([]);
         setCrossoverMatches([]);
+        setSchedulePlanSlots([]);
         const defaultVenue = normalizeVenuePayload(null, fallbackTotalCourts);
         setVenue(defaultVenue);
         setVenueDraft(defaultVenue);
@@ -451,6 +484,7 @@ function TournamentPoolPlayAdmin() {
         setPools([]);
         setPoolPlayMatches([]);
         setCrossoverMatches([]);
+        setSchedulePlanSlots([]);
         const defaultVenue = normalizeVenuePayload(tournamentPayload?.settings?.venue, fallbackTotalCourts);
         setVenue(defaultVenue);
         setVenueDraft(defaultVenue);
@@ -527,6 +561,19 @@ function TournamentPoolPlayAdmin() {
   const handleTournamentRealtimeEvent = useCallback((event) => {
     if (!event || typeof event !== 'object') return;
 
+    if (event.type === 'SCOREBOARD_SUMMARY') {
+      const matchId = event.data?.matchId;
+      if (!matchId) {
+        return;
+      }
+
+      setLiveSummariesByMatchId((previous) => ({
+        ...previous,
+        [matchId]: event.data,
+      }));
+      return;
+    }
+
     if (event.type === 'TOURNAMENT_RESET') {
       loadData().catch(() => {});
       return;
@@ -542,6 +589,11 @@ function TournamentPoolPlayAdmin() {
       if (stageKey && (stageKey === poolPlayStage?.key || stageKey === crossoverStage?.key)) {
         refreshStageData(formatDefRef.current).catch(() => {});
       }
+      return;
+    }
+
+    if (event.type === 'SCHEDULE_PLAN_UPDATED') {
+      refreshStageData(formatDefRef.current).catch(() => {});
       return;
     }
 
@@ -1605,42 +1657,36 @@ function TournamentPoolPlayAdmin() {
     shouldAutoRepairCrossoverSchedule,
   ]);
 
-  const allScheduleMatches = useMemo(
-    () => [...poolPlayMatches, ...displayedCrossoverMatches].sort((a, b) => {
-      const byRound = (Number(a?.roundBlock) || 0) - (Number(b?.roundBlock) || 0);
-      if (byRound !== 0) return byRound;
-      const courtA = toIdString(a?.courtId)
-        || (typeof a?.court === 'string' ? a.court.trim() : '');
-      const courtB = toIdString(b?.courtId)
-        || (typeof b?.court === 'string' ? b.court.trim() : '');
-      return courtA.localeCompare(courtB);
-    }),
-    [displayedCrossoverMatches, poolPlayMatches]
+  const scheduleTableSlots = useMemo(
+    () =>
+      (Array.isArray(schedulePlanSlots) ? schedulePlanSlots : []).filter(
+        (slot) => String(slot?.kind || 'match').trim().toLowerCase() === 'match'
+      ),
+    [schedulePlanSlots]
   );
   const scheduleRoundBlocks = useMemo(
-    () => Array.from(new Set(allScheduleMatches.map((match) => Number(match?.roundBlock)).filter(Boolean))).sort((a, b) => a - b),
-    [allScheduleMatches]
+    () => Array.from(new Set(
+      scheduleTableSlots
+        .map((slot) => Number(slot?.roundBlock))
+        .filter((roundBlock) => Number.isFinite(roundBlock) && roundBlock > 0)
+        .map((roundBlock) => Math.floor(roundBlock))
+    )).sort((a, b) => a - b),
+    [scheduleTableSlots]
   );
   const scheduleCourts = useMemo(() => {
     const usedCourts = new Map();
 
-    allScheduleMatches.forEach((match) => {
-      const key = getScheduleCourtKey(match, venueCourtByName);
-      if (!key || usedCourts.has(key)) {
+    scheduleTableSlots.forEach((slot) => {
+      const courtCode = typeof slot?.courtCode === 'string' ? slot.courtCode.trim() : '';
+      if (!courtCode || usedCourts.has(courtCode)) {
         return;
       }
 
-      const venueCourt = venueCourtById.get(toIdString(match?.courtId))
-        || venueCourtByName.get(
-          typeof match?.court === 'string' ? match.court.trim().toLowerCase() : ''
-        );
-      const baseLabel =
-        venueCourt?.courtName
-        || (typeof match?.court === 'string' ? match.court.trim() : '');
-      const label = baseLabel ? mapCourtLabel(baseLabel) : key;
-      usedCourts.set(key, {
-        key,
-        label,
+      const venueCourt = venueCourtById.get(courtCode)
+        || venueCourtByName.get(courtCode.toLowerCase());
+      usedCourts.set(courtCode, {
+        key: courtCode,
+        label: mapCourtLabel(venueCourt?.courtName || courtCode),
       });
     });
 
@@ -1651,58 +1697,27 @@ function TournamentPoolPlayAdmin() {
     return flattenedVenueCourts
       .filter((court) => court.isEnabled !== false)
       .map((court) => ({
-        key: `id:${court.courtId}`,
+        key: court.courtId,
         label: court.courtName,
       }));
-  }, [allScheduleMatches, flattenedVenueCourts, venueCourtById, venueCourtByName]);
+  }, [scheduleTableSlots, flattenedVenueCourts, venueCourtById, venueCourtByName]);
   const scheduleLookup = useMemo(() => {
     const lookup = {};
-    allScheduleMatches.forEach((match) => {
-      const courtKey = getScheduleCourtKey(match, venueCourtByName);
-      if (!courtKey) {
+    scheduleTableSlots.forEach((slot) => {
+      const roundBlock = Number(slot?.roundBlock);
+      const courtCode = typeof slot?.courtCode === 'string' ? slot.courtCode.trim() : '';
+      if (!Number.isFinite(roundBlock) || roundBlock <= 0 || !courtCode) {
         return;
       }
 
-      const key = `${Number(match?.roundBlock)}-${courtKey}`;
-      const existing = lookup[key];
-      if (!existing) {
-        lookup[key] = match;
-        return;
-      }
-
-      const existingIsTemplate = Boolean(existing?.__isTemplate);
-      const currentIsTemplate = Boolean(match?.__isTemplate);
-
-      if (!existingIsTemplate && currentIsTemplate) {
-        return;
-      }
-
-      if (existingIsTemplate && !currentIsTemplate) {
-        lookup[key] = match;
-        return;
-      }
-
-      lookup[key] = match;
+      lookup[`${Math.floor(roundBlock)}-${courtCode}`] = slot;
     });
     return lookup;
-  }, [allScheduleMatches, venueCourtByName]);
+  }, [scheduleTableSlots]);
 
   const activeStandings = activeStandingsTab === 'cumulative'
     ? standingsByPhase.cumulative
     : standingsByPhase.phase1;
-
-  const isPendingCrossoverMatch = useCallback((match) => {
-    if (!crossoverStage?.key) return false;
-    if (String(match?.stageKey || '') !== String(crossoverStage.key)) return false;
-    if (match?.__isTemplate) return false;
-
-    const matchStatus = String(match?.status || '').toLowerCase();
-    if (matchStatus === 'live' || matchStatus === 'final' || matchStatus === 'ended') {
-      return false;
-    }
-
-    return !areCrossoverSourcePoolsFinalized;
-  }, [areCrossoverSourcePoolsFinalized, crossoverStage?.key]);
 
   if (initializing || loading) {
     return (
@@ -2107,7 +2122,7 @@ function TournamentPoolPlayAdmin() {
           {showingCrossoverTemplates ? (
             <p className="subtle">{crossoverTemplateNote}</p>
           ) : null}
-          {allScheduleMatches.length === 0 ? (
+          {scheduleTableSlots.length === 0 ? (
             <p className="subtle">No matches generated yet.</p>
           ) : (
             <div className="phase1-table-wrap">
@@ -2123,41 +2138,80 @@ function TournamentPoolPlayAdmin() {
                     <tr key={roundBlock}>
                       <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
                       {scheduleCourts.map((court) => {
-                        const match = scheduleLookup[`${roundBlock}-${court.key}`];
-                        const isTemplateCrossover = Boolean(match?.__isTemplate);
-                        const isPending = isPendingCrossoverMatch(match);
-                        const matchupLabel = isTemplateCrossover
-                          ? `${formatTeamLabel(match?.teamA)} vs ${formatTeamLabel(match?.teamB)}`
-                          : isPending
-                            ? 'TBD vs TBD'
-                            : `${formatTeamLabel(match?.teamA)} vs ${formatTeamLabel(match?.teamB)}`;
-                        const refLabel = isTemplateCrossover
-                          ? formatTeamLabel(match?.refTeams?.[0])
-                          : isPending
-                            ? 'TBD'
-                            : formatTeamLabel(match?.refTeams?.[0]);
-                        const stageLabel = match?.poolName
-                          ? `Pool ${match.poolName}`
-                          : isTemplateCrossover
-                            ? crossoverStageLabel
-                            : String(match?.stageKey || 'Stage');
+                        const slot = scheduleLookup[`${roundBlock}-${court.key}`];
+                        const stageLabel = slot?.poolName
+                          ? `Pool ${slot.poolName}`
+                          : slot?.stageLabel
+                            || (String(slot?.stageKey || '').trim() || 'Stage');
+                        const statusMeta = getScheduleStatusMeta(slot?.status);
+                        const liveSummary = slot?.matchId
+                          ? liveSummariesByMatchId[slot.matchId] || null
+                          : null;
+                        const liveSetSummary = liveSummary
+                          ? formatSetSummaryWithScores(
+                              toSetSummaryFromLiveSummary(liveSummary),
+                              liveSummary?.completedSetScores
+                            )
+                          : '';
+                        const slotSetSummary = (slot?.setSummary || slot?.scoreSummary)
+                          ? formatSetSummaryWithScores(
+                              toSetSummaryFromScoreSummary(slot?.setSummary || slot?.scoreSummary),
+                              Array.isArray(slot?.setSummary?.setScores) ? slot.setSummary.setScores : []
+                            )
+                          : '';
+                        const setSummary = liveSetSummary || slotSetSummary;
+                        const hasMatchupReference = Boolean(
+                          slot?.matchupReferenceLabel
+                          && slot.matchupReferenceLabel !== slot?.matchupLabel
+                        );
+                        const hasRefReference = Boolean(
+                          slot?.refReferenceLabel
+                          && slot.refReferenceLabel !== slot?.refLabel
+                        );
+                        const matchControlHref = slot?.matchId
+                          ? buildTournamentMatchControlHref({
+                              matchId: slot.matchId,
+                              scoreboardKey: slot?.scoreboardCode,
+                              status: slot?.status,
+                              startedAt: slot?.startedAt,
+                              endedAt: slot?.endedAt,
+                            })
+                          : '';
+                        const liveScoreHref = slot?.scoreboardCode
+                          ? `/board/${encodeURIComponent(slot.scoreboardCode)}/display`
+                          : '';
+                        const showControlLinks = Boolean(slot?.matchId);
 
                         return (
                           <td key={`${roundBlock}-${court.key}`}>
-                            {match ? (
+                            {slot ? (
                               <div className="phase1-match-cell">
                                 <p>
                                   <strong>{stageLabel}</strong>
-                                  {`: ${matchupLabel}`}
+                                  {`: ${slot?.matchupLabel || 'TBD vs TBD'}`}
                                 </p>
-                                <p>Ref: {refLabel}</p>
-                                {isPending ? (
-                                  <p className="subtle">Crossover matchup pending completion of pool-play standings.</p>
+                                {hasMatchupReference ? (
+                                  <p className="subtle">{slot.matchupReferenceLabel}</p>
                                 ) : null}
-                                {isTemplateCrossover ? (
+                                <p>Ref: {slot?.refLabel || 'TBD'}</p>
+                                {hasRefReference ? (
+                                  <p className="subtle">{slot.refReferenceLabel}</p>
+                                ) : null}
+                                <p className="subtle">
+                                  <span className={statusMeta.className}>{statusMeta.label}</span>
+                                </p>
+                                {setSummary ? <p className="subtle">{setSummary}</p> : null}
+                                {showControlLinks ? (
                                   <p className="subtle">
-                                    Placeholder matchup from format template
-                                    {match?.__templateByeLabel ? ` • Bye: ${match.__templateByeLabel}` : ''}.
+                                    {matchControlHref ? (
+                                      <a href={matchControlHref}>Match Control</a>
+                                    ) : null}
+                                    {matchControlHref && liveScoreHref ? ' • ' : ''}
+                                    {liveScoreHref ? (
+                                      <a href={liveScoreHref} target="_blank" rel="noreferrer">
+                                        Live Score
+                                      </a>
+                                    ) : null}
                                   </p>
                                 ) : null}
                               </div>

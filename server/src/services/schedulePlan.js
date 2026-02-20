@@ -4,7 +4,11 @@ const Pool = require('../models/Pool');
 const Match = require('../models/Match');
 const Scoreboard = require('../models/Scoreboard');
 const { DEFAULT_15_TEAM_FORMAT_ID, getFormat } = require('../tournamentFormats/formatRegistry');
-const { resolvePoolPhase } = require('../tournamentEngine/formatEngine');
+const {
+  generatePlayoffsFromFormat,
+  resolvePoolPhase,
+  schedulePlayoffMatches,
+} = require('../tournamentEngine/formatEngine');
 const { computeStandingsBundle } = require('./tournamentEngine/standings');
 const { createMatchScoreboard } = require('./scoreboards');
 const { normalizeScoringConfig } = require('./phase1');
@@ -199,6 +203,16 @@ const getRoundRobinMatchCount = (poolSize) => {
   return Math.floor((parsed * (parsed - 1)) / 2);
 };
 
+const toTitleCase = (value) =>
+  String(value || '')
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`)
+    .join(' ');
+
+const normalizeBracketKey = (value) =>
+  isNonEmptyString(value) ? value.trim().toLowerCase() : '';
+
 const toRankRef = (poolName, rank) => ({ type: 'rankRef', poolName, rank });
 const toTeamRef = (teamId, sourceRankRef = null) => ({ type: 'teamId', teamId, sourceRankRef });
 
@@ -206,7 +220,10 @@ const formatRankRefLabel = (ref) => {
   if (!ref || ref.type !== 'rankRef') return '';
   const poolName = String(ref.poolName || '').trim();
   const rank = Number(ref.rank);
-  if (!poolName || !Number.isFinite(rank) || rank <= 0) return '';
+  if (!poolName) return '';
+  if (!Number.isFinite(rank) || rank <= 0) {
+    return poolName;
+  }
   return `${poolName} (#${Math.floor(rank)})`;
 };
 
@@ -216,11 +233,11 @@ const normalizeRef = (ref) => {
   if (ref.type === 'rankRef') {
     const poolName = String(ref.poolName || '').trim();
     const rank = Number(ref.rank);
-    if (!poolName || !Number.isFinite(rank) || rank <= 0) return null;
+    if (!poolName) return null;
     return {
       type: 'rankRef',
       poolName,
-      rank: Math.floor(rank),
+      rank: Number.isFinite(rank) && rank > 0 ? Math.floor(rank) : null,
     };
   }
 
@@ -766,6 +783,382 @@ async function createMissingCrossoverMatches({
   };
 }
 
+const parsePlayoffBracketMatchKey = (value) => {
+  const normalized = String(value || '').trim();
+  const matched = /^([^:]+):R(\d+):M(\d+)$/i.exec(normalized);
+  if (!matched) {
+    return {
+      bracket: '',
+      round: null,
+      matchNo: null,
+    };
+  }
+
+  return {
+    bracket: normalizeBracketKey(matched[1]),
+    round: Number(matched[2]),
+    matchNo: Number(matched[3]),
+  };
+};
+
+const resolvePlayoffBracketLabel = (bracketKey) => {
+  const normalized = normalizeBracketKey(bracketKey);
+  return normalized ? toTitleCase(normalized) : 'Bracket';
+};
+
+const formatPlayoffSourceMatchLabel = ({ sourceMatchKey, plansByKey = new Map() } = {}) => {
+  if (!isNonEmptyString(sourceMatchKey)) {
+    return 'Match';
+  }
+
+  const normalizedKey = sourceMatchKey.trim();
+  const sourcePlan = plansByKey.get(normalizedKey) || null;
+  const sourceSeedA = Number(sourcePlan?.seedA);
+  const sourceSeedB = Number(sourcePlan?.seedB);
+  const sourceBracketLabel = resolvePlayoffBracketLabel(sourcePlan?.bracket);
+
+  if (Number.isFinite(sourceSeedA) && sourceSeedA > 0 && Number.isFinite(sourceSeedB) && sourceSeedB > 0) {
+    return `${sourceBracketLabel} ${Math.floor(sourceSeedA)}v${Math.floor(sourceSeedB)}`;
+  }
+
+  const parsedSource = parsePlayoffBracketMatchKey(normalizedKey);
+  if (Number.isFinite(parsedSource?.round) && parsedSource.round > 0 && Number.isFinite(parsedSource?.matchNo) && parsedSource.matchNo > 0) {
+    return `${resolvePlayoffBracketLabel(parsedSource.bracket)} R${Math.floor(parsedSource.round)} M${Math.floor(parsedSource.matchNo)}`;
+  }
+
+  return normalizedKey;
+};
+
+const resolvePlayoffPlaceholderSideLabel = ({
+  bracketLabel,
+  seed,
+  sourceMatchKey,
+  plansByKey = new Map(),
+} = {}) => {
+  const parsedSeed = Number(seed);
+  if (Number.isFinite(parsedSeed) && parsedSeed > 0) {
+    return `${bracketLabel} ${Math.floor(parsedSeed)}`;
+  }
+
+  if (isNonEmptyString(sourceMatchKey)) {
+    return `W(${formatPlayoffSourceMatchLabel({ sourceMatchKey, plansByKey })})`;
+  }
+
+  return 'TBD';
+};
+
+const resolveStageStartRoundBlockFromMatches = ({ formatDef, stageKey, matches }) => {
+  const stages = Array.isArray(formatDef?.stages) ? formatDef.stages : [];
+  const targetIndex = stages.findIndex((stage) => String(stage?.key || '') === String(stageKey || ''));
+  if (targetIndex <= 0) {
+    return 1;
+  }
+
+  const previousStageKeys = stages
+    .slice(0, targetIndex)
+    .map((stage) => String(stage?.key || '').trim())
+    .filter(Boolean);
+  if (previousStageKeys.length === 0) {
+    return 1;
+  }
+
+  const maxRoundBlock = (Array.isArray(matches) ? matches : []).reduce((maxValue, match) => {
+    const stage = String(match?.stageKey || '').trim();
+    if (!previousStageKeys.includes(stage)) {
+      return maxValue;
+    }
+
+    const roundBlock = Number(match?.roundBlock);
+    if (!Number.isFinite(roundBlock) || roundBlock <= 0) {
+      return maxValue;
+    }
+
+    return Math.max(maxValue, Math.floor(roundBlock));
+  }, 0);
+
+  return maxRoundBlock > 0 ? maxRoundBlock + 1 : 1;
+};
+
+const resolveSchedulePlanPlayoffCourts = ({ tournament, venue }) => {
+  const activeCourtIds = uniqueValues(
+    (Array.isArray(tournament?.settings?.format?.activeCourts) ? tournament.settings.format.activeCourts : [])
+      .map((court) => getCourtReference(venue, court))
+      .filter(Boolean)
+      .map((court) => toIdString(court?.courtId))
+      .filter(Boolean)
+  );
+  const enabledCourtIds = uniqueValues(
+    getEnabledCourts(venue).map((court) => toIdString(court?.courtId)).filter(Boolean)
+  );
+  const fallbackCourtIds = uniqueValues(
+    DEFAULT_COURTS
+      .map((courtId) => getCourtReference(venue, courtId))
+      .filter(Boolean)
+      .map((court) => toIdString(court?.courtId))
+      .filter(Boolean)
+  );
+  const selectedCourtIds =
+    activeCourtIds.length > 0
+      ? activeCourtIds
+      : enabledCourtIds.length > 0
+        ? enabledCourtIds
+        : fallbackCourtIds;
+
+  return selectedCourtIds
+    .map((courtId) => getCourtReference(venue, courtId))
+    .filter(Boolean)
+    .map((court) => (court?.courtId ? court.courtId : court?.courtName || null))
+    .filter(Boolean);
+};
+
+const toPlayoffSlotId = (bracketMatchKey) => {
+  const normalizedBracketMatchKey = isNonEmptyString(bracketMatchKey)
+    ? bracketMatchKey.trim()
+    : '';
+  return normalizedBracketMatchKey ? `playoffs:${normalizedBracketMatchKey}` : '';
+};
+
+const resolvePlayoffBracketFromSlot = (slot) => {
+  const slotId = toIdString(slot?.slotId);
+  if (!slotId) return '';
+  const normalizedPrefix = 'playoffs:';
+  if (!slotId.toLowerCase().startsWith(normalizedPrefix)) return '';
+  const bracketMatchKey = slotId.slice(normalizedPrefix.length);
+  return parsePlayoffBracketMatchKey(bracketMatchKey).bracket || '';
+};
+
+const buildPlayoffSlots = ({
+  formatDef,
+  tournament,
+  venue,
+  schedule,
+  matches,
+}) => {
+  if (!formatDef || formatDef?.id === DEFAULT_15_TEAM_FORMAT_ID) {
+    return {
+      stage: null,
+      slots: [],
+    };
+  }
+
+  const playoffStage = Array.isArray(formatDef?.stages)
+    ? formatDef.stages.find((stage) => stage?.type === 'playoffs') || null
+    : null;
+  if (!playoffStage) {
+    return {
+      stage: null,
+      slots: [],
+    };
+  }
+
+  const bracketDefs = Array.isArray(playoffStage?.brackets) ? playoffStage.brackets : [];
+  if (bracketDefs.length === 0) {
+    return {
+      stage: playoffStage,
+      slots: [],
+    };
+  }
+
+  const schedulingCourts = resolveSchedulePlanPlayoffCourts({
+    tournament,
+    venue,
+  });
+  if (schedulingCourts.length === 0) {
+    return {
+      stage: playoffStage,
+      slots: [],
+    };
+  }
+
+  const allPlannedMatches = bracketDefs.flatMap((bracketDef) => {
+    try {
+      return generatePlayoffsFromFormat(
+        toIdString(tournament?._id) || 'tournament',
+        bracketDef,
+        []
+      );
+    } catch {
+      return [];
+    }
+  });
+  if (allPlannedMatches.length === 0) {
+    return {
+      stage: playoffStage,
+      slots: [],
+    };
+  }
+
+  const startRoundBlock = resolveStageStartRoundBlockFromMatches({
+    formatDef,
+    stageKey: playoffStage.key,
+    matches,
+  });
+  const maxConcurrentCourts =
+    toPositiveInteger(playoffStage?.maxConcurrentCourts)
+    || toPositiveInteger(playoffStage?.constraints?.maxConcurrentCourts);
+  const scheduledMatches = schedulePlayoffMatches(
+    allPlannedMatches,
+    schedulingCourts,
+    startRoundBlock,
+    { maxConcurrentCourts }
+  );
+  const plansByKey = new Map(
+    scheduledMatches
+      .map((plannedMatch) => [
+        isNonEmptyString(plannedMatch?.bracketMatchKey) ? plannedMatch.bracketMatchKey.trim() : '',
+        plannedMatch,
+      ])
+      .filter(([matchKey]) => Boolean(matchKey))
+  );
+
+  const slots = scheduledMatches.map((plannedMatch, index) => {
+    const roundBlock =
+      Number.isFinite(Number(plannedMatch?.roundBlock)) && Number(plannedMatch.roundBlock) > 0
+        ? Math.floor(Number(plannedMatch.roundBlock))
+        : Number.isFinite(Number(startRoundBlock))
+          ? Math.floor(Number(startRoundBlock)) + index
+          : null;
+    const courtRef = getCourtReference(venue, plannedMatch?.court);
+    const bracketLabel = resolvePlayoffBracketLabel(plannedMatch?.bracket);
+    const participantA = toRankRef(
+      resolvePlayoffPlaceholderSideLabel({
+        bracketLabel,
+        seed: plannedMatch?.seedA,
+        sourceMatchKey: plannedMatch?.teamAFromMatchKey,
+        plansByKey,
+      }),
+      null
+    );
+    const participantB = toRankRef(
+      resolvePlayoffPlaceholderSideLabel({
+        bracketLabel,
+        seed: plannedMatch?.seedB,
+        sourceMatchKey: plannedMatch?.teamBFromMatchKey,
+        plansByKey,
+      }),
+      null
+    );
+
+    return normalizeSlot({
+      slotId: toPlayoffSlotId(plannedMatch?.bracketMatchKey) || `playoffs:slot:${index + 1}`,
+      stageKey: playoffStage.key,
+      roundBlock,
+      timeIndex:
+        roundBlock && Number.isFinite(resolveRoundBlockStartMinutes(roundBlock, schedule))
+          ? resolveRoundBlockStartMinutes(roundBlock, schedule)
+          : null,
+      courtId: courtRef?.courtId || null,
+      facilityId: courtRef?.facilityId || null,
+      kind: 'match',
+      participants: [participantA, participantB],
+      ref: null,
+      byeRefs: [],
+      matchId: null,
+    });
+  });
+
+  return {
+    stage: playoffStage,
+    slots,
+  };
+};
+
+async function linkPlayoffSlotsToMatches({ venue, slots, matches, playoffStageKey }) {
+  const matchesByPlannedSlotId = new Map(
+    (Array.isArray(matches) ? matches : [])
+      .map((match) => [toIdString(match?.plannedSlotId), match])
+      .filter(([plannedSlotId]) => Boolean(plannedSlotId))
+  );
+  const fallbackByKey = new Map();
+
+  const toPlayoffFallbackKey = ({ roundBlock, courtRef, bracket }) => {
+    const roundCourtKey = toRoundCourtKey(roundBlock, courtRef);
+    if (!roundCourtKey) return '';
+    const bracketKey = normalizeBracketKey(bracket);
+    return `${roundCourtKey}:${bracketKey}`;
+  };
+
+  (Array.isArray(matches) ? matches : [])
+    .filter((match) => !isNonEmptyString(match?.plannedSlotId))
+    .forEach((match) => {
+      const courtRef = getCourtReference(venue, match?.courtId || match?.court);
+      const key = toPlayoffFallbackKey({
+        roundBlock: match?.roundBlock,
+        courtRef,
+        bracket: match?.bracket,
+      });
+      if (!key) return;
+      if (!fallbackByKey.has(key)) fallbackByKey.set(key, []);
+      fallbackByKey.get(key).push(match);
+    });
+
+  const plannedSlotBackfills = [];
+  const linkedSlots = (Array.isArray(slots) ? slots : []).map((slot) => {
+    if (String(slot?.stageKey || '') !== String(playoffStageKey || '')) return slot;
+
+    const slotId = toIdString(slot?.slotId);
+    let match = slotId ? matchesByPlannedSlotId.get(slotId) : null;
+
+    if (!match) {
+      const courtRef = getCourtReference(venue, slot?.courtId);
+      const key = toPlayoffFallbackKey({
+        roundBlock: slot?.roundBlock,
+        courtRef: courtRef || { courtId: slot?.courtId },
+        bracket: resolvePlayoffBracketFromSlot(slot),
+      });
+      const queue = key ? fallbackByKey.get(key) : null;
+      match = Array.isArray(queue) && queue.length > 0 ? queue.shift() : null;
+      if (match && slotId) {
+        plannedSlotBackfills.push({
+          matchId: toIdString(match?._id),
+          plannedSlotId: slotId,
+        });
+      }
+    }
+
+    if (!match) return slot;
+
+    const teamAId = toIdString(match?.teamAId);
+    const teamBId = toIdString(match?.teamBId);
+    const refTeamId =
+      Array.isArray(match?.refTeamIds) && match.refTeamIds.length > 0
+        ? toIdString(match.refTeamIds[0])
+        : '';
+    const rankRefs = (Array.isArray(slot?.participants) ? slot.participants : []).filter(
+      (entry) => entry?.type === 'rankRef'
+    );
+    const participants = [
+      teamAId ? toTeamRef(teamAId, rankRefs[0] || null) : null,
+      teamBId ? toTeamRef(teamBId, rankRefs[1] || null) : null,
+    ].filter(Boolean);
+
+    return normalizeSlot({
+      ...slot,
+      participants: participants.length > 0 ? participants : slot.participants,
+      ref: refTeamId ? toTeamRef(refTeamId, slot?.ref?.type === 'rankRef' ? slot.ref : null) : slot.ref,
+      matchId: toIdString(match?._id) || null,
+    });
+  });
+
+  if (plannedSlotBackfills.length > 0) {
+    await Match.bulkWrite(
+      plannedSlotBackfills.map((entry) => ({
+        updateOne: {
+          filter: { _id: entry.matchId },
+          update: {
+            $set: {
+              plannedSlotId: entry.plannedSlotId,
+            },
+          },
+        },
+      })),
+      { ordered: true }
+    );
+  }
+
+  return linkedSlots;
+}
+
 async function syncSchedulePlan({
   tournamentId,
   actorUserId = null,
@@ -824,7 +1217,10 @@ async function syncSchedulePlan({
           io,
           tournament.publicCode,
           TOURNAMENT_EVENT_TYPES.SCHEDULE_PLAN_UPDATED,
-          {}
+          {
+            stageKey: null,
+            stageKeys: [],
+          }
         );
       }
     }
@@ -910,16 +1306,49 @@ async function syncSchedulePlan({
     createdMatchIds = created.createdMatchIds;
   }
 
+  const playoffBundle = buildPlayoffSlots({
+    formatDef,
+    tournament,
+    venue: venueState.venue,
+    schedule,
+    matches: allMatches,
+  });
+  let playoffSlots = await linkPlayoffSlotsToMatches({
+    venue: venueState.venue,
+    slots: playoffBundle.slots,
+    matches: allMatches.filter(
+      (match) =>
+        String(match?.stageKey || '').trim() === String(playoffBundle?.stage?.key || '').trim()
+    ),
+    playoffStageKey: playoffBundle?.stage?.key || null,
+  });
+
   const mappedCrossoverMatchIds = new Set(
     crossoverSlots.map((slot) => toIdString(slot?.matchId)).filter(Boolean)
   );
+  const mappedPlayoffMatchIds = new Set(
+    playoffSlots.map((slot) => toIdString(slot?.matchId)).filter(Boolean)
+  );
+  const crossoverStageKey = String(crossoverBundle?.stage?.key || '').trim();
+  const playoffStageKey = String(playoffBundle?.stage?.key || '').trim();
   const orphanCrossoverSlots = baseSlots.filter((slot) => {
-    if (String(slot?.stageKey || '') !== String(crossoverBundle?.stage?.key || '')) return false;
+    if (String(slot?.stageKey || '') !== crossoverStageKey) return false;
     const matchId = toIdString(slot?.matchId);
     return matchId && !mappedCrossoverMatchIds.has(matchId);
   });
+  const orphanPlayoffSlots = baseSlots.filter((slot) => {
+    if (String(slot?.stageKey || '') !== playoffStageKey) return false;
+    const matchId = toIdString(slot?.matchId);
+    return matchId && !mappedPlayoffMatchIds.has(matchId);
+  });
   const nonCrossoverSlots = baseSlots.filter(
-    (slot) => String(slot?.stageKey || '') !== String(crossoverBundle?.stage?.key || '')
+    (slot) => {
+      const stageKey = String(slot?.stageKey || '').trim();
+      if (!stageKey) return true;
+      if (crossoverStageKey && stageKey === crossoverStageKey) return false;
+      if (playoffStageKey && stageKey === playoffStageKey) return false;
+      return true;
+    }
   );
   const lunchSlots = [];
   if (isNonEmptyString(schedule?.lunchStartTime) && Number(schedule?.lunchDurationMinutes) > 0) {
@@ -940,7 +1369,14 @@ async function syncSchedulePlan({
     );
   }
 
-  const nextSlots = [...nonCrossoverSlots, ...crossoverSlots, ...orphanCrossoverSlots, ...lunchSlots]
+  const nextSlots = [
+    ...nonCrossoverSlots,
+    ...crossoverSlots,
+    ...orphanCrossoverSlots,
+    ...playoffSlots,
+    ...orphanPlayoffSlots,
+    ...lunchSlots,
+  ]
     .map((slot) => normalizeSlot(slot))
     .filter((slot) => slot.slotId && slot.stageKey)
     .sort((left, right) => {
@@ -978,6 +1414,12 @@ async function syncSchedulePlan({
   }
 
   if (emitEvents && io && isNonEmptyString(tournament?.publicCode)) {
+    const updatedStageKeys = uniqueValues([
+      crossoverBundle.stage?.key || null,
+      playoffBundle.stage?.key || null,
+    ].filter(Boolean));
+    const legacyStageKey = crossoverBundle.stage?.key || playoffBundle.stage?.key || null;
+
     if (emitPoolsUpdated) {
       emitTournamentEvent(io, tournament.publicCode, TOURNAMENT_EVENT_TYPES.POOLS_UPDATED, {
         phase: crossoverBundle.previousPhase || 'phase1',
@@ -998,7 +1440,8 @@ async function syncSchedulePlan({
 
     if (scheduleChanged || createdMatchIds.length > 0) {
       emitTournamentEvent(io, tournament.publicCode, TOURNAMENT_EVENT_TYPES.SCHEDULE_PLAN_UPDATED, {
-        stageKey: crossoverBundle.stage?.key || null,
+        stageKey: legacyStageKey,
+        stageKeys: updatedStageKeys,
       });
     }
   }

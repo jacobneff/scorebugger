@@ -1493,6 +1493,21 @@ describe('tournament routes', () => {
     expect(placeholderSlot).toBeTruthy();
     expect(placeholderSlot.status).toBe('scheduled_tbd');
     expect(placeholderSlot.refLabel).toBe('C (#3)');
+
+    const schedulePlanResponse = await request(app).get(
+      '/api/tournaments/code/CRTPL1/schedule-plan?stageKeys=crossover&kinds=match'
+    );
+    expect(schedulePlanResponse.statusCode).toBe(200);
+    expect(Array.isArray(schedulePlanResponse.body?.slots)).toBe(true);
+    const placeholderPlanSlot = schedulePlanResponse.body.slots.find(
+      (slot) =>
+        slot.stageKey === 'crossover'
+        && slot.matchupLabel === 'C (#1) vs D (#1)'
+    );
+    expect(placeholderPlanSlot).toBeTruthy();
+    expect(placeholderPlanSlot.status).toBe('scheduled_tbd');
+    expect(placeholderPlanSlot.refLabel).toBe('C (#3)');
+    expect(placeholderPlanSlot.matchId).toBeNull();
   });
 
   test('public court schedule endpoint returns resolved crossover teams with linked matchId after finalization', async () => {
@@ -1785,6 +1800,317 @@ describe('tournament routes', () => {
       .lean();
     expect(linkedMatch).toBeTruthy();
     expect(String(linkedMatch._id)).toBe(String(resolvedSlot.matchId));
+
+    const schedulePlanResponse = await request(app).get(
+      '/api/tournaments/code/CRTRL2/schedule-plan?stageKeys=crossover&kinds=match'
+    );
+    expect(schedulePlanResponse.statusCode).toBe(200);
+    const resolvedPlanSlot = schedulePlanResponse.body.slots.find(
+      (slot) =>
+        slot.stageKey === 'crossover'
+        && slot.matchupReferenceLabel === 'C (#1) vs D (#1)'
+    );
+    expect(resolvedPlanSlot).toBeTruthy();
+    expect(resolvedPlanSlot.status).toBe('scheduled');
+    expect(resolvedPlanSlot.matchupLabel).toBe('C1 vs D1');
+    expect(resolvedPlanSlot.refLabel).toBe('C3');
+    expect(resolvedPlanSlot.matchId).toBeTruthy();
+  });
+
+  test('public team endpoint resolves crossover ref from rankRef when standings are finalized', async () => {
+    const tournament = await Tournament.create({
+      name: 'Team Ref Resolution Tournament',
+      date: new Date('2026-08-27T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'TRR001',
+      createdByUserId: user._id,
+      settings: {
+        format: {
+          formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+          activeCourts: ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1'],
+        },
+      },
+    });
+
+    const [c1, c2, c3, d1, d2, d3] = await TournamentTeam.insertMany(
+      [
+        {
+          tournamentId: tournament._id,
+          name: 'C1 Team',
+          shortName: 'C1',
+          orderIndex: 1,
+          publicTeamCode: 'TEAM0001',
+        },
+        {
+          tournamentId: tournament._id,
+          name: 'C2 Team',
+          shortName: 'C2',
+          orderIndex: 2,
+          publicTeamCode: 'TEAM0002',
+        },
+        {
+          tournamentId: tournament._id,
+          name: 'C3 Team',
+          shortName: 'C3',
+          orderIndex: 3,
+          publicTeamCode: 'TEAM0003',
+        },
+        {
+          tournamentId: tournament._id,
+          name: 'D1 Team',
+          shortName: 'D1',
+          orderIndex: 4,
+          publicTeamCode: 'TEAM0004',
+        },
+        {
+          tournamentId: tournament._id,
+          name: 'D2 Team',
+          shortName: 'D2',
+          orderIndex: 5,
+          publicTeamCode: 'TEAM0005',
+        },
+        {
+          tournamentId: tournament._id,
+          name: 'D3 Team',
+          shortName: 'D3',
+          orderIndex: 6,
+          publicTeamCode: 'TEAM0006',
+        },
+      ],
+      { ordered: true }
+    );
+
+    const [poolC, poolD] = await Pool.insertMany(
+      [
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          stageKey: 'poolPlay1',
+          name: 'C',
+          requiredTeamCount: 3,
+          teamIds: [c1._id, c2._id, c3._id],
+          assignedCourtId: 'SRC-1',
+          assignedFacilityId: 'SRC',
+          homeCourt: 'SRC-1',
+        },
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          stageKey: 'poolPlay1',
+          name: 'D',
+          requiredTeamCount: 3,
+          teamIds: [d1._id, d2._id, d3._id],
+          assignedCourtId: 'SRC-2',
+          assignedFacilityId: 'SRC',
+          homeCourt: 'SRC-2',
+        },
+      ],
+      { ordered: true }
+    );
+
+    await Match.insertMany(
+      [
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          stageKey: 'poolPlay1',
+          poolId: poolC._id,
+          roundBlock: 1,
+          facility: 'SRC',
+          court: 'SRC-1',
+          facilityId: 'SRC',
+          courtId: 'SRC-1',
+          teamAId: c1._id,
+          teamBId: c2._id,
+          refTeamIds: [],
+          status: 'final',
+          result: {
+            winnerTeamId: c1._id,
+            loserTeamId: c2._id,
+            setsWonA: 2,
+            setsWonB: 0,
+            setsPlayed: 2,
+            pointsForA: 50,
+            pointsAgainstA: 35,
+            pointsForB: 35,
+            pointsAgainstB: 50,
+            setScores: [
+              { setNo: 1, a: 25, b: 17 },
+              { setNo: 2, a: 25, b: 18 },
+            ],
+          },
+        },
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          stageKey: 'poolPlay1',
+          poolId: poolC._id,
+          roundBlock: 2,
+          facility: 'SRC',
+          court: 'SRC-1',
+          facilityId: 'SRC',
+          courtId: 'SRC-1',
+          teamAId: c1._id,
+          teamBId: c3._id,
+          refTeamIds: [],
+          status: 'final',
+          result: {
+            winnerTeamId: c1._id,
+            loserTeamId: c3._id,
+            setsWonA: 2,
+            setsWonB: 1,
+            setsPlayed: 3,
+            pointsForA: 65,
+            pointsAgainstA: 58,
+            pointsForB: 58,
+            pointsAgainstB: 65,
+            setScores: [
+              { setNo: 1, a: 25, b: 22 },
+              { setNo: 2, a: 20, b: 25 },
+              { setNo: 3, a: 20, b: 11 },
+            ],
+          },
+        },
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          stageKey: 'poolPlay1',
+          poolId: poolC._id,
+          roundBlock: 3,
+          facility: 'SRC',
+          court: 'SRC-1',
+          facilityId: 'SRC',
+          courtId: 'SRC-1',
+          teamAId: c2._id,
+          teamBId: c3._id,
+          refTeamIds: [],
+          status: 'final',
+          result: {
+            winnerTeamId: c2._id,
+            loserTeamId: c3._id,
+            setsWonA: 2,
+            setsWonB: 0,
+            setsPlayed: 2,
+            pointsForA: 50,
+            pointsAgainstA: 40,
+            pointsForB: 40,
+            pointsAgainstB: 50,
+            setScores: [
+              { setNo: 1, a: 25, b: 20 },
+              { setNo: 2, a: 25, b: 20 },
+            ],
+          },
+        },
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          stageKey: 'poolPlay1',
+          poolId: poolD._id,
+          roundBlock: 1,
+          facility: 'SRC',
+          court: 'SRC-2',
+          facilityId: 'SRC',
+          courtId: 'SRC-2',
+          teamAId: d1._id,
+          teamBId: d2._id,
+          refTeamIds: [],
+          status: 'final',
+          result: {
+            winnerTeamId: d1._id,
+            loserTeamId: d2._id,
+            setsWonA: 2,
+            setsWonB: 0,
+            setsPlayed: 2,
+            pointsForA: 50,
+            pointsAgainstA: 36,
+            pointsForB: 36,
+            pointsAgainstB: 50,
+            setScores: [
+              { setNo: 1, a: 25, b: 18 },
+              { setNo: 2, a: 25, b: 18 },
+            ],
+          },
+        },
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          stageKey: 'poolPlay1',
+          poolId: poolD._id,
+          roundBlock: 2,
+          facility: 'SRC',
+          court: 'SRC-2',
+          facilityId: 'SRC',
+          courtId: 'SRC-2',
+          teamAId: d1._id,
+          teamBId: d3._id,
+          refTeamIds: [],
+          status: 'final',
+          result: {
+            winnerTeamId: d1._id,
+            loserTeamId: d3._id,
+            setsWonA: 2,
+            setsWonB: 0,
+            setsPlayed: 2,
+            pointsForA: 50,
+            pointsAgainstA: 34,
+            pointsForB: 34,
+            pointsAgainstB: 50,
+            setScores: [
+              { setNo: 1, a: 25, b: 17 },
+              { setNo: 2, a: 25, b: 17 },
+            ],
+          },
+        },
+        {
+          tournamentId: tournament._id,
+          phase: 'phase1',
+          stageKey: 'poolPlay1',
+          poolId: poolD._id,
+          roundBlock: 3,
+          facility: 'SRC',
+          court: 'SRC-2',
+          facilityId: 'SRC',
+          courtId: 'SRC-2',
+          teamAId: d2._id,
+          teamBId: d3._id,
+          refTeamIds: [],
+          status: 'final',
+          result: {
+            winnerTeamId: d2._id,
+            loserTeamId: d3._id,
+            setsWonA: 2,
+            setsWonB: 1,
+            setsPlayed: 3,
+            pointsForA: 66,
+            pointsAgainstA: 61,
+            pointsForB: 61,
+            pointsAgainstB: 66,
+            setScores: [
+              { setNo: 1, a: 25, b: 20 },
+              { setNo: 2, a: 21, b: 25 },
+              { setNo: 3, a: 20, b: 16 },
+            ],
+          },
+        },
+      ],
+      { ordered: true }
+    );
+
+    await syncSchedulePlan({
+      tournamentId: tournament._id,
+      actorUserId: user._id,
+      emitEvents: false,
+    });
+
+    const response = await request(app).get('/api/tournaments/code/TRR001/team/TEAM0003');
+
+    expect(response.statusCode).toBe(200);
+    const crossoverRefEntry = response.body.timeline.find(
+      (entry) => entry.role === 'REF' && entry.stageKey === 'crossover'
+    );
+    expect(crossoverRefEntry).toBeTruthy();
+    expect(crossoverRefEntry.refLabel).toBe('C3');
+    expect(crossoverRefEntry.refLabel).not.toBe('TBD');
   });
 
   test('public team endpoint timeline merges play/ref/bye/lunch rows in time order', async () => {

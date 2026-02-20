@@ -424,7 +424,7 @@ function TournamentTeamPublicView() {
                       ? formatTeamsPlaying(entry)
                       : role === 'BYE'
                         ? 'BYE'
-                        : 'Lunch Break');
+                        : `Lunch Break (${Number(entry?.lunchDurationMinutes) > 0 ? Number(entry.lunchDurationMinutes) : 45} min)`);
                 const setSummarySource = entry?.setSummary || entry?.scoreSummary || null;
                 const setSummaryScores = Array.isArray(entry?.setSummary?.setScores)
                   ? entry.setSummary.setScores
@@ -492,7 +492,7 @@ function TournamentTeamPublicView() {
                         {entry?.courtLabel ? <span>{entry.courtLabel}</span> : null}
                         {entry?.roundLabel ? <span>{entry.roundLabel}</span> : null}
                       </div>
-                      {entry?.refLabel && role !== 'REF' ? (
+                      {entry?.refLabel && role !== 'REF' && role !== 'LUNCH' ? (
                         <p className="subtle">Ref: {entry.refLabel}</p>
                       ) : null}
                       {hasRefReference ? (

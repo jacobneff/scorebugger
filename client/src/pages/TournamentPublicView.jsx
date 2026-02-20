@@ -6,10 +6,6 @@ import { useTournamentRealtime } from '../hooks/useTournamentRealtime.js';
 import {
   formatRoundBlockStartTime,
   formatSetRecord,
-  PHASE1_COURT_ORDER,
-  PHASE1_ROUND_BLOCKS,
-  buildPhase1ScheduleLookup,
-  formatTeamLabel,
   mapCourtLabel,
   sortPhase1Pools,
 } from '../utils/phase1.js';
@@ -43,6 +39,7 @@ const TOURNAMENT_DETAILS_DEFAULTS = Object.freeze({
 });
 const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
 const CROSSOVER_STAGE_KEY = 'crossover';
+const OVERVIEW_STAGE_KEYS = ['poolPlay1', CROSSOVER_STAGE_KEY];
 
 const normalizePools = (pools) =>
   sortPhase1Pools(pools).map((pool) => ({
@@ -84,6 +81,18 @@ const toIdString = (value) => {
   }
 
   return String(value);
+};
+const uniqueValues = (values) => {
+  const seen = new Set();
+  const ordered = [];
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    if (!value || seen.has(value)) {
+      return;
+    }
+    seen.add(value);
+    ordered.push(value);
+  });
+  return ordered;
 };
 const normalizeBracket = (value) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -420,7 +429,7 @@ function TournamentPublicView() {
   const location = useLocation();
   const [tournament, setTournament] = useState(null);
   const [pools, setPools] = useState([]);
-  const [matches, setMatches] = useState([]);
+  const [overviewScheduleSlots, setOverviewScheduleSlots] = useState([]);
   const [playoffs, setPlayoffs] = useState({
     matches: [],
     brackets: {},
@@ -436,7 +445,7 @@ function TournamentPublicView() {
     cumulative: { pools: [], overall: [] },
   });
   const [activeStandingsTab, setActiveStandingsTab] = useState('phase1');
-  const [activeViewTab, setActiveViewTab] = useState('live');
+  const [activeViewTab, setActiveViewTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [courtScheduleLoading, setCourtScheduleLoading] = useState(false);
   const [error, setError] = useState('');
@@ -459,7 +468,7 @@ function TournamentPublicView() {
         const [
           tournamentResponse,
           poolResponse,
-          matchResponse,
+          schedulePlanResponse,
           courtsResponse,
           phase1StandingsResponse,
           phase2StandingsResponse,
@@ -470,7 +479,11 @@ function TournamentPublicView() {
         ] = await Promise.all([
           fetch(`${API_URL}/api/tournaments/code/${publicCode}`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/phase1/pools`),
-          fetch(`${API_URL}/api/tournaments/code/${publicCode}/matches?phase=phase1`),
+          fetch(
+            `${API_URL}/api/tournaments/code/${publicCode}/schedule-plan?stageKeys=${encodeURIComponent(
+              OVERVIEW_STAGE_KEYS.join(',')
+            )}&kinds=match`
+          ),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/courts`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=phase1`),
           fetch(`${API_URL}/api/tournaments/code/${publicCode}/standings?phase=phase2`),
@@ -483,7 +496,7 @@ function TournamentPublicView() {
         const [
           tournamentPayload,
           poolPayload,
-          matchPayload,
+          schedulePlanPayload,
           courtsPayload,
           phase1StandingsPayload,
           phase2StandingsPayload,
@@ -494,7 +507,7 @@ function TournamentPublicView() {
         ] = await Promise.all([
           tournamentResponse.json().catch(() => null),
           poolResponse.json().catch(() => null),
-          matchResponse.json().catch(() => null),
+          schedulePlanResponse.json().catch(() => null),
           courtsResponse.json().catch(() => null),
           phase1StandingsResponse.json().catch(() => null),
           phase2StandingsResponse.json().catch(() => null),
@@ -510,8 +523,8 @@ function TournamentPublicView() {
         if (!poolResponse.ok) {
           throw new Error(poolPayload?.message || 'Unable to load pools');
         }
-        if (!matchResponse.ok) {
-          throw new Error(matchPayload?.message || 'Unable to load matches');
+        if (!schedulePlanResponse.ok) {
+          throw new Error(schedulePlanPayload?.message || 'Unable to load schedule');
         }
         if (!courtsResponse.ok) {
           throw new Error(courtsPayload?.message || 'Unable to load courts');
@@ -544,7 +557,9 @@ function TournamentPublicView() {
         setDetails(normalizeTournamentDetails(detailsPayload?.details));
         setLiveMatches(Array.isArray(liveMatchesPayload) ? liveMatchesPayload : []);
         setPools(normalizePools(poolPayload));
-        setMatches(Array.isArray(matchPayload) ? matchPayload : []);
+        setOverviewScheduleSlots(
+          Array.isArray(schedulePlanPayload?.slots) ? schedulePlanPayload.slots : []
+        );
         const nextCourts = Array.isArray(courtsPayload?.courts) ? courtsPayload.courts : [];
         setCourts(nextCourts);
         setSelectedCourtCode((currentCode) => {
@@ -704,81 +719,66 @@ function TournamentPublicView() {
   const supportsPhase2 = formatId === ODU_15_FORMAT_ID;
   const phase1Label = supportsPhase2 ? 'Pool Play 1' : 'Pool Play';
   const phase2Label = 'Pool Play 2';
-  const scheduleMatches = useMemo(
+  const scheduleSlots = useMemo(
     () =>
-      (Array.isArray(matches) ? matches : []).filter(
-        (match) => String(match?.phase || '').trim() === 'phase1'
+      (Array.isArray(overviewScheduleSlots) ? overviewScheduleSlots : []).filter(
+        (slot) => String(slot?.kind || 'match').trim() === 'match'
       ),
-    [matches]
+    [overviewScheduleSlots]
   );
-  const scheduleLookup = useMemo(() => buildPhase1ScheduleLookup(scheduleMatches), [scheduleMatches]);
+  const scheduleLookup = useMemo(() => {
+    const lookup = {};
+    scheduleSlots.forEach((slot) => {
+      const roundBlock = Number(slot?.roundBlock);
+      const courtCode = typeof slot?.courtCode === 'string' ? slot.courtCode.trim() : '';
+      if (!Number.isFinite(roundBlock) || roundBlock <= 0 || !courtCode) {
+        return;
+      }
+
+      lookup[`${Math.floor(roundBlock)}-${courtCode.toUpperCase()}`] = slot;
+    });
+    return lookup;
+  }, [scheduleSlots]);
   const scheduleRoundBlocks = useMemo(() => {
     const uniqueRoundBlocks = Array.from(
       new Set(
-        scheduleMatches
-          .map((match) => Number(match?.roundBlock))
+        scheduleSlots
+          .map((slot) => Number(slot?.roundBlock))
           .filter((roundBlock) => Number.isFinite(roundBlock) && roundBlock > 0)
       )
     ).sort((left, right) => left - right);
-    return uniqueRoundBlocks.length > 0 ? uniqueRoundBlocks : PHASE1_ROUND_BLOCKS;
-  }, [scheduleMatches]);
+    return uniqueRoundBlocks;
+  }, [scheduleSlots]);
   const scheduleCourts = useMemo(() => {
-    const usedCourts = new Set(
-      scheduleMatches
-        .map((match) => (typeof match?.court === 'string' ? match.court.trim().toUpperCase() : ''))
+    const usedCourts = uniqueValues(
+      scheduleSlots
+        .map((slot) => (typeof slot?.courtCode === 'string' ? slot.courtCode.trim().toUpperCase() : ''))
         .filter(Boolean)
     );
     const preferredCourts = Array.isArray(tournament?.settings?.format?.activeCourts)
       ? tournament.settings.format.activeCourts
       : [];
-    const preferredCourtSet = new Set(
+    const preferredCourtCodes = uniqueValues(
       preferredCourts
         .map((courtCode) => (typeof courtCode === 'string' ? courtCode.trim().toUpperCase() : ''))
         .filter(Boolean)
     );
-    const orderedCourts = PHASE1_COURT_ORDER.filter(
-      (courtCode) => usedCourts.has(courtCode) || preferredCourtSet.has(courtCode)
-    );
-    return orderedCourts.length > 0 ? orderedCourts : PHASE1_COURT_ORDER;
-  }, [scheduleMatches, tournament]);
+    const orderedCourts = uniqueValues([
+      ...preferredCourtCodes.filter((courtCode) => usedCourts.includes(courtCode)),
+      ...usedCourts,
+    ]);
+    return orderedCourts;
+  }, [scheduleSlots, tournament]);
   const hasCrossoverMatches = useMemo(
-    () => scheduleMatches.some((match) => match?.stageKey === CROSSOVER_STAGE_KEY),
-    [scheduleMatches]
+    () =>
+      scheduleSlots.some(
+        (slot) => String(slot?.stageKey || '').trim() === CROSSOVER_STAGE_KEY
+      ),
+    [scheduleSlots]
   );
   const scheduleHeading = hasCrossoverMatches
     ? `${phase1Label} + Crossover Schedule`
     : `${phase1Label} Schedule`;
-  const areCrossoverInputsFinalized = useMemo(() => {
-    const precursorMatches = scheduleMatches.filter(
-      (match) => String(match?.stageKey || '').trim() !== CROSSOVER_STAGE_KEY
-    );
-    if (precursorMatches.length === 0) {
-      return false;
-    }
-
-    return precursorMatches.every((match) => {
-      const normalizedStatus = String(match?.status || '')
-        .trim()
-        .toLowerCase();
-      return Boolean(match?.result) || normalizedStatus === 'final' || normalizedStatus === 'ended';
-    });
-  }, [scheduleMatches]);
-  const getScheduleMatchLabel = useCallback(
-    (match) => {
-      const stageKey = String(match?.stageKey || '').trim();
-      if (stageKey === CROSSOVER_STAGE_KEY) {
-        return 'Crossover';
-      }
-      if (stageKey === 'poolPlay2') {
-        return phase2Label;
-      }
-      if (stageKey === 'poolPlay1') {
-        return phase1Label;
-      }
-      return String(match?.phase || '').trim() === 'phase2' ? phase2Label : phase1Label;
-    },
-    [phase1Label, phase2Label]
-  );
   const getPhaseLabel = useCallback(
     (phase) => {
       const normalizedPhase = String(phase || '').trim().toLowerCase();
@@ -791,23 +791,6 @@ function TournamentPublicView() {
       return phase1Label;
     },
     [phase1Label, phase2Label]
-  );
-  const isPendingCrossoverMatch = useCallback(
-    (match) => {
-      const normalizedStatus = String(match?.status || '')
-        .trim()
-        .toLowerCase();
-      if (String(match?.stageKey || '').trim() !== CROSSOVER_STAGE_KEY) {
-        return false;
-      }
-
-      if (normalizedStatus === 'live' || normalizedStatus === 'final' || normalizedStatus === 'ended') {
-        return false;
-      }
-
-      return !areCrossoverInputsFinalized;
-    },
-    [areCrossoverInputsFinalized]
   );
   const activeStandings =
     activeStandingsTab === 'phase2'
@@ -1059,7 +1042,7 @@ function TournamentPublicView() {
         ) : activeViewTab === 'overview' ? (
           <>
             <section>
-              <h2 className="secondary-title">Pool Rosters</h2>
+              <h2 className="secondary-title">Pools</h2>
               <div className="phase1-pool-grid phase1-pool-grid--readonly">
                 {pools.map((pool) => (
                   <article key={pool._id} className="phase1-pool-column">
@@ -1081,72 +1064,85 @@ function TournamentPublicView() {
             </section>
 
             <section className="phase1-schedule">
-                  <h2 className="secondary-title">{scheduleHeading}</h2>
-                  <div className="phase1-table-wrap">
-                    <table className="phase1-schedule-table">
-                      <thead>
-                        <tr>
-                          <th>Time</th>
-                          {scheduleCourts.map((court) => (
-                            <th key={court}>{mapCourtLabel(court)}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {scheduleRoundBlocks.map((roundBlock) => (
-                          <tr key={roundBlock}>
-                            <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
-                            {scheduleCourts.map((court) => {
-                              const match = scheduleLookup[`${roundBlock}-${court}`];
-                              const scoreboardKey = match?.scoreboardId || match?.scoreboardCode;
-                              const liveSummary = match ? liveSummariesByMatchId[match._id] : null;
-                              const hideCrossoverMatchup = isPendingCrossoverMatch(match);
-                              const matchupLabel = hideCrossoverMatchup
-                                ? 'TBD vs TBD'
-                                : `${formatTeamLabel(match?.teamA)} vs ${formatTeamLabel(match?.teamB)}`;
-                              const refLabel = hideCrossoverMatchup
-                                ? 'TBD'
-                                : formatTeamLabel(match?.refTeams?.[0]);
-                              const stageLabel = getScheduleMatchLabel(match);
-
-                              return (
-                                <td key={`${roundBlock}-${court}`}>
-                                  {match ? (
-                                    <div className="phase1-match-cell">
-                                      <p>
-                                        <strong>{match.poolName ? `Pool ${match.poolName}` : stageLabel}</strong>
-                                        {`: ${matchupLabel}`}
-                                      </p>
-                                      <p>Ref: {refLabel}</p>
-                                      {hideCrossoverMatchup ? (
-                                        <p className="subtle">
-                                          Crossover matchup pending completion of pool-play standings.
-                                        </p>
-                                      ) : null}
-                                      {liveSummary && <p className="subtle">{formatLiveSummary(liveSummary)}</p>}
-                                      {scoreboardKey ? (
-                                        <a
-                                      href={`/board/${scoreboardKey}/display`}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                    >
-                                      Open Live Scoreboard
-                                    </a>
-                                  ) : (
-                                    <span className="subtle">No scoreboard link</span>
-                                  )}
-                                </div>
-                              ) : (
-                                <span className="subtle">-</span>
-                              )}
-                            </td>
-                          );
-                        })}
+              <h2 className="secondary-title">{scheduleHeading}</h2>
+              {scheduleRoundBlocks.length === 0 || scheduleCourts.length === 0 ? (
+                <p className="subtle">No schedule rows yet.</p>
+              ) : (
+                <div className="phase1-table-wrap">
+                  <table className="phase1-schedule-table">
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        {scheduleCourts.map((court) => (
+                          <th key={court}>{mapCourtLabel(court)}</th>
+                        ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {scheduleRoundBlocks.map((roundBlock) => (
+                        <tr key={roundBlock}>
+                          <th>{formatRoundBlockStartTime(roundBlock, tournament)}</th>
+                          {scheduleCourts.map((court) => {
+                            const slot = scheduleLookup[`${roundBlock}-${court}`];
+                            const scoreboardKey = slot?.scoreboardCode || null;
+                            const liveSummary = slot?.matchId
+                              ? liveSummariesByMatchId[slot.matchId] || null
+                              : null;
+                            const stageLabel = slot?.poolName
+                              ? `Pool ${slot.poolName}`
+                              : slot?.stageLabel || getPhaseLabel(slot?.phase);
+                            const hasMatchupReference =
+                              typeof slot?.matchupReferenceLabel === 'string'
+                              && slot.matchupReferenceLabel
+                              && slot.matchupReferenceLabel !== slot?.matchupLabel;
+                            const hasRefReference =
+                              typeof slot?.refReferenceLabel === 'string'
+                              && slot.refReferenceLabel
+                              && slot.refReferenceLabel !== slot?.refLabel;
+                            const scoreSummary = liveSummary
+                              ? formatLiveSummary(liveSummary)
+                              : formatCourtSlotScoreSummary(slot);
+
+                            return (
+                              <td key={`${roundBlock}-${court}`}>
+                                {slot ? (
+                                  <div className="phase1-match-cell">
+                                    <p>
+                                      <strong>{stageLabel || 'Stage'}</strong>
+                                      {`: ${slot?.matchupLabel || 'TBD vs TBD'}`}
+                                    </p>
+                                    {hasMatchupReference ? (
+                                      <p className="subtle">{slot.matchupReferenceLabel}</p>
+                                    ) : null}
+                                    <p>Ref: {slot?.refLabel || 'TBD'}</p>
+                                    {hasRefReference ? (
+                                      <p className="subtle">{slot.refReferenceLabel}</p>
+                                    ) : null}
+                                    {scoreSummary ? <p className="subtle">{scoreSummary}</p> : null}
+                                    {scoreboardKey ? (
+                                      <a
+                                        href={`/board/${scoreboardKey}/display`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                      >
+                                        Open Live Scoreboard
+                                      </a>
+                                    ) : (
+                                      <span className="subtle">No scoreboard link</span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="subtle">-</span>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </section>
 
             <section className="phase1-standings">
@@ -1371,7 +1367,7 @@ function TournamentPublicView() {
         ) : (
           <>
             <section className="phase1-schedule">
-              <h2 className="secondary-title">Playoff Ops Schedule</h2>
+              <h2 className="secondary-title">Playoff Schedule</h2>
               {playoffs.opsSchedule.length === 0 ? (
                 <p className="subtle">Playoffs have not been generated yet.</p>
               ) : (
@@ -1401,7 +1397,7 @@ function TournamentPublicView() {
                                 <td>{slot.facility}</td>
                                 <td>{mapCourtLabel(slot.court)}</td>
                                 <td>{slot.matchLabel}</td>
-                                <td>{slot.matchId ? `${slot.teams.a} vs ${slot.teams.b}` : 'Empty'}</td>
+                                <td>{`${slot?.teams?.a || 'TBD'} vs ${slot?.teams?.b || 'TBD'}`}</td>
                                 <td>{slot.refs.length > 0 ? slot.refs.join(', ') : 'TBD'}</td>
                                 <td>
                                   {slot.status || 'empty'}

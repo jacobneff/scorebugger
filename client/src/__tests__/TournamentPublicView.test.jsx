@@ -7,9 +7,11 @@ vi.mock('../hooks/useTournamentRealtime.js', () => ({
   useTournamentRealtime: () => {},
 }));
 
+let mockLocationSearch = '';
+
 vi.mock('react-router-dom', () => ({
   useParams: () => ({ publicCode: 'ABC123' }),
-  useLocation: () => ({ search: '' }),
+  useLocation: () => ({ search: mockLocationSearch }),
 }));
 
 const jsonResponse = (payload, status = 200) => ({
@@ -44,6 +46,7 @@ function mockPublicFetch({
   liveMatches,
   tournamentPayload,
   matches,
+  schedulePlanSlots,
   phase1Standings,
   phase2Standings,
   cumulativeStandings,
@@ -61,6 +64,7 @@ function mockPublicFetch({
   };
   const resolvedTournamentPayload = tournamentPayload || defaultTournamentPayload;
   const resolvedMatchPayload = Array.isArray(matches) ? matches : [];
+  const resolvedSchedulePlanSlots = Array.isArray(schedulePlanSlots) ? schedulePlanSlots : [];
   const resolvedPhase1StandingsPayload = phase1Standings || { pools: [], overall: [] };
   const resolvedPhase2StandingsPayload = phase2Standings || { pools: [], overall: [] };
   const resolvedCumulativeStandingsPayload = cumulativeStandings || { pools: [], overall: [] };
@@ -97,6 +101,10 @@ function mockPublicFetch({
 
     if (requestUrl.endsWith('/api/tournaments/code/ABC123/matches?phase=phase1')) {
       return jsonResponse(resolvedMatchPayload);
+    }
+
+    if (requestUrl.includes('/api/tournaments/code/ABC123/schedule-plan')) {
+      return jsonResponse({ slots: resolvedSchedulePlanSlots });
     }
 
     const courtScheduleMatch = /\/api\/tournaments\/code\/ABC123\/courts\/([^/]+)\/schedule$/.exec(requestUrl);
@@ -146,6 +154,7 @@ function mockPublicFetch({
 describe('TournamentPublicView', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    mockLocationSearch = '';
   });
 
   it('shows live empty state and hides empty details sections', async () => {
@@ -163,6 +172,7 @@ describe('TournamentPublicView', () => {
     const user = userEvent.setup();
     render(<TournamentPublicView />);
 
+    await user.click(await screen.findByRole('button', { name: 'Live' }));
     expect(await screen.findByText('No matches are live right now.')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Details' }));
@@ -208,6 +218,7 @@ describe('TournamentPublicView', () => {
     const user = userEvent.setup();
     render(<TournamentPublicView />);
 
+    await user.click(await screen.findByRole('button', { name: 'Live' }));
     expect(await screen.findByText('LIVE')).toBeInTheDocument();
     expect(screen.getByText('ALP vs BRV')).toBeInTheDocument();
     expect(screen.getByText('Sets 1-0 • 25-22')).toBeInTheDocument();
@@ -239,7 +250,64 @@ describe('TournamentPublicView', () => {
     expect(screen.getByText('Overflow at lot C.')).toBeInTheDocument();
   });
 
-  it('uses single-pool-play standings tabs for 14-team format and defers crossover matchup labels', async () => {
+  it('defaults to Pools + Standings and honors ?view=live deep links', async () => {
+    mockPublicFetch({
+      details: {
+        specialNotes: '',
+        foodInfo: { text: '', linkUrl: '' },
+        facilitiesInfo: '',
+        parkingInfo: '',
+        mapImageUrls: [],
+      },
+      liveMatches: [],
+      schedulePlanSlots: [
+        {
+          slotId: 'crossover:C:D:1',
+          kind: 'match',
+          stageKey: 'crossover',
+          stageLabel: 'Crossover',
+          phase: 'phase1',
+          phaseLabel: 'Pool Play',
+          roundBlock: 4,
+          timeLabel: '12:00 PM',
+          courtCode: 'SRC-2',
+          courtLabel: 'SRC Court 2',
+          status: 'scheduled_tbd',
+          matchupLabel: 'C (#1) vs D (#1)',
+          refLabel: 'C (#2)',
+        },
+      ],
+    });
+
+    const { unmount } = render(<TournamentPublicView />);
+
+    expect(await screen.findByRole('heading', { name: 'Pools' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Pool Play + Crossover Schedule' })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Live Matches' })).not.toBeInTheDocument();
+
+    unmount();
+
+    mockLocationSearch = '?view=live';
+    mockPublicFetch({
+      details: {
+        specialNotes: '',
+        foodInfo: { text: '', linkUrl: '' },
+        facilitiesInfo: '',
+        parkingInfo: '',
+        mapImageUrls: [],
+      },
+      liveMatches: [],
+    });
+
+    render(<TournamentPublicView />);
+
+    expect(await screen.findByRole('heading', { name: 'Live Matches' })).toBeInTheDocument();
+    expect(screen.getByText('No matches are live right now.')).toBeInTheDocument();
+  });
+
+  it('uses schedule-plan crossover placeholder rows in Pools + Standings', async () => {
     mockPublicFetch({
       details: {
         specialNotes: '',
@@ -269,33 +337,35 @@ describe('TournamentPublicView', () => {
           seed: index + 1,
         })),
       },
-      matches: [
+      schedulePlanSlots: [
         {
-          _id: 'pool-a-1',
-          phase: 'phase1',
+          slotId: 'pool-a-1',
+          kind: 'match',
           stageKey: 'poolPlay1',
+          stageLabel: 'Pool Play',
+          phase: 'phase1',
+          phaseLabel: 'Pool Play',
           roundBlock: 1,
-          court: 'SRC-1',
+          courtCode: 'SRC-1',
           poolName: 'A',
-          teamA: { shortName: 'A1' },
-          teamB: { shortName: 'A2' },
-          refTeams: [{ shortName: 'A3' }],
+          matchupLabel: 'A1 vs A2',
+          refLabel: 'A3',
           status: 'scheduled',
-          result: null,
           scoreboardCode: 'POOLA1',
         },
         {
-          _id: 'cross-1',
-          phase: 'phase1',
+          slotId: 'cross-1',
+          kind: 'match',
           stageKey: 'crossover',
+          stageLabel: 'Crossover',
+          phase: 'phase1',
+          phaseLabel: 'Pool Play',
           roundBlock: 4,
-          court: 'SRC-2',
+          courtCode: 'SRC-2',
           poolName: null,
-          teamA: { shortName: 'C1' },
-          teamB: { shortName: 'D1' },
-          refTeams: [{ shortName: 'C2' }],
-          status: 'scheduled',
-          result: null,
+          matchupLabel: 'C (#1) vs D (#1)',
+          refLabel: 'C (#2)',
+          status: 'scheduled_tbd',
           scoreboardCode: 'CROSS1',
         },
       ],
@@ -304,15 +374,15 @@ describe('TournamentPublicView', () => {
       cumulativeStandings: { pools: [], overall: [] },
     });
 
-    const user = userEvent.setup();
     render(<TournamentPublicView />);
-
-    await user.click(await screen.findByRole('button', { name: 'Pools + Standings' }));
 
     expect(await screen.findByRole('heading', { name: 'Pool Play + Crossover Schedule' })).toBeInTheDocument();
     expect(
-      screen.getByText('Crossover matchup pending completion of pool-play standings.')
+      screen.getByText(
+        (_, element) => element?.textContent?.trim() === 'Crossover: C (#1) vs D (#1)'
+      )
     ).toBeInTheDocument();
+    expect(screen.getByText('Ref: C (#2)')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Pool Play' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Pool Play 2' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cumulative' })).toBeInTheDocument();

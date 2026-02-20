@@ -891,6 +891,6 @@ describe('tournament format routes + apply-format flow', () => {
       .set(authHeader());
 
     expect(generate.statusCode).toBe(400);
-    expect(generate.body.message).toMatch(/share the same home court/i);
+    expect(generate.body.message).toMatch(/share the same court/i);
   });
 });

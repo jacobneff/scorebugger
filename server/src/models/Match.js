@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const Tournament = require('./Tournament');
 
 const MatchResultSetScoreSchema = new mongoose.Schema(
   {
@@ -153,35 +152,23 @@ const MatchSchema = new mongoose.Schema(
     },
     facility: {
       type: String,
-      enum: ['SRC', 'VC'],
-      required: true,
+      default: null,
+      trim: true,
     },
     court: {
       type: String,
-      required: true,
+      default: null,
       trim: true,
-      validate: {
-        validator: async function validateCourt(value) {
-          if (!value || !this.tournamentId || !this.facility) {
-            return false;
-          }
-
-          const tournament = await Tournament.findById(this.tournamentId)
-            .select('facilities')
-            .lean();
-
-          if (!tournament?.facilities) {
-            return false;
-          }
-
-          const courts = Array.isArray(tournament.facilities[this.facility])
-            ? tournament.facilities[this.facility]
-            : [];
-
-          return courts.includes(value);
-        },
-        message: 'Court must match a configured court for the selected facility.',
-      },
+    },
+    facilityId: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    courtId: {
+      type: String,
+      default: null,
+      trim: true,
     },
     teamAId: {
       type: mongoose.Schema.Types.ObjectId,

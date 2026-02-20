@@ -4,6 +4,7 @@ const FACILITY_DEFAULTS = {
   SRC: ['SRC-1', 'SRC-2', 'SRC-3'],
   VC: ['VC-1', 'VC-2'],
 };
+const DEFAULT_TOTAL_COURTS = 5;
 
 const SCORING_DEFAULTS = {
   setTargets: [25, 25, 15],
@@ -59,6 +60,46 @@ const StandingsPhaseOverridesSchema = new mongoose.Schema(
         },
       ],
       default: undefined,
+    },
+  },
+  { _id: false }
+);
+
+const VenueCourtSchema = new mongoose.Schema(
+  {
+    courtId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    isEnabled: {
+      type: Boolean,
+      default: true,
+    },
+  },
+  { _id: false }
+);
+
+const VenueFacilitySchema = new mongoose.Schema(
+  {
+    facilityId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    courts: {
+      type: [VenueCourtSchema],
+      default: [],
     },
   },
   { _id: false }
@@ -147,6 +188,12 @@ const TournamentSchema = new mongoose.Schema(
           default: null,
           trim: true,
         },
+        totalCourts: {
+          type: Number,
+          default: DEFAULT_TOTAL_COURTS,
+          min: 1,
+          max: 64,
+        },
         activeCourts: {
           type: [String],
           default: function resolveDefaultActiveCourts() {
@@ -168,19 +215,21 @@ const TournamentSchema = new mongoose.Schema(
                 return false;
               }
 
-              if (value.length === 0) {
-                return false;
-              }
-
               const availableCourts = new Set(flattenFacilityCourts(this?.facilities));
               if (availableCourts.size === 0) {
-                return false;
+                return true;
               }
 
               return value.every((court) => availableCourts.has(toNormalizedCourtCode(court)));
             },
-            message: 'activeCourts must be a non-empty subset of the tournament facilities.',
+            message: 'activeCourts must be a subset of the tournament facilities.',
           },
+        },
+      },
+      venue: {
+        facilities: {
+          type: [VenueFacilitySchema],
+          default: [],
         },
       },
     },

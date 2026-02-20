@@ -7,6 +7,7 @@ const { DEFAULT_15_TEAM_FORMAT_ID, getFormat } = require('../tournamentFormats/f
 const { requireAuth } = require('../middleware/auth');
 const { recomputePhase2RematchWarnings } = require('../services/phase2');
 const { normalizeCourtCode } = require('../services/phase1');
+const { findCourtInVenue } = require('../utils/venue');
 const {
   TOURNAMENT_EVENT_TYPES,
   emitTournamentEvent,
@@ -36,6 +37,8 @@ const serializePool = (pool) => ({
   stageKey: pool?.stageKey ?? null,
   name: pool?.name ?? '',
   homeCourt: pool?.homeCourt ?? null,
+  assignedCourtId: pool?.assignedCourtId ?? null,
+  assignedFacilityId: pool?.assignedFacilityId ?? null,
   requiredTeamCount:
     Number.isFinite(Number(pool?.requiredTeamCount)) && Number(pool.requiredTeamCount) > 0
       ? Math.floor(Number(pool.requiredTeamCount))
@@ -115,13 +118,17 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
     const { poolId } = req.params;
     const hasTeamIds = Object.prototype.hasOwnProperty.call(req.body || {}, 'teamIds');
     const hasHomeCourt = Object.prototype.hasOwnProperty.call(req.body || {}, 'homeCourt');
+    const hasAssignedCourtId = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      'assignedCourtId'
+    );
 
     if (!isObjectId(poolId)) {
       return res.status(400).json({ message: 'Invalid pool id' });
     }
 
-    if (!hasTeamIds && !hasHomeCourt) {
-      return res.status(400).json({ message: 'Provide teamIds and/or homeCourt' });
+    if (!hasTeamIds && !hasHomeCourt && !hasAssignedCourtId) {
+      return res.status(400).json({ message: 'Provide teamIds, homeCourt, and/or assignedCourtId' });
     }
 
     if (hasTeamIds && !Array.isArray(req.body?.teamIds)) {
@@ -149,6 +156,17 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
       }
     }
 
+    let nextAssignedCourtId = null;
+    if (hasAssignedCourtId) {
+      if (req.body.assignedCourtId === null || req.body.assignedCourtId === '') {
+        nextAssignedCourtId = null;
+      } else if (typeof req.body.assignedCourtId !== 'string') {
+        return res.status(400).json({ message: 'assignedCourtId must be a string or null' });
+      } else {
+        nextAssignedCourtId = req.body.assignedCourtId.trim();
+      }
+    }
+
     const pool = await Pool.findById(poolId).lean();
 
     if (!pool) {
@@ -158,7 +176,7 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
     const accessContext = await requireTournamentAdminContext(
       pool.tournamentId,
       req.user.id,
-      '_id publicCode facilities settings.format'
+      '_id publicCode facilities settings.format settings.venue'
     );
     const ownedTournament = accessContext?.tournament || null;
     if (!ownedTournament) {
@@ -192,9 +210,29 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
     );
 
     if (hasHomeCourt && nextHomeCourt && !availableCourtSet.has(nextHomeCourt)) {
-      return res.status(400).json({
-        message: 'homeCourt must be one of the configured tournament facilities',
-      });
+      const resolvedVenueCourt = findCourtInVenue(ownedTournament?.settings?.venue, nextHomeCourt);
+      if (!resolvedVenueCourt) {
+        return res.status(400).json({
+          message: 'homeCourt must be one of the configured tournament facilities or venue courts',
+        });
+      }
+    }
+
+    let assignedFacilityIdFromVenue = null;
+    if (hasAssignedCourtId && nextAssignedCourtId) {
+      const resolvedVenueCourt = findCourtInVenue(
+        ownedTournament?.settings?.venue,
+        nextAssignedCourtId
+      );
+
+      if (!resolvedVenueCourt) {
+        return res.status(400).json({
+          message: 'assignedCourtId must reference an existing venue court',
+        });
+      }
+
+      nextAssignedCourtId = resolvedVenueCourt.courtId;
+      assignedFacilityIdFromVenue = resolvedVenueCourt.facilityId || null;
     }
 
     if (hasTeamIds && nextTeamIds.length > 0) {
@@ -244,6 +282,10 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
     if (hasHomeCourt) {
       updates.homeCourt = nextHomeCourt;
     }
+    if (hasAssignedCourtId) {
+      updates.assignedCourtId = nextAssignedCourtId;
+      updates.assignedFacilityId = nextAssignedCourtId ? assignedFacilityIdFromVenue : null;
+    }
 
     const updatedPool = await Pool.findByIdAndUpdate(
       pool._id,
@@ -276,6 +318,78 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
     );
 
     return res.json(serializePool(finalizedPool));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PUT /api/pools/:poolId/assign-court -> assign a pool to a venue court
+router.put('/:poolId/assign-court', requireAuth, async (req, res, next) => {
+  try {
+    const { poolId } = req.params;
+    const assignedCourtId =
+      typeof req.body?.assignedCourtId === 'string' ? req.body.assignedCourtId.trim() : '';
+
+    if (!isObjectId(poolId)) {
+      return res.status(400).json({ message: 'Invalid pool id' });
+    }
+
+    if (!assignedCourtId) {
+      return res.status(400).json({ message: 'assignedCourtId is required' });
+    }
+
+    const pool = await Pool.findById(poolId).lean();
+    if (!pool) {
+      return res.status(404).json({ message: 'Pool not found' });
+    }
+
+    const adminContext = await requireTournamentAdminContext(
+      pool.tournamentId,
+      req.user.id,
+      '_id publicCode settings.venue'
+    );
+    const tournament = adminContext?.tournament || null;
+
+    if (!tournament) {
+      return res.status(404).json({ message: 'Pool not found or unauthorized' });
+    }
+
+    const venueCourt = findCourtInVenue(tournament?.settings?.venue, assignedCourtId);
+    if (!venueCourt) {
+      return res.status(400).json({ message: 'assignedCourtId must reference an existing venue court' });
+    }
+
+    const updatedPool = await Pool.findByIdAndUpdate(
+      pool._id,
+      {
+        $set: {
+          assignedCourtId: venueCourt.courtId,
+          assignedFacilityId: venueCourt.facilityId || null,
+          // Keep legacy homeCourt aligned to preserve older screens.
+          homeCourt: venueCourt.courtName || null,
+        },
+      },
+      {
+        new: true,
+        runValidators: true,
+      }
+    )
+      .populate('teamIds', 'name shortName orderIndex seed logoUrl')
+      .lean();
+
+    const io = req.app?.get('io');
+    emitTournamentEvent(
+      io,
+      tournament.publicCode,
+      TOURNAMENT_EVENT_TYPES.POOLS_UPDATED,
+      {
+        phase: updatedPool?.phase || pool.phase,
+        stageKey: updatedPool?.stageKey || pool.stageKey || null,
+        poolIds: [toIdString(updatedPool?._id || pool._id)].filter(Boolean),
+      }
+    );
+
+    return res.json(serializePool(updatedPool));
   } catch (error) {
     return next(error);
   }

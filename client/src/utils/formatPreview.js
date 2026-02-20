@@ -14,12 +14,12 @@ const RR_TEMPLATES = Object.freeze({
   ],
 });
 
-const DEFAULT_COURTS = Object.freeze(['SRC-1', 'SRC-2', 'SRC-3', 'VC-1', 'VC-2']);
+const DEFAULT_COURTS = Object.freeze(['Court 1', 'Court 2', 'Court 3', 'Court 4', 'Court 5']);
 
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 
 const normalizeCourtCode = (value) =>
-  typeof value === 'string' ? value.trim().toUpperCase() : '';
+  typeof value === 'string' ? value.trim() : '';
 
 const uniqueCourts = (values) => {
   const seen = new Set();
@@ -27,12 +27,22 @@ const uniqueCourts = (values) => {
   return (Array.isArray(values) ? values : [])
     .map((entry) => normalizeCourtCode(entry))
     .filter((entry) => {
-      if (!entry || seen.has(entry)) {
+      const key = entry.toLowerCase();
+      if (!entry || seen.has(key)) {
         return false;
       }
-      seen.add(entry);
+      seen.add(key);
       return true;
     });
+};
+
+const buildCourtNamesFromCount = (count) => {
+  const parsed = Number(count);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return [...DEFAULT_COURTS];
+  }
+
+  return Array.from({ length: Math.floor(parsed) }, (_, index) => `Court ${index + 1}`);
 };
 
 const getPoolStages = (formatDef) =>
@@ -519,7 +529,7 @@ const buildPlayoffRows = ({ playoffStage, activeCourts, startRoundBlock }) => {
   return sortByRoundThenCourt(rows);
 };
 
-export function buildFormatPreview({ formatDef, activeCourts }) {
+export function buildFormatPreview({ formatDef, activeCourts, totalCourts }) {
   if (!formatDef || typeof formatDef !== 'object') {
     return {
       poolScheduleRows: [],
@@ -528,7 +538,8 @@ export function buildFormatPreview({ formatDef, activeCourts }) {
   }
 
   const normalizedCourts = uniqueCourts(activeCourts);
-  const schedulingCourts = normalizedCourts.length > 0 ? normalizedCourts : [...DEFAULT_COURTS];
+  const fallbackCourts = buildCourtNamesFromCount(totalCourts);
+  const schedulingCourts = normalizedCourts.length > 0 ? normalizedCourts : fallbackCourts;
   const poolStages = getPoolStages(formatDef);
   const firstPoolStage = poolStages[0] || null;
   const poolDefs = Array.isArray(firstPoolStage?.pools) ? firstPoolStage.pools : [];

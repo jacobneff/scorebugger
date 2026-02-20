@@ -110,6 +110,49 @@ const parseClockTimeToMinutes = (timeString) => {
   return Number(match[1]) * 60 + Number(match[2]);
 };
 
+const resolveLunchWindow = (schedule) => {
+  const hasLunchStart =
+    typeof schedule?.lunchStartTime === 'string' && schedule.lunchStartTime.trim().length > 0;
+  const lunchDuration = Number(schedule?.lunchDurationMinutes);
+
+  if (!hasLunchStart || !Number.isFinite(lunchDuration) || lunchDuration <= 0) {
+    return null;
+  }
+
+  return {
+    startMinutes: parseClockTimeToMinutes(schedule.lunchStartTime),
+    durationMinutes: Math.floor(lunchDuration),
+  };
+};
+
+const applyLunchDelayToBlockStart = ({ startMinutes, durationMinutes, lunchWindow }) => {
+  if (!lunchWindow) {
+    return { nextStartMinutes: startMinutes + durationMinutes, lunchApplied: false };
+  }
+
+  const lunchStart = lunchWindow.startMinutes;
+  const lunchEnd = lunchStart + lunchWindow.durationMinutes;
+  const scheduledEnd = startMinutes + durationMinutes;
+
+  if (startMinutes >= lunchStart) {
+    const delayedStart = lunchEnd;
+    return {
+      nextStartMinutes: delayedStart + durationMinutes,
+      lunchApplied: true,
+    };
+  }
+
+  if (scheduledEnd > lunchStart) {
+    const delayedStart = lunchEnd;
+    return {
+      nextStartMinutes: delayedStart + durationMinutes,
+      lunchApplied: true,
+    };
+  }
+
+  return { nextStartMinutes: scheduledEnd, lunchApplied: false };
+};
+
 const resolveTournamentTimezone = (tournament) => {
   if (typeof tournament?.timezone === 'string' && tournament.timezone.trim()) {
     return tournament.timezone.trim();
@@ -197,16 +240,51 @@ const formatMinutesInTimezone = (minutesSinceMidnight, timezone) => {
   }).format(new Date(timestamp));
 };
 
-export const formatRoundBlockStartTime = (roundBlock, tournament) => {
+export const resolveRoundBlockStartMinutes = (roundBlock, tournament) => {
   const parsedRoundBlock = Number(roundBlock);
   if (!Number.isFinite(parsedRoundBlock)) {
-    return '';
+    return null;
   }
 
   const schedule = normalizeTournamentSchedule(tournament);
-  const dayStartMinutes = parseClockTimeToMinutes(schedule.dayStartTime);
-  const timeIndex = Math.max(0, Math.floor(parsedRoundBlock) - 1);
-  const minutesSinceMidnight = dayStartMinutes + timeIndex * schedule.matchDurationMinutes;
+  const durationMinutes = Number(schedule.matchDurationMinutes) || DEFAULT_TOURNAMENT_SCHEDULE.matchDurationMinutes;
+  const targetIndex = Math.max(0, Math.floor(parsedRoundBlock) - 1);
+  const lunchWindow = resolveLunchWindow(schedule);
+
+  let nextStartMinutes = parseClockTimeToMinutes(schedule.dayStartTime);
+  let lunchApplied = false;
+
+  for (let blockIndex = 0; blockIndex < targetIndex; blockIndex += 1) {
+    const activeLunchWindow = lunchApplied ? null : lunchWindow;
+    const resolved = applyLunchDelayToBlockStart({
+      startMinutes: nextStartMinutes,
+      durationMinutes,
+      lunchWindow: activeLunchWindow,
+    });
+    nextStartMinutes = resolved.nextStartMinutes;
+    if (resolved.lunchApplied) {
+      lunchApplied = true;
+    }
+  }
+
+  if (!lunchApplied && lunchWindow) {
+    const lunchStart = lunchWindow.startMinutes;
+    const lunchEnd = lunchStart + lunchWindow.durationMinutes;
+    const scheduledEnd = nextStartMinutes + durationMinutes;
+
+    if (nextStartMinutes >= lunchStart || scheduledEnd > lunchStart) {
+      return lunchEnd;
+    }
+  }
+
+  return nextStartMinutes;
+};
+
+export const formatRoundBlockStartTime = (roundBlock, tournament) => {
+  const minutesSinceMidnight = resolveRoundBlockStartMinutes(roundBlock, tournament);
+  if (!Number.isFinite(minutesSinceMidnight)) {
+    return '';
+  }
   const timezone = resolveTournamentTimezone(tournament);
 
   try {

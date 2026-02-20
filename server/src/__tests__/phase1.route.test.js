@@ -338,6 +338,52 @@ describe('phase1 pool + match generation routes', () => {
     expect(response.body.teamIds).toHaveLength(4);
   });
 
+  test('pool assign-court rejects unknown venue court ids', async () => {
+    const tournament = await createOwnedTournament();
+    await Tournament.updateOne(
+      { _id: tournament._id },
+      {
+        $set: {
+          'settings.venue': {
+            facilities: [
+              {
+                facilityId: 'facility-main',
+                name: 'Main Facility',
+                courts: [
+                  {
+                    courtId: 'court-1',
+                    name: 'Court 1',
+                    isEnabled: true,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }
+    );
+
+    const pool = await Pool.create({
+      tournamentId: tournament._id,
+      phase: 'phase1',
+      stageKey: 'poolPlay1',
+      name: 'A',
+      requiredTeamCount: 3,
+      teamIds: [],
+      homeCourt: null,
+    });
+
+    const response = await request(app)
+      .put(`/api/pools/${pool._id}/assign-court`)
+      .set(authHeader())
+      .send({
+        assignedCourtId: 'unknown-court',
+      });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.message).toMatch(/assignedCourtId must reference an existing venue court/i);
+  });
+
   test('pool edit emits POOLS_UPDATED to tournament room', async () => {
     const tournament = await createOwnedTournament();
     await seedTournamentTeams(tournament._id);

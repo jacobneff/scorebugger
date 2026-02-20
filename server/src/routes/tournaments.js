@@ -40,7 +40,6 @@ const {
   resolvePoolPhase,
   resolveStage,
   schedulePlayoffMatches,
-  scheduleStageMatches,
 } = require('../tournamentEngine/formatEngine');
 const { createMatchScoreboard, createScoreboard } = require('../services/scoreboards');
 const { computeStandingsBundle } = require('../services/tournamentEngine/standings');
@@ -81,6 +80,15 @@ const { createTokenPair, generateToken } = require('../utils/tokens');
 const { sendMail, isEmailConfigured } = require('../config/mailer');
 const { buildTournamentInviteEmail } = require('../utils/emailTemplates');
 const { resolveAppBaseUrl } = require('../utils/urls');
+const {
+  DEFAULT_TOTAL_COURTS,
+  buildDefaultVenue,
+  countVenueCourts,
+  findCourtInVenue,
+  getEnabledCourts,
+  normalizeVenueFacilities,
+  venueToLegacyCourtNames,
+} = require('../utils/venue');
 
 const router = express.Router();
 
@@ -267,6 +275,88 @@ const normalizeActiveCourtsSelection = ({ requestedActiveCourts, availableCourts
   };
 };
 
+const toPositiveInteger = (value, fallback = null, { min = 1, max = 64 } = {}) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  const normalized = Math.floor(parsed);
+  if (normalized < min || normalized > max) {
+    return fallback;
+  }
+
+  return normalized;
+};
+
+function resolveFormatTotalCourts({ formatSettings, availableCourts, venueFacilities }) {
+  const fromFormat = toPositiveInteger(formatSettings?.totalCourts);
+  if (fromFormat) {
+    return fromFormat;
+  }
+
+  const fromVenue = countVenueCourts(venueFacilities);
+  if (fromVenue > 0) {
+    return fromVenue;
+  }
+
+  const normalizedActiveCourts = normalizeActiveCourtsSelection({
+    requestedActiveCourts: formatSettings?.activeCourts,
+    availableCourts,
+  });
+  if (normalizedActiveCourts.ok && normalizedActiveCourts.activeCourts.length > 0) {
+    return normalizedActiveCourts.activeCourts.length;
+  }
+
+  const fromFacilities = Array.isArray(availableCourts) ? availableCourts.length : 0;
+  if (fromFacilities > 0) {
+    return fromFacilities;
+  }
+
+  return DEFAULT_TOTAL_COURTS;
+}
+
+function resolveTournamentVenueState(tournament, options = {}) {
+  const availableCourts = flattenFacilityCourts(tournament?.facilities);
+  const formatSettings =
+    tournament?.settings?.format && typeof tournament.settings.format === 'object'
+      ? tournament.settings.format
+      : {};
+  const existingVenueFacilities = normalizeVenueFacilities(
+    tournament?.settings?.venue?.facilities
+  );
+  const totalCourts = toPositiveInteger(options.totalCourts)
+    || resolveFormatTotalCourts({
+      formatSettings,
+      availableCourts,
+      venueFacilities: existingVenueFacilities,
+    });
+  const existingVenueCourtCount = countVenueCourts(existingVenueFacilities);
+
+  if (existingVenueCourtCount > 0) {
+    return {
+      totalCourts,
+      venue: {
+        facilities: existingVenueFacilities,
+      },
+    };
+  }
+
+  const normalizedActiveCourts = normalizeActiveCourtsSelection({
+    requestedActiveCourts: formatSettings?.activeCourts,
+    availableCourts,
+  });
+  const legacyCourtNames =
+    normalizedActiveCourts.ok && normalizedActiveCourts.activeCourts.length > 0
+      ? normalizedActiveCourts.activeCourts
+      : availableCourts;
+
+  return {
+    totalCourts,
+    venue: buildDefaultVenue(totalCourts, { legacyCourtNames }),
+  };
+}
+
 const normalizeScheduleString = (value, fallback = null) =>
   isNonEmptyString(value) ? value.trim() : fallback;
 
@@ -322,6 +412,90 @@ function parseClockTimeToMinutes(value) {
   }
 
   return hours * 60 + minutes;
+}
+
+function resolveLunchWindow(schedule) {
+  const hasLunchStart = isNonEmptyString(schedule?.lunchStartTime);
+  const lunchDuration = Number(schedule?.lunchDurationMinutes);
+
+  if (!hasLunchStart || !Number.isFinite(lunchDuration) || lunchDuration <= 0) {
+    return null;
+  }
+
+  return {
+    startMinutes: parseClockTimeToMinutes(schedule.lunchStartTime),
+    durationMinutes: Math.floor(lunchDuration),
+  };
+}
+
+function applyLunchDelayToBlockStart({ startMinutes, durationMinutes, lunchWindow }) {
+  if (!lunchWindow) {
+    return { nextStartMinutes: startMinutes + durationMinutes, lunchApplied: false };
+  }
+
+  const lunchStart = lunchWindow.startMinutes;
+  const lunchEnd = lunchStart + lunchWindow.durationMinutes;
+  const scheduledEnd = startMinutes + durationMinutes;
+
+  if (startMinutes >= lunchStart) {
+    const delayedStart = lunchEnd;
+    return {
+      nextStartMinutes: delayedStart + durationMinutes,
+      lunchApplied: true,
+    };
+  }
+
+  if (scheduledEnd > lunchStart) {
+    const delayedStart = lunchEnd;
+    return {
+      nextStartMinutes: delayedStart + durationMinutes,
+      lunchApplied: true,
+    };
+  }
+
+  return { nextStartMinutes: scheduledEnd, lunchApplied: false };
+}
+
+function resolveRoundBlockStartMinutes(roundBlock, tournament) {
+  const parsedRoundBlock = Number(roundBlock);
+
+  if (!Number.isFinite(parsedRoundBlock)) {
+    return null;
+  }
+
+  const schedule = normalizeTournamentSchedule(tournament?.settings?.schedule);
+  const durationMinutes =
+    Number(schedule.matchDurationMinutes) || TOURNAMENT_SCHEDULE_DEFAULTS.matchDurationMinutes;
+  const targetIndex = Math.max(0, Math.floor(parsedRoundBlock) - 1);
+  const lunchWindow = resolveLunchWindow(schedule);
+
+  let nextStartMinutes = parseClockTimeToMinutes(schedule.dayStartTime);
+  let lunchApplied = false;
+
+  for (let blockIndex = 0; blockIndex < targetIndex; blockIndex += 1) {
+    const activeLunchWindow = lunchApplied ? null : lunchWindow;
+    const resolved = applyLunchDelayToBlockStart({
+      startMinutes: nextStartMinutes,
+      durationMinutes,
+      lunchWindow: activeLunchWindow,
+    });
+    nextStartMinutes = resolved.nextStartMinutes;
+    if (resolved.lunchApplied) {
+      lunchApplied = true;
+    }
+  }
+
+  if (!lunchApplied && lunchWindow) {
+    const lunchStart = lunchWindow.startMinutes;
+    const lunchEnd = lunchStart + lunchWindow.durationMinutes;
+    const scheduledEnd = nextStartMinutes + durationMinutes;
+
+    if (nextStartMinutes >= lunchStart || scheduledEnd > lunchStart) {
+      return lunchEnd;
+    }
+  }
+
+  return nextStartMinutes;
 }
 
 function formatMinutesAsClockTime(minutesSinceMidnight) {
@@ -382,16 +556,10 @@ function formatMinutesInTimezone(minutesSinceMidnight, timezone) {
 }
 
 function formatRoundBlockStartTime(roundBlock, tournament) {
-  const parsedRoundBlock = Number(roundBlock);
-
-  if (!Number.isFinite(parsedRoundBlock)) {
+  const minutesSinceMidnight = resolveRoundBlockStartMinutes(roundBlock, tournament);
+  if (!Number.isFinite(minutesSinceMidnight)) {
     return '';
   }
-
-  const schedule = normalizeTournamentSchedule(tournament?.settings?.schedule);
-  const dayStartMinutes = parseClockTimeToMinutes(schedule.dayStartTime);
-  const timeIndex = Math.max(0, Math.floor(parsedRoundBlock) - 1);
-  const minutesSinceMidnight = dayStartMinutes + timeIndex * schedule.matchDurationMinutes;
   const timezone = isNonEmptyString(tournament?.timezone)
     ? tournament.timezone.trim()
     : 'America/New_York';
@@ -416,14 +584,10 @@ function attachTournamentScheduleDefaults(tournament, options = {}) {
     tournament?.settings?.format && typeof tournament.settings.format === 'object'
       ? tournament.settings.format
       : {};
-  const normalizedActiveCourtsResult = normalizeActiveCourtsSelection({
-    requestedActiveCourts: formatSettings.activeCourts,
-    availableCourts,
-  });
+  const venueState = resolveTournamentVenueState(tournament);
+  const activeCourtsFromVenue = venueToLegacyCourtNames(venueState.venue, { enabledOnly: true });
   const activeCourts =
-    normalizedActiveCourtsResult.ok && normalizedActiveCourtsResult.activeCourts.length > 0
-      ? normalizedActiveCourtsResult.activeCourts
-      : availableCourts;
+    activeCourtsFromVenue.length > 0 ? activeCourtsFromVenue : availableCourts;
   const formatId = resolveDefaultFormatId({
     explicitFormatId: formatSettings.formatId,
     teamCount,
@@ -438,8 +602,10 @@ function attachTournamentScheduleDefaults(tournament, options = {}) {
       schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
       format: {
         formatId,
+        totalCourts: venueState.totalCourts,
         activeCourts,
       },
+      venue: venueState.venue,
     },
   };
 }
@@ -692,21 +858,17 @@ function getTournamentFormatContext(tournament, teamCount) {
     explicitFormatId,
     teamCount,
   });
-  const activeCourtsResult = normalizeActiveCourtsSelection({
-    requestedActiveCourts: tournament?.settings?.format?.activeCourts,
-    availableCourts,
-  });
-  const activeCourts =
-    activeCourtsResult.ok && activeCourtsResult.activeCourts.length > 0
-      ? activeCourtsResult.activeCourts
-      : availableCourts;
+  const venueState = resolveTournamentVenueState(tournament);
+  const activeCourts = venueToLegacyCourtNames(venueState.venue, { enabledOnly: true });
   const formatDef = formatId ? getFormat(formatId) : null;
 
   return {
     formatId,
     formatDef,
     availableCourts,
-    activeCourts,
+    activeCourts: activeCourts.length > 0 ? activeCourts : availableCourts,
+    totalCourts: venueState.totalCourts,
+    venue: venueState.venue,
   };
 }
 
@@ -1295,6 +1457,8 @@ function serializePool(pool) {
     stageKey: pool?.stageKey ?? null,
     name: pool?.name ?? '',
     homeCourt: pool?.homeCourt ?? null,
+    assignedCourtId: pool?.assignedCourtId ?? null,
+    assignedFacilityId: pool?.assignedFacilityId ?? null,
     requiredTeamCount:
       Number.isFinite(Number(pool?.requiredTeamCount)) && Number(pool.requiredTeamCount) > 0
         ? Math.floor(Number(pool.requiredTeamCount))
@@ -1366,6 +1530,10 @@ function serializeMatch(match) {
     roundBlock: match?.roundBlock ?? null,
     facility: match?.facility ?? null,
     court: match?.court ?? null,
+    facilityId: match?.facilityId ?? null,
+    courtId: match?.courtId ?? null,
+    facilityLabel: match?.facility ?? null,
+    courtLabel: match?.court ? mapCourtDisplayLabel(match.court) : null,
     teamAId: teamA ? toIdString(teamA._id) : toIdString(match?.teamAId),
     teamBId: teamB ? toIdString(teamB._id) : toIdString(match?.teamBId),
     teamA: teamA ? serializeTeam(teamA) : null,
@@ -2223,8 +2391,19 @@ function formatPublicTeamSnippet(team) {
   };
 }
 
-function resolveFacilityLabel(match) {
-  const facilityCode = match?.facility || getFacilityFromCourt(match?.court);
+function resolveVenueCourtForMatch(match, tournament) {
+  return findCourtInVenue(
+    tournament?.settings?.venue,
+    match?.courtId || match?.court || match?.homeCourt || null
+  );
+}
+
+function resolveFacilityLabel(match, tournament) {
+  const venueCourt = resolveVenueCourtForMatch(match, tournament);
+  const facilityCode =
+    venueCourt?.facilityName
+    || match?.facility
+    || getFacilityFromCourt(match?.court);
   return FACILITY_LABELS[facilityCode] || facilityCode || '';
 }
 
@@ -2232,9 +2411,13 @@ function serializeMatchForLiveView(match, tournament, phaseLabels = PHASE_LABELS
   const teamA = match?.teamAId && typeof match.teamAId === 'object' ? match.teamAId : null;
   const teamB = match?.teamBId && typeof match.teamBId === 'object' ? match.teamBId : null;
   const scoreboard = match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null;
+  const venueCourt = resolveVenueCourtForMatch(match, tournament);
   const resultScore = serializeCourtScheduleScore(match?.result);
   const scoreboardScore = serializeScoreSummaryFromScoreboard(scoreboard);
   const completedSetScores = resolveCompletedSetScores(match?.result, scoreboard);
+  const courtCode = match?.courtId || match?.court || null;
+  const courtLabel =
+    venueCourt?.courtName || mapCourtDisplayLabel(match?.court) || mapCourtDisplayLabel(courtCode);
 
   return {
     matchId: toIdString(match?._id),
@@ -2243,10 +2426,10 @@ function serializeMatchForLiveView(match, tournament, phaseLabels = PHASE_LABELS
     bracket: match?.bracket ?? null,
     roundBlock: match?.roundBlock ?? null,
     timeLabel: formatRoundBlockStartTime(match?.roundBlock, tournament),
-    facility: match?.facility ?? getFacilityFromCourt(match?.court),
-    facilityLabel: resolveFacilityLabel(match),
-    courtCode: match?.court ?? null,
-    courtLabel: mapCourtDisplayLabel(match?.court),
+    facility: match?.facilityId || match?.facility || getFacilityFromCourt(match?.court),
+    facilityLabel: resolveFacilityLabel(match, tournament),
+    courtCode,
+    courtLabel,
     teamA: formatPublicTeamSnippet(teamA),
     teamB: formatPublicTeamSnippet(teamB),
     status: normalizeMatchStatus(match?.status),
@@ -2295,8 +2478,12 @@ function serializeMatchForTeamView(match, focusTeamId, tournament, phaseLabels =
   const resultScore = serializeCourtScheduleScore(match?.result);
   const scoreboard =
     match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null;
+  const venueCourt = resolveVenueCourtForMatch(match, tournament);
   const scoreboardScore = serializeScoreSummaryFromScoreboard(scoreboard);
   const completedSetScores = resolveCompletedSetScores(match?.result, scoreboard);
+  const courtCode = match?.courtId || match?.court || null;
+  const courtLabel =
+    venueCourt?.courtName || mapCourtDisplayLabel(match?.court) || mapCourtDisplayLabel(courtCode);
 
   return {
     matchId: toIdString(match?._id),
@@ -2307,10 +2494,10 @@ function serializeMatchForTeamView(match, focusTeamId, tournament, phaseLabels =
     roundLabel: match?.bracketRound ?? null,
     roundBlock: match?.roundBlock ?? null,
     timeLabel: formatRoundBlockStartTime(match?.roundBlock, tournament),
-    facility: match?.facility ?? getFacilityFromCourt(match?.court),
-    facilityLabel: resolveFacilityLabel(match),
-    courtCode: match?.court ?? null,
-    courtLabel: mapCourtDisplayLabel(match?.court),
+    facility: match?.facilityId || match?.facility || getFacilityFromCourt(match?.court),
+    facilityLabel: resolveFacilityLabel(match, tournament),
+    courtCode,
+    courtLabel,
     opponent: formatPublicTeamSnippet(opponentTeam),
     teamA: formatPublicTeamSnippet(teamA),
     teamB: formatPublicTeamSnippet(teamB),
@@ -2414,13 +2601,22 @@ async function generatePoolPlayStageMatches({
   const phase = resolvePoolPhase(formatDef, stageDef?.key, stageDef);
   const stagePoolDefinitions = Array.isArray(stageDef?.pools) ? stageDef.pools : [];
   const poolNames = stagePoolDefinitions.map((poolDef) => poolDef.name);
+  const venueState = resolveTournamentVenueState(tournament);
+  const enabledVenueCourts = getEnabledCourts(venueState.venue);
+
+  if (enabledVenueCourts.length === 0) {
+    throw new Error('Venue must include at least one enabled court before generating matches.');
+  }
+
   const pools = await Pool.find({
     tournamentId,
     phase,
     name: { $in: poolNames },
     $or: [{ stageKey: stageDef.key }, { stageKey: null }, { stageKey: { $exists: false } }],
   })
-    .select('_id name stageKey requiredTeamCount teamIds homeCourt')
+    .select(
+      '_id name stageKey requiredTeamCount teamIds homeCourt assignedCourtId assignedFacilityId'
+    )
     .lean();
   const poolsByName = new Map(pools.map((pool) => [pool.name, pool]));
   const stagePools = stagePoolDefinitions.map((poolDef) => poolsByName.get(poolDef.name));
@@ -2435,6 +2631,8 @@ async function generatePoolPlayStageMatches({
   }
 
   const duplicateCheck = [];
+  const assignedCourtIds = [];
+  const poolCourtBackfills = [];
   stagePools.forEach((pool, index) => {
     const requiredTeamCount =
       Number.isFinite(Number(pool?.requiredTeamCount)) && Number(pool.requiredTeamCount) > 0
@@ -2445,8 +2643,35 @@ async function generatePoolPlayStageMatches({
       throw new Error(`Pool ${pool?.name || '?'} must have exactly ${requiredTeamCount} teams`);
     }
 
-    if (!isValidHomeCourt(pool.homeCourt)) {
-      throw new Error(`Pool ${pool?.name || '?'} needs a valid home court`);
+    const resolvedVenueCourt = findCourtInVenue(
+      venueState.venue,
+      pool?.assignedCourtId || pool?.homeCourt
+    );
+
+    if (!resolvedVenueCourt) {
+      throw new Error(
+        `Pool ${pool?.name || '?'} must be assigned to a venue court before generating matches`
+      );
+    }
+
+    if (resolvedVenueCourt.isEnabled === false) {
+      throw new Error(`Pool ${pool?.name || '?'} is assigned to a disabled court`);
+    }
+
+    pool.__resolvedVenueCourt = resolvedVenueCourt;
+    assignedCourtIds.push(resolvedVenueCourt.courtId);
+
+    if (
+      pool.assignedCourtId !== resolvedVenueCourt.courtId
+      || pool.assignedFacilityId !== resolvedVenueCourt.facilityId
+      || pool.homeCourt !== resolvedVenueCourt.courtName
+    ) {
+      poolCourtBackfills.push({
+        poolId: pool._id,
+        assignedCourtId: resolvedVenueCourt.courtId,
+        assignedFacilityId: resolvedVenueCourt.facilityId || null,
+        homeCourt: resolvedVenueCourt.courtName || null,
+      });
     }
 
     pool.teamIds.forEach((teamId) => duplicateCheck.push(toIdString(teamId)));
@@ -2456,18 +2681,43 @@ async function generatePoolPlayStageMatches({
     throw new Error(`Each ${stageDef.displayName || stageDef.key} team must appear in one pool only`);
   }
 
-  const homeCourtCounts = new Map();
-  stagePools.forEach((pool) => {
-    if (pool.homeCourt) {
-      homeCourtCounts.set(pool.homeCourt, (homeCourtCounts.get(pool.homeCourt) || 0) + 1);
-    }
-  });
-  const conflictingCourts = Array.from(homeCourtCounts.entries())
-    .filter(([, count]) => count > 1)
-    .map(([court]) => court);
-  if (conflictingCourts.length > 0) {
+  if (stagePools.length > enabledVenueCourts.length) {
     throw new Error(
-      `Pools share the same home court (${conflictingCourts.join(', ')}). Assign unique courts before generating matches.`
+      `${stageDef.displayName || stageDef.key} has ${stagePools.length} pools but only ${enabledVenueCourts.length} courts are enabled. Wave scheduling is not supported yet.`
+    );
+  }
+
+  const courtCounts = assignedCourtIds.reduce((lookup, courtId) => {
+    lookup.set(courtId, (lookup.get(courtId) || 0) + 1);
+    return lookup;
+  }, new Map());
+  const conflictingCourtIds = Array.from(courtCounts.entries())
+    .filter(([, count]) => count > 1)
+    .map(([courtId]) => courtId);
+  if (conflictingCourtIds.length > 0) {
+    const conflictLabels = conflictingCourtIds
+      .map((courtId) => findCourtInVenue(venueState.venue, courtId)?.courtName || courtId)
+      .join(', ');
+    throw new Error(
+      `Pools share the same court (${conflictLabels}). Assign unique courts before generating matches.`
+    );
+  }
+
+  if (poolCourtBackfills.length > 0) {
+    await Pool.bulkWrite(
+      poolCourtBackfills.map((entry) => ({
+        updateOne: {
+          filter: { _id: entry.poolId },
+          update: {
+            $set: {
+              assignedCourtId: entry.assignedCourtId,
+              assignedFacilityId: entry.assignedFacilityId,
+              homeCourt: entry.homeCourt,
+            },
+          },
+        },
+      })),
+      { ordered: true }
     );
   }
 
@@ -2497,13 +2747,41 @@ async function generatePoolPlayStageMatches({
     return {
       poolId: pool._id,
       poolName: pool.name,
-      homeCourt: pool.homeCourt,
+      assignedCourtId: pool?.__resolvedVenueCourt?.courtId || null,
+      assignedFacilityId: pool?.__resolvedVenueCourt?.facilityId || null,
+      courtName: pool?.__resolvedVenueCourt?.courtName || null,
+      facilityName: pool?.__resolvedVenueCourt?.facilityName || null,
       matches: roundRobinMatches,
     };
   });
 
   const startRoundBlock = await resolveStageStartRoundBlock(tournamentId, formatDef, stageDef.key);
-  const scheduledMatches = scheduleStageMatches(matchesByPool, activeCourts, startRoundBlock);
+  const maxMatchCount = matchesByPool.reduce(
+    (maxValue, pool) => Math.max(maxValue, pool.matches.length),
+    0
+  );
+  const scheduledMatches = [];
+
+  for (let matchIndex = 0; matchIndex < maxMatchCount; matchIndex += 1) {
+    matchesByPool.forEach((pool) => {
+      const match = pool.matches[matchIndex];
+      if (!match) {
+        return;
+      }
+
+      scheduledMatches.push({
+        ...match,
+        poolId: pool.poolId || null,
+        poolName: pool.poolName || null,
+        roundBlock: startRoundBlock + matchIndex,
+        courtId: pool.assignedCourtId,
+        facilityId: pool.assignedFacilityId,
+        court: pool.courtName,
+        facility: pool.facilityName,
+      });
+    });
+  }
+
   const scoring = normalizeScoringConfig(tournament?.settings?.scoring);
   const createdMatchIds = [];
   const createdScoreboardIds = [];
@@ -2532,6 +2810,8 @@ async function generatePoolPlayStageMatches({
         roundBlock: scheduledMatch.roundBlock,
         facility: scheduledMatch.facility,
         court: scheduledMatch.court,
+        facilityId: scheduledMatch.facilityId,
+        courtId: scheduledMatch.courtId,
         teamAId: scheduledMatch.teamAId,
         teamBId: scheduledMatch.teamBId,
         refTeamIds: scheduledMatch.refTeamIds || [],
@@ -3005,7 +3285,7 @@ router.get('/code/:publicCode/live', async (req, res, next) => {
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id timezone settings.schedule settings.format facilities')
+      .select('_id timezone settings.schedule settings.format settings.venue facilities')
       .lean();
 
     if (!tournament) {
@@ -3021,7 +3301,7 @@ router.get('/code/:publicCode/live', async (req, res, next) => {
       status: 'live',
     })
       .select(
-        'phase bracket roundBlock facility court teamAId teamBId status startedAt endedAt result scoreboardId'
+        'phase bracket roundBlock facility court facilityId courtId teamAId teamBId status startedAt endedAt result scoreboardId'
       )
       .populate('teamAId', 'name shortName logoUrl')
       .populate('teamBId', 'name shortName logoUrl')
@@ -3049,7 +3329,7 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id name date timezone publicCode facilities settings.schedule settings.format')
+      .select('_id name date timezone publicCode facilities settings.schedule settings.format settings.venue')
       .lean();
 
     if (!tournament) {
@@ -3081,7 +3361,7 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
       ],
     })
       .select(
-        'phase bracket bracketRound roundBlock facility court teamAId teamBId refTeamIds byeTeamId poolId status startedAt endedAt result scoreboardId createdAt'
+        'phase bracket bracketRound roundBlock facility court facilityId courtId teamAId teamBId refTeamIds byeTeamId poolId status startedAt endedAt result scoreboardId createdAt'
       )
       .populate('teamAId', 'name shortName logoUrl')
       .populate('teamBId', 'name shortName logoUrl')
@@ -3096,6 +3376,7 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
       timezone: tournament.timezone,
       settings: {
         schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+        venue: formatContext.venue,
       },
     };
 
@@ -3125,19 +3406,23 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
         return byeId === teamId;
       })
     ).map((match) => ({
+      courtCode: match?.courtId || match?.court || null,
       matchId: toIdString(match?._id),
       phase: match?.phase ?? null,
       phaseLabel: resolvePhaseLabel(match?.phase, phaseLabels),
       roundBlock: match?.roundBlock ?? null,
       timeLabel: formatRoundBlockStartTime(match?.roundBlock, tournamentForTimeLabels),
-      courtCode: match?.court ?? null,
-      courtLabel: mapCourtDisplayLabel(match?.court),
+      courtLabel:
+        findCourtInVenue(tournament?.settings?.venue, match?.courtId || match?.court)?.courtName
+        || mapCourtDisplayLabel(match?.court),
       poolName: match?.poolId && typeof match.poolId === 'object' ? (match.poolId.name || null) : null,
     }));
 
     const nextUp = participantMatches.find(
       (match) => !['ended', 'final'].includes(match.status)
     ) || null;
+
+    const venueCourts = getEnabledCourts(formatContext.venue);
 
     return res.json({
       tournament: {
@@ -3146,21 +3431,31 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
         timezone: tournament.timezone,
         publicCode: tournament.publicCode,
         facilities: tournament.facilities,
-        courts: PHASE1_COURT_ORDER.map((courtCode) => {
-          const facility = getFacilityFromCourt(courtCode);
-          return {
-            code: courtCode,
-            label: mapCourtDisplayLabel(courtCode),
-            facility,
-            facilityLabel: FACILITY_LABELS[facility] || facility,
-          };
-        }),
+        courts:
+          venueCourts.length > 0
+            ? venueCourts.map((court) => ({
+                code: court.courtId,
+                label: court.courtName,
+                facility: court.facilityId,
+                facilityLabel: court.facilityName || '',
+              }))
+            : PHASE1_COURT_ORDER.map((courtCode) => {
+                const facility = getFacilityFromCourt(courtCode);
+                return {
+                  code: courtCode,
+                  label: mapCourtDisplayLabel(courtCode),
+                  facility,
+                  facilityLabel: FACILITY_LABELS[facility] || facility,
+                };
+              }),
         settings: {
           schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
           format: {
             formatId: formatContext.formatId,
+            totalCourts: formatContext.totalCourts,
             activeCourts: formatContext.activeCourts,
           },
+          venue: formatContext.venue,
         },
       },
       team: {
@@ -3188,19 +3483,32 @@ router.get('/code/:publicCode/courts', async (req, res, next) => {
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id settings.format facilities')
+      .select('_id settings.format settings.venue facilities')
       .lean();
 
     if (!tournament) {
       return res.status(404).json({ message: 'Tournament not found' });
     }
 
+    const teamCount = await TournamentTeam.countDocuments({ tournamentId: tournament._id });
+    const formatContext = getTournamentFormatContext(tournament, teamCount);
+    const venueCourts = getEnabledCourts(formatContext.venue);
+
     return res.json({
-      courts: PHASE1_COURT_ORDER.map((courtCode) => ({
-        code: courtCode,
-        label: mapCourtDisplayLabel(courtCode),
-        facility: getFacilityFromCourt(courtCode),
-      })),
+      courts:
+        venueCourts.length > 0
+          ? venueCourts.map((court) => ({
+              code: court.courtId,
+              label: court.courtName,
+              facility: court.facilityId,
+              facilityLabel: court.facilityName || '',
+            }))
+          : PHASE1_COURT_ORDER.map((courtCode) => ({
+              code: courtCode,
+              label: mapCourtDisplayLabel(courtCode),
+              facility: getFacilityFromCourt(courtCode),
+              facilityLabel: FACILITY_LABELS[getFacilityFromCourt(courtCode)] || getFacilityFromCourt(courtCode),
+            })),
     });
   } catch (error) {
     return next(error);
@@ -3211,18 +3519,20 @@ router.get('/code/:publicCode/courts', async (req, res, next) => {
 router.get('/code/:publicCode/courts/:courtCode/schedule', async (req, res, next) => {
   try {
     const publicCode = normalizePublicCode(req.params.publicCode);
-    const courtCode = normalizeCourtCode(req.params.courtCode);
+    const requestedCourtKey = isNonEmptyString(req.params.courtCode)
+      ? req.params.courtCode.trim()
+      : '';
 
     if (!new RegExp(`^[A-Z0-9]{${CODE_LENGTH}}$`).test(publicCode)) {
       return res.status(400).json({ message: 'Invalid tournament code' });
     }
 
-    if (!isValidHomeCourt(courtCode)) {
+    if (!requestedCourtKey) {
       return res.status(400).json({ message: 'Invalid court code' });
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id settings.format facilities')
+      .select('_id settings.format settings.venue facilities')
       .lean();
 
     if (!tournament) {
@@ -3232,12 +3542,22 @@ router.get('/code/:publicCode/courts/:courtCode/schedule', async (req, res, next
     const teamCount = await TournamentTeam.countDocuments({ tournamentId: tournament._id });
     const formatContext = getTournamentFormatContext(tournament, teamCount);
     const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
+    const venueCourt = findCourtInVenue(formatContext.venue, requestedCourtKey);
+    const legacyCourtCode = normalizeCourtCode(requestedCourtKey);
 
     const matches = await Match.find({
       tournamentId: tournament._id,
-      court: courtCode,
+      $or: venueCourt
+        ? [
+            { courtId: venueCourt.courtId },
+            { court: venueCourt.courtName },
+            { court: requestedCourtKey },
+          ]
+        : [{ court: legacyCourtCode || requestedCourtKey }, { courtId: requestedCourtKey }],
     })
-      .select('phase roundBlock poolId teamAId teamBId refTeamIds status result createdAt')
+      .select(
+        'phase roundBlock poolId teamAId teamBId refTeamIds status result createdAt court courtId'
+      )
       .populate('poolId', 'name')
       .populate('teamAId', 'name shortName')
       .populate('teamBId', 'name shortName')
@@ -3250,9 +3570,15 @@ router.get('/code/:publicCode/courts/:courtCode/schedule', async (req, res, next
 
     return res.json({
       court: {
-        code: courtCode,
-        label: mapCourtDisplayLabel(courtCode),
-        facility: getFacilityFromCourt(courtCode),
+        code: venueCourt?.courtId || requestedCourtKey,
+        label:
+          venueCourt?.courtName
+          || mapCourtDisplayLabel(legacyCourtCode || requestedCourtKey),
+        facility: venueCourt?.facilityId || getFacilityFromCourt(legacyCourtCode || requestedCourtKey),
+        facilityLabel:
+          venueCourt?.facilityName
+          || FACILITY_LABELS[getFacilityFromCourt(legacyCourtCode || requestedCourtKey)]
+          || getFacilityFromCourt(legacyCourtCode || requestedCourtKey),
       },
       matches: orderedMatches,
     });
@@ -3349,7 +3675,7 @@ router.get('/code/:publicCode/playoffs', async (req, res, next) => {
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id name timezone status publicCode settings.schedule settings.format facilities')
+      .select('_id name timezone status publicCode settings.schedule settings.format settings.venue facilities')
       .lean();
 
     if (!tournament) {
@@ -3376,8 +3702,10 @@ router.get('/code/:publicCode/playoffs', async (req, res, next) => {
           schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
           format: {
             formatId: formatContext.formatId,
+            totalCourts: formatContext.totalCourts,
             activeCourts: formatContext.activeCourts,
           },
+          venue: formatContext.venue,
         },
         publicCode: tournament.publicCode,
       },
@@ -3749,7 +4077,7 @@ router.patch('/:id/details', requireAuth, async (req, res, next) => {
   }
 });
 
-// POST /api/tournaments/:id/apply-format -> tournament-admin applies a format + active courts
+// POST /api/tournaments/:id/apply-format -> tournament-admin applies a format + total courts
 router.post('/:id/apply-format', requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -3799,27 +4127,31 @@ router.post('/:id/apply-format', requireAuth, async (req, res, next) => {
       return res.status(400).json({ message: activeCourtsResult.message });
     }
 
-    const activeCourts = activeCourtsResult.activeCourts;
+    const fallbackTotalCourts =
+      activeCourtsResult.activeCourts.length > 0
+        ? activeCourtsResult.activeCourts.length
+        : resolveTournamentVenueState(tournament).totalCourts;
+    const totalCourts = toPositiveInteger(req.body?.totalCourts) || fallbackTotalCourts;
 
-    if (activeCourts.length === 0) {
-      return res.status(400).json({ message: 'At least one active court is required' });
+    if (!totalCourts) {
+      return res.status(400).json({ message: 'totalCourts must be a positive integer' });
     }
 
     if (
       Number.isFinite(Number(formatDef.minCourts)) &&
-      activeCourts.length < Number(formatDef.minCourts)
+      totalCourts < Number(formatDef.minCourts)
     ) {
       return res.status(400).json({
-        message: `${formatDef.name} requires at least ${formatDef.minCourts} active courts`,
+        message: `${formatDef.name} requires at least ${formatDef.minCourts} courts`,
       });
     }
 
     if (
       Number.isFinite(Number(formatDef.maxCourts)) &&
-      activeCourts.length > Number(formatDef.maxCourts)
+      totalCourts > Number(formatDef.maxCourts)
     ) {
       return res.status(400).json({
-        message: `${formatDef.name} supports at most ${formatDef.maxCourts} active courts`,
+        message: `${formatDef.name} supports at most ${formatDef.maxCourts} courts`,
       });
     }
 
@@ -3839,19 +4171,54 @@ router.post('/:id/apply-format', requireAuth, async (req, res, next) => {
       await Pool.deleteMany({ tournamentId: id });
     }
 
+    const existingVenueFacilities = normalizeVenueFacilities(
+      tournament?.settings?.venue?.facilities
+    );
+    const existingVenueCourtCount = countVenueCourts(existingVenueFacilities);
+    const selectedLegacyCourts =
+      activeCourtsResult.activeCourts.length > 0
+        ? activeCourtsResult.activeCourts
+        : availableCourts;
+    const currentVenueState =
+      existingVenueCourtCount > 0
+        ? {
+            totalCourts,
+            venue: { facilities: existingVenueFacilities },
+          }
+        : {
+            totalCourts,
+            venue: buildDefaultVenue(totalCourts, {
+              legacyCourtNames: selectedLegacyCourts,
+            }),
+          };
+    const activeCourts = venueToLegacyCourtNames(currentVenueState.venue, { enabledOnly: true });
+    const scheduleInput =
+      req.body?.schedule && typeof req.body.schedule === 'object' ? req.body.schedule : {};
+    const schedulePatch = normalizeTournamentSchedule({
+      dayStartTime: scheduleInput.dayStartTime ?? scheduleInput.startTime,
+      matchDurationMinutes:
+        scheduleInput.matchDurationMinutes ?? scheduleInput.matchDuration,
+      lunchStartTime: scheduleInput.lunchStartTime ?? scheduleInput.lunchStart,
+      lunchDurationMinutes:
+        scheduleInput.lunchDurationMinutes ?? scheduleInput.lunchDuration,
+    });
+
     await Tournament.updateOne(
       { _id: id },
       {
         $set: {
           'settings.format.formatId': formatDef.id,
+          'settings.format.totalCourts': totalCourts,
           'settings.format.activeCourts': activeCourts,
+          'settings.schedule': schedulePatch,
+          'settings.venue': currentVenueState.venue,
         },
       }
     );
 
     const firstPoolStage = getFirstPoolPlayStage(formatDef);
     const pools = firstPoolStage
-      ? await instantiatePools(id, formatDef, firstPoolStage.key, activeCourts, {
+      ? await instantiatePools(id, formatDef, firstPoolStage.key, [], {
           clearTeamIds: true,
         })
       : [];
@@ -3870,14 +4237,142 @@ router.post('/:id/apply-format', requireAuth, async (req, res, next) => {
       );
     }
 
+    const persistedTournament = await Tournament.findById(id)
+      .select('name date timezone status facilities settings.schedule settings.format settings.venue publicCode')
+      .lean();
+    const tournamentWithDefaults = attachTournamentScheduleDefaults(persistedTournament, {
+      teamCount,
+    });
+
     return res.json({
+      tournament: tournamentWithDefaults,
       format: {
         id: formatDef.id,
         name: formatDef.name,
       },
       teamCount,
+      totalCourts,
       activeCourts,
+      venue: tournamentWithDefaults?.settings?.venue || currentVenueState.venue,
       pools: serializedPools,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// GET /api/tournaments/:id/venue -> tournament-admin venue configuration
+router.get('/:id/venue', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    const adminContext = await requireTournamentAdminContext(
+      id,
+      req.user.id,
+      'settings.format settings.venue facilities'
+    );
+    const tournament = adminContext?.tournament || null;
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const venueState = resolveTournamentVenueState(tournament);
+    const existingVenueCount = countVenueCourts(
+      normalizeVenueFacilities(tournament?.settings?.venue?.facilities)
+    );
+
+    if (existingVenueCount === 0) {
+      await Tournament.updateOne(
+        { _id: id },
+        {
+          $set: {
+            'settings.format.totalCourts': venueState.totalCourts,
+            'settings.venue': venueState.venue,
+            'settings.format.activeCourts': venueToLegacyCourtNames(venueState.venue, {
+              enabledOnly: true,
+            }),
+          },
+        }
+      );
+    }
+
+    return res.json({
+      totalCourts: venueState.totalCourts,
+      venue: venueState.venue,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+// PUT /api/tournaments/:id/venue -> tournament-admin venue configuration update
+router.put('/:id/venue', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const rawFacilities = req.body?.facilities;
+
+    if (!isObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid tournament id' });
+    }
+
+    if (!Array.isArray(rawFacilities)) {
+      return res.status(400).json({ message: 'facilities must be an array' });
+    }
+
+    if (rawFacilities.length === 0) {
+      return res.status(400).json({ message: 'At least one facility is required' });
+    }
+
+    const facilities = normalizeVenueFacilities(rawFacilities);
+
+    const adminContext = await requireTournamentAdminContext(
+      id,
+      req.user.id,
+      'settings.format settings.venue facilities publicCode'
+    );
+    const tournament = adminContext?.tournament || null;
+    if (!tournament) {
+      return res.status(404).json({ message: 'Tournament not found or unauthorized' });
+    }
+
+    const formatSettings =
+      tournament?.settings?.format && typeof tournament.settings.format === 'object'
+        ? tournament.settings.format
+        : {};
+    const expectedTotalCourts = resolveFormatTotalCourts({
+      formatSettings,
+      availableCourts: flattenFacilityCourts(tournament?.facilities),
+      venueFacilities: normalizeVenueFacilities(tournament?.settings?.venue?.facilities),
+    });
+    const configuredCourtCount = countVenueCourts(facilities);
+
+    if (configuredCourtCount !== expectedTotalCourts) {
+      return res.status(400).json({
+        message: `Configured courts (${configuredCourtCount}) must equal format totalCourts (${expectedTotalCourts})`,
+      });
+    }
+
+    const venue = { facilities };
+    const activeCourts = venueToLegacyCourtNames(venue, { enabledOnly: true });
+
+    await Tournament.updateOne(
+      { _id: id },
+      {
+        $set: {
+          'settings.venue': venue,
+          'settings.format.totalCourts': expectedTotalCourts,
+          'settings.format.activeCourts': activeCourts,
+        },
+      }
+    );
+
+    return res.json({
+      totalCourts: expectedTotalCourts,
+      venue,
     });
   } catch (error) {
     return next(error);
@@ -4054,7 +4549,7 @@ router.post('/:id/stages/:stageKey/pools/init', requireAuth, async (req, res, ne
       id,
       formatContext.formatDef,
       stageDef.key,
-      formatContext.activeCourts,
+      [],
       {
         clearTeamIds: forceInit,
       }
@@ -4135,7 +4630,7 @@ router.post('/:id/stages/:stageKey/pools/autofill', requireAuth, async (req, res
       id,
       formatContext.formatDef,
       stageDef.key,
-      formatContext.activeCourts,
+      [],
       { clearTeamIds: false }
     );
 
@@ -4359,7 +4854,12 @@ router.post('/:id/stages/:stageKey/matches/generate', requireAuth, async (req, r
 
     return res.status(201).json(generatedMatches);
   } catch (error) {
-    if (error?.message && /(must have exactly|missing|unknown|requires|unsupported|Unable|share the same)/i.test(error.message)) {
+    if (
+      error?.message &&
+      /(must have exactly|missing|unknown|requires|unsupported|Unable|share the same|assigned|Wave scheduling)/i.test(
+        error.message
+      )
+    ) {
       return res.status(400).json({ message: error.message });
     }
 
@@ -6127,7 +6627,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     const adminContext = await getTournamentAccessContext(
       id,
       req.user.id,
-      'name date timezone status details facilities settings.schedule settings.format'
+      'name date timezone status details facilities settings.schedule settings.format settings.venue'
     );
     const tournament = adminContext?.tournament || null;
     if (!tournament) {

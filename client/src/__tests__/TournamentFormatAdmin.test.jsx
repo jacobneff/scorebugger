@@ -122,7 +122,7 @@ describe('TournamentFormatAdmin', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders simplified format tab and auto-applies with force after conflict', async () => {
+  it('renders simplified format tab and applies with force after confirmation', async () => {
     const applyUrls = [];
     const teams = Array.from({ length: 14 }, (_, index) => ({
       _id: `team-${index + 1}`,
@@ -235,12 +235,12 @@ describe('TournamentFormatAdmin', () => {
     render(<TournamentFormatAdmin />);
 
     expect(await screen.findByRole('heading', { name: 'Tournament Format' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Apply Format' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Apply Format' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Init .* Pools/i })).not.toBeInTheDocument();
     expect(screen.queryByText('Proposed Template')).not.toBeInTheDocument();
     expect(screen.queryByText('Current Applied Template')).not.toBeInTheDocument();
     expect(screen.queryByText('Team Bank')).not.toBeInTheDocument();
-    expect(screen.getByLabelText(/SRC Court 1/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Courts available/i)).toBeInTheDocument();
 
     expect(await screen.findByRole('heading', { name: 'Format Schedule Preview' })).toBeInTheDocument();
     expect(await screen.findByText('Gold 1 vs Gold 8')).toBeInTheDocument();
@@ -249,6 +249,7 @@ describe('TournamentFormatAdmin', () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByRole('radio', { name: /ODU 15-Team Classic/i }));
+    await user.click(screen.getByRole('button', { name: 'Apply Format' }));
 
     await waitFor(() => {
       expect(applyUrls.some((url) => url.includes('/api/tournaments/tour-1/apply-format'))).toBe(
@@ -259,7 +260,7 @@ describe('TournamentFormatAdmin', () => {
     expect(window.confirm).toHaveBeenCalled();
   });
 
-  it('auto-selects and auto-applies when only one suggested format exists', async () => {
+  it('auto-selects the single suggested format and waits for manual apply', async () => {
     const applyBodies = [];
     const teams = Array.from({ length: 14 }, (_, index) => ({
       _id: `team-${index + 1}`,
@@ -336,11 +337,15 @@ describe('TournamentFormatAdmin', () => {
 
     render(<TournamentFormatAdmin />);
 
+    const user = userEvent.setup();
+    expect(await screen.findByRole('button', { name: 'Apply Format' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Apply Format' }));
+
     await waitFor(() => {
       expect(
         applyBodies.some((body) => body.formatId === 'classic_14_mixedpools_crossover_gold8_silver6_v1')
       ).toBe(true);
     });
-    expect(screen.queryByRole('button', { name: 'Apply Format' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Apply Format' })).toBeInTheDocument();
   });
 });

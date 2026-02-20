@@ -78,6 +78,8 @@ function serializeMatch(match) {
     roundBlock: match?.roundBlock ?? null,
     facility: match?.facility ?? null,
     court: match?.court ?? null,
+    facilityId: match?.facilityId ?? null,
+    courtId: match?.courtId ?? null,
     teamAId: toIdString(match?.teamAId),
     teamBId: toIdString(match?.teamBId),
     refTeamIds: Array.isArray(match?.refTeamIds) ? match.refTeamIds.map(toIdString) : [],

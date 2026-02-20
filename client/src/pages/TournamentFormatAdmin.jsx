@@ -1,13 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { API_URL } from '../config/env.js';
 import TournamentAdminNav from '../components/TournamentAdminNav.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { buildFormatPreview } from '../utils/formatPreview.js';
-import { formatRoundBlockStartTime, mapCourtLabel } from '../utils/phase1.js';
+import { formatRoundBlockStartTime, resolveRoundBlockStartMinutes } from '../utils/phase1.js';
 
 const ODU_15_FORMAT_ID = 'odu_15_5courts_v1';
+
+const DEFAULT_TOTAL_COURTS = 5;
+const DEFAULT_SCHEDULE = Object.freeze({
+  dayStartTime: '09:00',
+  matchDurationMinutes: 60,
+  lunchStartTime: '',
+  lunchDurationMinutes: 45,
+});
 
 const authHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
@@ -18,42 +26,137 @@ const jsonHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
 });
 
-const normalizeCourtCode = (courtCode) =>
-  typeof courtCode === 'string' ? courtCode.trim().toUpperCase() : '';
+const toPositiveInteger = (value, fallback = null, min = 1, max = 64) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
 
-const uniqueCourts = (values) => {
-  const seen = new Set();
-  return (Array.isArray(values) ? values : [])
-    .map((entry) => normalizeCourtCode(entry))
-    .filter((entry) => {
-      if (!entry || seen.has(entry)) {
-        return false;
-      }
-      seen.add(entry);
-      return true;
-    });
+  const normalized = Math.floor(parsed);
+  if (normalized < min || normalized > max) {
+    return fallback;
+  }
+
+  return normalized;
 };
 
-const flattenFacilityCourts = (facilities) => {
-  const source = facilities && typeof facilities === 'object' ? facilities : {};
-  const src = Array.isArray(source.SRC) ? source.SRC : ['SRC-1', 'SRC-2', 'SRC-3'];
-  const vc = Array.isArray(source.VC) ? source.VC : ['VC-1', 'VC-2'];
-  return uniqueCourts([...src, ...vc]);
+const normalizeTimeString = (value, fallback = '') => {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+
+  const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
+  if (!match) {
+    return fallback;
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return fallback;
+  }
+
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+};
+
+const normalizeQuarterHourTime = (value, fallback = '') => {
+  const normalized = normalizeTimeString(value, fallback);
+  if (!normalized) {
+    return fallback;
+  }
+
+  const [hoursText, minutesText] = normalized.split(':');
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+  const totalMinutes = hours * 60 + minutes;
+  const rounded = Math.round(totalMinutes / 15) * 15;
+  const roundedHours = Math.floor(((rounded % 1440) + 1440) % 1440 / 60);
+  const roundedMinutes = ((rounded % 60) + 60) % 60;
+
+  return `${String(roundedHours).padStart(2, '0')}:${String(roundedMinutes).padStart(2, '0')}`;
+};
+
+const buildQuarterHourOptions = () =>
+  Array.from({ length: 96 }, (_, index) => {
+    const minutesTotal = index * 15;
+    const hours = Math.floor(minutesTotal / 60);
+    const minutes = minutesTotal % 60;
+    const value = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    const meridiem = hours >= 12 ? 'PM' : 'AM';
+    const hours12 = hours % 12 || 12;
+    const label = `${hours12}:${String(minutes).padStart(2, '0')} ${meridiem}`;
+
+    return { value, label };
+  });
+
+const QUARTER_HOUR_OPTIONS = buildQuarterHourOptions();
+
+const normalizeSchedule = (schedule) => ({
+  dayStartTime: normalizeQuarterHourTime(
+    schedule?.dayStartTime ?? schedule?.startTime,
+    DEFAULT_SCHEDULE.dayStartTime
+  ),
+  matchDurationMinutes: toPositiveInteger(
+    schedule?.matchDurationMinutes ?? schedule?.matchDuration,
+    DEFAULT_SCHEDULE.matchDurationMinutes,
+    1,
+    240
+  ),
+  lunchStartTime: normalizeQuarterHourTime(
+    schedule?.lunchStartTime ?? schedule?.lunchStart,
+    ''
+  ),
+  lunchDurationMinutes: toPositiveInteger(
+    schedule?.lunchDurationMinutes ?? schedule?.lunchDuration,
+    DEFAULT_SCHEDULE.lunchDurationMinutes,
+    1,
+    240
+  ),
+});
+
+const formatClockMinutes = (minutesSinceMidnight) => {
+  const normalized = ((Math.floor(minutesSinceMidnight) % 1440) + 1440) % 1440;
+  const hours24 = Math.floor(normalized / 60);
+  const minutes = normalized % 60;
+  const meridiem = hours24 >= 12 ? 'PM' : 'AM';
+  const hours12 = hours24 % 12 || 12;
+  return `${hours12}:${String(minutes).padStart(2, '0')} ${meridiem}`;
+};
+
+const buildFormatSignature = (formatId, totalCourts, schedule) => {
+  const normalizedFormatId = typeof formatId === 'string' ? formatId.trim() : '';
+  const normalizedCourts = toPositiveInteger(totalCourts);
+  if (!normalizedFormatId || !normalizedCourts) {
+    return '';
+  }
+
+  const normalizedSchedule = normalizeSchedule(schedule);
+  return [
+    normalizedFormatId,
+    normalizedCourts,
+    normalizedSchedule.dayStartTime,
+    normalizedSchedule.matchDurationMinutes,
+    normalizedSchedule.lunchStartTime || 'none',
+    normalizedSchedule.lunchDurationMinutes,
+  ].join('::');
 };
 
 const getPoolStages = (formatDef) =>
   Array.isArray(formatDef?.stages)
     ? formatDef.stages.filter((stage) => stage?.type === 'poolPlay')
     : [];
-
-const buildFormatSignature = (formatId, courts) => {
-  const normalizedFormatId = typeof formatId === 'string' ? formatId.trim() : '';
-  const normalizedCourts = uniqueCourts(courts).sort();
-  if (!normalizedFormatId || normalizedCourts.length === 0) {
-    return '';
-  }
-  return `${normalizedFormatId}::${normalizedCourts.join(',')}`;
-};
 
 function TournamentFormatAdmin() {
   const navigate = useNavigate();
@@ -66,14 +169,13 @@ function TournamentFormatAdmin() {
   const [appliedFormatDef, setAppliedFormatDef] = useState(null);
   const [selectedFormatDef, setSelectedFormatDef] = useState(null);
   const [selectedFormatId, setSelectedFormatId] = useState('');
-  const [activeCourts, setActiveCourts] = useState([]);
+  const [totalCourts, setTotalCourts] = useState(DEFAULT_TOTAL_COURTS);
+  const [schedule, setSchedule] = useState({ ...DEFAULT_SCHEDULE });
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
   const [resettingTournament, setResettingTournament] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-
-  const declinedAutoApplySignatureRef = useRef('');
 
   const fetchJson = useCallback(async (url, options = {}) => {
     const response = await fetch(url, options);
@@ -138,22 +240,27 @@ function TournamentFormatAdmin() {
       ]);
 
       const normalizedTeams = Array.isArray(teamsPayload) ? teamsPayload : [];
-      const availableCourts = flattenFacilityCourts(tournamentPayload?.facilities);
-      const configuredCourts = uniqueCourts(tournamentPayload?.settings?.format?.activeCourts).filter(
-        (courtCode) => availableCourts.includes(courtCode)
-      );
-      const nextActiveCourts = configuredCourts.length > 0 ? configuredCourts : availableCourts;
       const appliedFormatId =
         typeof tournamentPayload?.settings?.format?.formatId === 'string'
           ? tournamentPayload.settings.format.formatId.trim()
           : '';
+      const resolvedTotalCourts =
+        toPositiveInteger(tournamentPayload?.settings?.format?.totalCourts)
+        || toPositiveInteger(
+          Array.isArray(tournamentPayload?.settings?.format?.activeCourts)
+            ? tournamentPayload.settings.format.activeCourts.length
+            : null
+        )
+        || DEFAULT_TOTAL_COURTS;
+      const nextSchedule = normalizeSchedule(tournamentPayload?.settings?.schedule);
 
       setTournament(tournamentPayload);
       setTeams(normalizedTeams);
-      setActiveCourts(nextActiveCourts);
+      setTotalCourts(resolvedTotalCourts);
+      setSchedule(nextSchedule);
       setSelectedFormatId(appliedFormatId);
 
-      await loadSuggestions(normalizedTeams.length, nextActiveCourts.length);
+      await loadSuggestions(normalizedTeams.length, resolvedTotalCourts);
 
       if (!appliedFormatId) {
         setAppliedFormatDef(null);
@@ -183,14 +290,17 @@ function TournamentFormatAdmin() {
   }, [initializing, loadData, token]);
 
   useEffect(() => {
-    loadSuggestions(teams.length, activeCourts.length).catch(() => {});
-  }, [activeCourts.length, loadSuggestions, teams.length]);
+    loadSuggestions(teams.length, totalCourts).catch(() => {});
+  }, [loadSuggestions, teams.length, totalCourts]);
 
   const appliedFormatId =
     typeof tournament?.settings?.format?.formatId === 'string'
       ? tournament.settings.format.formatId.trim()
       : '';
-  const appliedActiveCourts = uniqueCourts(tournament?.settings?.format?.activeCourts);
+  const appliedTotalCourts =
+    toPositiveInteger(tournament?.settings?.format?.totalCourts)
+    || DEFAULT_TOTAL_COURTS;
+  const appliedSchedule = normalizeSchedule(tournament?.settings?.schedule);
 
   useEffect(() => {
     if (suggestedFormats.length === 0) {
@@ -245,34 +355,34 @@ function TournamentFormatAdmin() {
     };
   }, [appliedFormatDef, fetchFormatDef, selectedFormatId]);
 
-  const availableCourts = useMemo(
-    () => flattenFacilityCourts(tournament?.facilities),
-    [tournament?.facilities]
-  );
-
   const desiredSignature = useMemo(
-    () => buildFormatSignature(selectedFormatId, activeCourts),
-    [activeCourts, selectedFormatId]
+    () => buildFormatSignature(selectedFormatId, totalCourts, schedule),
+    [schedule, selectedFormatId, totalCourts]
   );
   const appliedSignature = useMemo(
-    () => buildFormatSignature(appliedFormatId, appliedActiveCourts),
-    [appliedActiveCourts, appliedFormatId]
+    () => buildFormatSignature(appliedFormatId, appliedTotalCourts, appliedSchedule),
+    [appliedFormatId, appliedSchedule, appliedTotalCourts]
+  );
+  const hasPendingChanges = Boolean(
+    desiredSignature && desiredSignature !== appliedSignature
   );
 
-  useEffect(() => {
-    if (!token || !id || loading || applying) {
+  const handleApplyFormat = useCallback(async () => {
+    if (!token || !id || applying) {
+      return;
+    }
+
+    const normalizedFormatId =
+      typeof selectedFormatId === 'string' ? selectedFormatId.trim() : '';
+    if (!normalizedFormatId) {
+      setError('Select a format before applying.');
       return;
     }
 
     if (!desiredSignature || desiredSignature === appliedSignature) {
+      setMessage('No format changes to apply.');
       return;
     }
-
-    if (declinedAutoApplySignatureRef.current === desiredSignature) {
-      return;
-    }
-
-    let cancelled = false;
 
     const runApply = async (force) => {
       const suffix = force ? '?force=true' : '';
@@ -280,8 +390,9 @@ function TournamentFormatAdmin() {
         method: 'POST',
         headers: jsonHeaders(token),
         body: JSON.stringify({
-          formatId: selectedFormatId,
-          activeCourts: uniqueCourts(activeCourts),
+          formatId: normalizedFormatId,
+          totalCourts: toPositiveInteger(totalCourts, DEFAULT_TOTAL_COURTS),
+          schedule,
         }),
       });
       const payload = await response.json().catch(() => null);
@@ -302,86 +413,46 @@ function TournamentFormatAdmin() {
       };
     };
 
-    const applySelection = async () => {
-      setApplying(true);
-      setError('');
-      setMessage('');
+    setApplying(true);
+    setError('');
+    setMessage('');
 
-      try {
-        const firstAttempt = await runApply(false);
-        if (firstAttempt.requiresForce) {
-          const shouldForce = window.confirm(
-            `${firstAttempt.message}\n\nThis will remove existing pools, matches, and scoreboards for this tournament. Continue?`
-          );
+    try {
+      const firstAttempt = await runApply(false);
+      if (firstAttempt.requiresForce) {
+        const shouldForce = window.confirm(
+          `${firstAttempt.message}\n\nThis will remove existing pools, matches, and scoreboards for this tournament. Continue?`
+        );
 
-          if (!shouldForce) {
-            if (!cancelled) {
-              declinedAutoApplySignatureRef.current = desiredSignature;
-              setMessage(firstAttempt.message);
-            }
-            return;
-          }
-
-          await runApply(true);
-          if (!cancelled) {
-            declinedAutoApplySignatureRef.current = '';
-            setMessage('Format applied and existing scheduling data replaced.');
-            await loadData();
-          }
+        if (!shouldForce) {
+          setMessage(firstAttempt.message);
           return;
         }
 
-        if (!cancelled) {
-          declinedAutoApplySignatureRef.current = '';
-          setMessage('Format applied.');
-          await loadData();
-        }
-      } catch (applyError) {
-        if (!cancelled) {
-          setError(applyError.message || 'Unable to apply format');
-        }
-      } finally {
-        if (!cancelled) {
-          setApplying(false);
-        }
+        await runApply(true);
+        setMessage('Format applied and existing scheduling data replaced.');
+        await loadData();
+        return;
       }
-    };
 
-    applySelection();
-
-    return () => {
-      cancelled = true;
-    };
+      setMessage('Format applied.');
+      await loadData();
+    } catch (applyError) {
+      setError(applyError.message || 'Unable to apply format');
+    } finally {
+      setApplying(false);
+    }
   }, [
-    activeCourts,
     appliedSignature,
     applying,
     desiredSignature,
     id,
     loadData,
-    loading,
+    schedule,
     selectedFormatId,
     token,
+    totalCourts,
   ]);
-
-  const toggleCourt = useCallback((courtCode) => {
-    const normalized = normalizeCourtCode(courtCode);
-    if (!normalized) {
-      return;
-    }
-
-    setActiveCourts((previous) => {
-      const exists = previous.includes(normalized);
-      if (exists) {
-        if (previous.length <= 1) {
-          return previous;
-        }
-        return previous.filter((entry) => entry !== normalized);
-      }
-
-      return [...previous, normalized];
-    });
-  }, []);
 
   const handleResetTournament = useCallback(async () => {
     if (!token || !id || resettingTournament || !tournament?.isOwner) {
@@ -418,11 +489,40 @@ function TournamentFormatAdmin() {
     () => suggestedFormats.find((entry) => entry.id === selectedFormatId) || null,
     [selectedFormatId, suggestedFormats]
   );
-  const previewCourts = activeCourts.length > 0 ? activeCourts : availableCourts;
   const formatPreview = useMemo(
-    () => buildFormatPreview({ formatDef: selectedFormatDef, activeCourts: previewCourts }),
-    [previewCourts, selectedFormatDef]
+    () => buildFormatPreview({ formatDef: selectedFormatDef, totalCourts }),
+    [selectedFormatDef, totalCourts]
   );
+  const totalRoundBlocks = useMemo(() => {
+    const allRows = [...formatPreview.poolScheduleRows, ...formatPreview.playoffRows];
+    const maxRoundBlock = allRows.reduce(
+      (maxValue, row) => Math.max(maxValue, Number(row?.roundBlock || 0)),
+      0
+    );
+    return Number.isFinite(maxRoundBlock) ? maxRoundBlock : 0;
+  }, [formatPreview.playoffRows, formatPreview.poolScheduleRows]);
+  const previewTournament = useMemo(
+    () => ({
+      ...tournament,
+      settings: {
+        ...(tournament?.settings || {}),
+        schedule,
+      },
+    }),
+    [schedule, tournament]
+  );
+  const estimatedEndLabel = useMemo(() => {
+    if (totalRoundBlocks <= 0) {
+      return '';
+    }
+
+    const finalStartMinutes = resolveRoundBlockStartMinutes(totalRoundBlocks + 1, previewTournament);
+    if (!Number.isFinite(finalStartMinutes)) {
+      return '';
+    }
+
+    return formatClockMinutes(finalStartMinutes);
+  }, [previewTournament, totalRoundBlocks]);
 
   const appliedPoolStages = useMemo(() => getPoolStages(appliedFormatDef), [appliedFormatDef]);
   const appliedFirstPoolStage = appliedPoolStages[0] || null;
@@ -461,8 +561,8 @@ function TournamentFormatAdmin() {
           <div>
             <h1 className="title">Tournament Format</h1>
             <p className="subtitle">
-              {tournament?.name || 'Tournament'} • Select courts and format. Changes apply
-              automatically.
+              {tournament?.name || 'Tournament'} • Select format and total courts. Venue and pool
+              court assignments are configured on Pool Play.
             </p>
             <TournamentAdminNav
               tournamentId={id}
@@ -472,8 +572,8 @@ function TournamentFormatAdmin() {
                 activeSubTab: 'format',
                 showPhase2: showLegacyPhase2,
                 phase1Label:
-                  appliedFirstPoolStage?.displayName ||
-                  (showLegacyPhase2 ? 'Pool Play 1' : 'Pool Play'),
+                  appliedFirstPoolStage?.displayName
+                  || (showLegacyPhase2 ? 'Pool Play 1' : 'Pool Play'),
                 phase1Href: showLegacyPhase2
                   ? `/tournaments/${id}/phase1`
                   : `/tournaments/${id}/pool-play`,
@@ -486,6 +586,14 @@ function TournamentFormatAdmin() {
             />
           </div>
           <div className="phase1-admin-actions">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={handleApplyFormat}
+              disabled={!hasPendingChanges || applying || resettingTournament}
+            >
+              {applying ? 'Applying...' : 'Apply Format'}
+            </button>
             {tournament?.isOwner && (
               <button
                 className="secondary-button danger-button"
@@ -503,23 +611,112 @@ function TournamentFormatAdmin() {
           <h2 className="secondary-title">Format Selection</h2>
           <p className="subtle">Team count: {teams.length}</p>
 
-          <div className="phase1-admin-actions">
-            {availableCourts.map((courtCode) => (
-              <label key={courtCode} className="subtle">
-                <input
-                  type="checkbox"
-                  checked={activeCourts.includes(courtCode)}
-                  onChange={() => toggleCourt(courtCode)}
-                  disabled={applying}
-                />
-                {' '}
-                {mapCourtLabel(courtCode)}
-              </label>
-            ))}
+          <div className="format-input-grid">
+            <label className="format-input-card" htmlFor="format-total-courts">
+              <span className="format-input-label">Courts available</span>
+              <input
+                className="format-input-control"
+                id="format-total-courts"
+                type="number"
+                min={1}
+                max={12}
+                value={totalCourts}
+                onChange={(event) =>
+                  setTotalCourts(
+                    toPositiveInteger(event.target.value, DEFAULT_TOTAL_COURTS, 1, 12)
+                    || DEFAULT_TOTAL_COURTS
+                  )
+                }
+                disabled={applying}
+              />
+            </label>
+            <label className="format-input-card" htmlFor="format-start-time">
+              <span className="format-input-label">Start time</span>
+              <select
+                className="format-input-control format-input-control--select"
+                id="format-start-time"
+                value={schedule.dayStartTime}
+                onChange={(event) =>
+                  setSchedule((previous) => ({
+                    ...previous,
+                    dayStartTime: normalizeQuarterHourTime(event.target.value, previous.dayStartTime),
+                  }))
+                }
+                disabled={applying}
+              >
+                {QUARTER_HOUR_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="format-input-card" htmlFor="format-match-duration">
+              <span className="format-input-label">Match duration (min)</span>
+              <input
+                className="format-input-control"
+                id="format-match-duration"
+                type="number"
+                min={1}
+                max={240}
+                value={schedule.matchDurationMinutes}
+                onChange={(event) =>
+                  setSchedule((previous) => ({
+                    ...previous,
+                    matchDurationMinutes:
+                      toPositiveInteger(event.target.value, previous.matchDurationMinutes, 1, 240)
+                      || previous.matchDurationMinutes,
+                  }))
+                }
+                disabled={applying}
+              />
+            </label>
+            <label className="format-input-card" htmlFor="format-lunch-start">
+              <span className="format-input-label">Lunch start</span>
+              <select
+                className="format-input-control format-input-control--select"
+                id="format-lunch-start"
+                value={schedule.lunchStartTime}
+                onChange={(event) =>
+                  setSchedule((previous) => ({
+                    ...previous,
+                    lunchStartTime: normalizeQuarterHourTime(event.target.value, ''),
+                  }))
+                }
+                disabled={applying}
+              >
+                <option value="">No lunch break</option>
+                {QUARTER_HOUR_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="format-input-card" htmlFor="format-lunch-duration">
+              <span className="format-input-label">Lunch duration (min)</span>
+              <input
+                className="format-input-control"
+                id="format-lunch-duration"
+                type="number"
+                min={1}
+                max={240}
+                value={schedule.lunchDurationMinutes}
+                onChange={(event) =>
+                  setSchedule((previous) => ({
+                    ...previous,
+                    lunchDurationMinutes:
+                      toPositiveInteger(event.target.value, previous.lunchDurationMinutes, 1, 240)
+                      || previous.lunchDurationMinutes,
+                  }))
+                }
+                disabled={applying}
+              />
+            </label>
           </div>
 
           {suggestedFormats.length === 0 ? (
-            <p className="subtle">No suggested formats for this team count and court selection.</p>
+            <p className="subtle">No suggested formats for this team count and court count.</p>
           ) : (
             <div className="phase1-standings-grid">
               {suggestedFormats.map((format) => (
@@ -544,13 +741,14 @@ function TournamentFormatAdmin() {
 
           {selectedFormatSummary && (
             <p className="subtle">
-              Supports teams: {(selectedFormatSummary.supportedTeamCounts || []).join(', ')} • Min
-              courts: {selectedFormatSummary.minCourts ?? 'N/A'}
+              Supports teams: {(selectedFormatSummary.supportedTeamCounts || []).join(', ')} •
+              Min courts: {selectedFormatSummary.minCourts ?? 'N/A'} • Max courts:{' '}
+              {selectedFormatSummary.maxCourts ?? 'N/A'}
             </p>
           )}
           <p className="subtle">
-            Format and court changes are auto-applied.
-            {applying ? ' Applying now...' : ''}
+            Changes are staged locally until you click Apply Format.
+            {hasPendingChanges ? ' You have unapplied changes.' : ' No pending changes.'}
           </p>
         </section>
 
@@ -561,7 +759,8 @@ function TournamentFormatAdmin() {
           <h2 className="secondary-title">Format Schedule Preview</h2>
           {selectedFormatDef ? (
             <p className="subtle">
-              {selectedFormatDef.name} • Preview generated from the currently selected format.
+              {selectedFormatDef.name} • Blocks needed: {totalRoundBlocks || '—'}
+              {estimatedEndLabel ? ` • Estimated end: ${estimatedEndLabel}` : ''}
             </p>
           ) : (
             <p className="subtle">Select a format to preview its schedule.</p>
@@ -585,8 +784,8 @@ function TournamentFormatAdmin() {
                   {formatPreview.poolScheduleRows.map((row) => (
                     <tr key={row.id}>
                       <td>R{row.roundBlock}</td>
-                      <td>{formatRoundBlockStartTime(row.roundBlock, tournament)}</td>
-                      <td>{mapCourtLabel(row.court)}</td>
+                      <td>{formatRoundBlockStartTime(row.roundBlock, previewTournament)}</td>
+                      <td>{row.court}</td>
                       <td>{row.stageLabel}</td>
                       <td>{row.matchLabel}</td>
                       <td>{row.refLabel || '—'}</td>
@@ -617,8 +816,8 @@ function TournamentFormatAdmin() {
                   {formatPreview.playoffRows.map((row) => (
                     <tr key={row.id}>
                       <td>{row.roundLabel}</td>
-                      <td>{formatRoundBlockStartTime(row.roundBlock, tournament)}</td>
-                      <td>{mapCourtLabel(row.court)}</td>
+                      <td>{formatRoundBlockStartTime(row.roundBlock, previewTournament)}</td>
+                      <td>{row.court}</td>
                       <td>{row.bracketLabel}</td>
                       <td>{row.matchupLabel}</td>
                     </tr>
@@ -636,4 +835,3 @@ function TournamentFormatAdmin() {
 }
 
 export default TournamentFormatAdmin;
-

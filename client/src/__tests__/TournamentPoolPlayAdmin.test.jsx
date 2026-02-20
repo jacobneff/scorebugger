@@ -49,6 +49,7 @@ describe('TournamentPoolPlayAdmin', () => {
             settings: {
               format: {
                 formatId: null,
+                totalCourts: 5,
                 activeCourts: ['SRC-1', 'SRC-2', 'SRC-3'],
               },
             },
@@ -86,6 +87,7 @@ describe('TournamentPoolPlayAdmin', () => {
             settings: {
               format: {
                 formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+                totalCourts: 4,
                 activeCourts: ['SRC-1', 'SRC-2', 'SRC-3'],
               },
             },
@@ -95,6 +97,29 @@ describe('TournamentPoolPlayAdmin', () => {
 
       if (requestUrl.endsWith('/api/tournaments/tour-1/teams')) {
         return { ok: true, json: async () => [] };
+      }
+
+      if (requestUrl.endsWith('/api/tournaments/tour-1/venue')) {
+        return {
+          ok: true,
+          json: async () => ({
+            totalCourts: 4,
+            venue: {
+              facilities: [
+                {
+                  facilityId: 'facility-main',
+                  name: 'Main Facility',
+                  courts: [
+                    { courtId: 'court-1', name: 'Court 1', isEnabled: true },
+                    { courtId: 'court-2', name: 'Court 2', isEnabled: true },
+                    { courtId: 'court-3', name: 'Court 3', isEnabled: true },
+                    { courtId: 'court-4', name: 'Court 4', isEnabled: true },
+                  ],
+                },
+              ],
+            },
+          }),
+        };
       }
 
       if (requestUrl.endsWith('/api/tournament-formats/classic_14_mixedpools_crossover_gold8_silver6_v1')) {

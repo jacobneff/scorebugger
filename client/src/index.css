@@ -2543,6 +2543,64 @@ textarea:focus {
   margin-top: 0.4rem;
 }
 
+.format-input-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.65rem;
+  margin-top: 0.35rem;
+}
+
+.format-input-card {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), #ffffff);
+  padding: 0.6rem 0.65rem;
+}
+
+.format-input-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #334155;
+  text-transform: uppercase;
+}
+
+.format-input-control {
+  width: 100%;
+  min-height: 2.2rem;
+  border-radius: 10px;
+  border: 1px solid #cbd5f5;
+  padding: 0.4rem 0.55rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #0f172a;
+  background: #f8fafc;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.format-input-control:focus {
+  outline: 2px solid #2563eb;
+  border-color: transparent;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  background: #ffffff;
+}
+
+.format-input-control--select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #64748b 50%),
+    linear-gradient(135deg, #64748b 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) calc(50% - 3px),
+    calc(100% - 11px) calc(50% - 3px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 2rem;
+}
+
 .tournament-admin-nav {
   display: grid;
   gap: 0.55rem;
@@ -3433,6 +3491,103 @@ textarea:focus {
   gap: 0.75rem;
 }
 
+.venue-setup-section {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.venue-setup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.venue-setup-count {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #334155;
+}
+
+.venue-setup-count input {
+  width: 88px;
+}
+
+.venue-setup-total {
+  margin: 0;
+}
+
+.venue-setup-total--warn {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.venue-facility-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.75rem;
+}
+
+.venue-facility-card {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.venue-facility-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.venue-facility-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.venue-court-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.venue-court-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.venue-court-enabled {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  color: #334155;
+  font-weight: 600;
+}
+
+.court-assign-facility-group {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.92);
+  padding: 0.65rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.court-assign-facility-group h4 {
+  margin: 0;
+  font-size: 0.86rem;
+  color: #334155;
+}
+
 .court-assign-board {
   display: grid;
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
@@ -3999,6 +4154,10 @@ textarea:focus {
   .court-assign-board {
     grid-template-columns: 1fr;
   }
+
+  .venue-facility-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -4039,6 +4198,15 @@ textarea:focus {
   .control-grid {
     grid-template-columns: 1fr;
     gap: 1rem;
+  }
+
+  .venue-court-row {
+    grid-template-columns: 1fr;
+  }
+
+  .venue-facility-header {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .team-color-inputs {

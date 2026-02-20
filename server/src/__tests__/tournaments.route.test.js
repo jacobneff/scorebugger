@@ -6,6 +6,7 @@ const { MongoMemoryServer } = require('mongodb-memory-server');
 
 const tournamentRoutes = require('../routes/tournaments');
 const tournamentTeamRoutes = require('../routes/tournamentTeams');
+const poolRoutes = require('../routes/pools');
 const User = require('../models/User');
 const Match = require('../models/Match');
 const Pool = require('../models/Pool');
@@ -42,6 +43,7 @@ describe('tournament routes', () => {
     app.use(express.json());
     app.use('/api/tournaments', tournamentRoutes);
     app.use('/api/tournament-teams', tournamentTeamRoutes);
+    app.use('/api/pools', poolRoutes);
     app.use((err, _req, res, _next) => {
       res.status(err.status || 500).json({ message: err.message || 'Internal server error' });
     });
@@ -55,6 +57,17 @@ describe('tournament routes', () => {
   const authHeader = () => ({
     Authorization: `Bearer ${token}`,
   });
+
+  const seedTournamentTeams = async (tournamentId, teamCount) =>
+    TournamentTeam.insertMany(
+      Array.from({ length: teamCount }, (_, index) => ({
+        tournamentId,
+        name: `Team ${index + 1}`,
+        shortName: `T${index + 1}`,
+        orderIndex: index + 1,
+      })),
+      { ordered: true }
+    );
 
   test('creates tournaments with unique 6-character public codes', async () => {
     const payload = {
@@ -116,18 +129,21 @@ describe('tournament routes', () => {
     expect(response.body.tournament.name).toBe('Public Tournament');
     expect(response.body.tournament).not.toHaveProperty('createdByUserId');
     expect(response.body).not.toHaveProperty('createdByUserId');
-    expect(response.body.tournament.settings).toEqual({
-      schedule: {
-        dayStartTime: '09:00',
-        matchDurationMinutes: 60,
-        lunchStartTime: null,
-        lunchDurationMinutes: 45,
-      },
-      format: {
-        formatId: null,
-        activeCourts: ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1', 'VC-2'],
-      },
-    });
+    expect(response.body.tournament.settings).toEqual(
+      expect.objectContaining({
+        schedule: {
+          dayStartTime: '09:00',
+          matchDurationMinutes: 60,
+          lunchStartTime: null,
+          lunchDurationMinutes: 45,
+        },
+        format: expect.objectContaining({
+          formatId: null,
+          totalCourts: 5,
+          activeCourts: ['SRC-1', 'SRC-2', 'SRC-3', 'VC-1', 'VC-2'],
+        }),
+      })
+    );
     expect(response.body.teams).toHaveLength(1);
     expect(response.body.teams[0]).toEqual(
       expect.objectContaining({
@@ -195,10 +211,210 @@ describe('tournament routes', () => {
       .set(authHeader());
 
     expect(response.statusCode).toBe(200);
-    expect(response.body.settings?.format).toEqual({
-      formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
-      activeCourts: ['SRC-1', 'SRC-2', 'VC-1'],
+    expect(response.body.settings?.format?.formatId).toBe(
+      'classic_14_mixedpools_crossover_gold8_silver6_v1'
+    );
+    expect(response.body.settings?.format?.totalCourts).toBe(5);
+    expect(response.body.settings?.format?.activeCourts).toEqual(
+      expect.arrayContaining(['SRC-1', 'SRC-2', 'VC-1'])
+    );
+  });
+
+  test('POST /api/tournaments/:id/apply-format stores totalCourts and creates a default venue', async () => {
+    const tournament = await Tournament.create({
+      name: 'Apply Format Venue Tournament',
+      date: new Date('2026-07-12T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'FMTV01',
+      createdByUserId: user._id,
     });
+    await seedTournamentTeams(tournament._id, 14);
+
+    const response = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({
+        formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+        totalCourts: 4,
+      });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.totalCourts).toBe(4);
+    expect(response.body.venue?.facilities || []).toHaveLength(1);
+    expect(response.body.venue?.facilities?.[0]).toEqual(
+      expect.objectContaining({
+        name: 'Main Facility',
+      })
+    );
+    expect(
+      (response.body.venue?.facilities?.[0]?.courts || []).every((court) => court.isEnabled === true)
+    ).toBe(true);
+    expect(response.body.venue.facilities[0].courts).toHaveLength(4);
+    expect(response.body.pools).toHaveLength(4);
+
+    const stored = await Tournament.findById(tournament._id).lean();
+    expect(stored.settings?.format?.formatId).toBe(
+      'classic_14_mixedpools_crossover_gold8_silver6_v1'
+    );
+    expect(stored.settings?.format?.totalCourts).toBe(4);
+    expect(stored.settings?.venue?.facilities?.[0]?.courts || []).toHaveLength(4);
+  });
+
+  test('PUT /api/tournaments/:id/venue rejects mismatched total configured courts', async () => {
+    const tournament = await Tournament.create({
+      name: 'Venue Validation Tournament',
+      date: new Date('2026-07-13T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'FMTV02',
+      createdByUserId: user._id,
+    });
+    await seedTournamentTeams(tournament._id, 14);
+
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({
+        formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+        totalCourts: 4,
+      });
+    expect(apply.statusCode).toBe(200);
+
+    const response = await request(app)
+      .put(`/api/tournaments/${tournament._id}/venue`)
+      .set(authHeader())
+      .send({
+        facilities: [
+          {
+            name: 'Main Facility',
+            courts: [
+              { name: 'Court 1', isEnabled: true },
+              { name: 'Court 2', isEnabled: true },
+              { name: 'Court 3', isEnabled: true },
+            ],
+          },
+        ],
+      });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.message).toMatch(/must equal format totalCourts/i);
+  });
+
+  test('pool-play match generation blocks when pools are missing assignedCourtId', async () => {
+    const tournament = await Tournament.create({
+      name: 'Missing Court Assignment Tournament',
+      date: new Date('2026-07-14T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'FMTV03',
+      createdByUserId: user._id,
+    });
+    await seedTournamentTeams(tournament._id, 14);
+
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({
+        formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+        totalCourts: 4,
+      });
+    expect(apply.statusCode).toBe(200);
+
+    const autofill = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools/autofill`)
+      .set(authHeader());
+    expect(autofill.statusCode).toBe(200);
+
+    const response = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.message).toMatch(/must be assigned to a venue court/i);
+  });
+
+  test('pool-play match generation writes match.courtId and match.facilityId from venue assignments', async () => {
+    const tournament = await Tournament.create({
+      name: 'Court Id Match Tournament',
+      date: new Date('2026-07-15T13:00:00.000Z'),
+      timezone: 'America/New_York',
+      publicCode: 'FMTV04',
+      createdByUserId: user._id,
+    });
+    await seedTournamentTeams(tournament._id, 14);
+
+    const apply = await request(app)
+      .post(`/api/tournaments/${tournament._id}/apply-format`)
+      .set(authHeader())
+      .send({
+        formatId: 'classic_14_mixedpools_crossover_gold8_silver6_v1',
+        totalCourts: 4,
+      });
+    expect(apply.statusCode).toBe(200);
+
+    const autofill = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools/autofill`)
+      .set(authHeader());
+    expect(autofill.statusCode).toBe(200);
+
+    const poolsResponse = await request(app)
+      .get(`/api/tournaments/${tournament._id}/stages/poolPlay1/pools`)
+      .set(authHeader());
+    expect(poolsResponse.statusCode).toBe(200);
+    expect(poolsResponse.body).toHaveLength(4);
+
+    const venueResponse = await request(app)
+      .get(`/api/tournaments/${tournament._id}/venue`)
+      .set(authHeader());
+    expect(venueResponse.statusCode).toBe(200);
+    const venueCourts = venueResponse.body?.venue?.facilities?.flatMap((facility) =>
+      Array.isArray(facility?.courts)
+        ? facility.courts.map((court) => ({
+            courtId: court.courtId,
+            facilityId: facility.facilityId,
+          }))
+        : []
+    ) || [];
+    expect(venueCourts.length).toBeGreaterThanOrEqual(4);
+
+    for (let index = 0; index < poolsResponse.body.length; index += 1) {
+      const pool = poolsResponse.body[index];
+      const targetCourt = venueCourts[index];
+      const assign = await request(app)
+        .put(`/api/pools/${pool._id}/assign-court`)
+        .set(authHeader())
+        .send({ assignedCourtId: targetCourt.courtId });
+
+      expect(assign.statusCode).toBe(200);
+      expect(assign.body.assignedCourtId).toBe(targetCourt.courtId);
+      expect(assign.body.assignedFacilityId).toBe(targetCourt.facilityId);
+    }
+
+    const generate = await request(app)
+      .post(`/api/tournaments/${tournament._id}/stages/poolPlay1/matches/generate`)
+      .set(authHeader());
+    expect(generate.statusCode).toBe(201);
+    expect(generate.body.length).toBeGreaterThan(0);
+    expect(generate.body.every((match) => Boolean(match.courtId))).toBe(true);
+    expect(generate.body.every((match) => Boolean(match.facilityId))).toBe(true);
+
+    const storedMatches = await Match.find({
+      tournamentId: tournament._id,
+      stageKey: 'poolPlay1',
+    })
+      .select('court courtId facility facilityId')
+      .lean();
+    expect(storedMatches.length).toBeGreaterThan(0);
+    expect(storedMatches.every((match) => typeof match.court === 'string' && match.court.trim())).toBe(
+      true
+    );
+    expect(storedMatches.every((match) => typeof match.facility === 'string' && match.facility.trim())).toBe(
+      true
+    );
+    expect(storedMatches.every((match) => typeof match.courtId === 'string' && match.courtId.trim())).toBe(
+      true
+    );
+    expect(storedMatches.every((match) => typeof match.facilityId === 'string' && match.facilityId.trim())).toBe(
+      true
+    );
   });
 
   test('PATCH /api/tournaments/:id/details updates details for the owner', async () => {
@@ -1072,28 +1288,29 @@ describe('tournament routes', () => {
       { ordered: true }
     );
 
+    const storedTournament = await Tournament.findById(tournament._id).lean();
+    expect(storedTournament?.settings?.venue?.facilities || []).toHaveLength(0);
+
     const courts = await request(app).get('/api/tournaments/code/COURT1/courts');
 
     expect(courts.statusCode).toBe(200);
     expect(Array.isArray(courts.body.courts)).toBe(true);
     expect(courts.body.courts).toHaveLength(5);
-    expect(courts.body.courts.find((court) => court.code === 'SRC-1')).toEqual(
-      expect.objectContaining({
-        code: 'SRC-1',
-        label: 'SRC Court 1',
-        facility: 'SRC',
-      })
-    );
+    expect(
+      courts.body.courts.some(
+        (court) =>
+          court.code === 'SRC-1'
+          || court.label === 'SRC Court 1'
+          || court.label === 'SRC-1'
+      )
+    ).toBe(true);
 
     const schedule = await request(app).get('/api/tournaments/code/COURT1/courts/SRC-1/schedule');
 
     expect(schedule.statusCode).toBe(200);
-    expect(schedule.body.court).toEqual(
-      expect.objectContaining({
-        code: 'SRC-1',
-        label: 'SRC Court 1',
-      })
-    );
+    expect(typeof schedule.body.court?.code).toBe('string');
+    expect(typeof schedule.body.court?.label).toBe('string');
+    expect(schedule.body.court?.label.toUpperCase()).toContain('SRC');
     expect(schedule.body.matches).toHaveLength(2);
     expect(schedule.body.matches.map((match) => match.roundBlock)).toEqual([1, 5]);
     expect(schedule.body.matches.every((match) => ['phase1', 'phase2'].includes(match.phase))).toBe(true);

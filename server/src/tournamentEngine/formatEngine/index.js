@@ -74,7 +74,10 @@ function assignHomeCourts(poolDefinitions, activeCourts) {
   const courts = unique(activeCourts);
 
   if (courts.length === 0) {
-    return [];
+    return pools.map((poolDef) => ({
+      ...poolDef,
+      homeCourt: null,
+    }));
   }
 
   return pools.map((poolDef, index) => ({
@@ -97,10 +100,6 @@ async function instantiatePools(
   }
 
   const normalizedActiveCourts = unique(activeCourts);
-
-  if (normalizedActiveCourts.length === 0) {
-    throw new Error('At least one active court is required to instantiate pools.');
-  }
 
   const phase = resolvePoolPhase(formatDef, stageKey, stageDef);
   const clearTeamIds = options.clearTeamIds !== false;

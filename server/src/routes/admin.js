@@ -12,6 +12,7 @@ const {
   findOwnedTournamentContext,
   serializeMatch,
 } = require('../services/matchLifecycle');
+const { syncSchedulePlan } = require('../services/schedulePlan');
 const { requireTournamentAdminContext } = require('../services/tournamentAccess');
 const {
   getFacilityFromCourt,
@@ -418,6 +419,17 @@ router.post('/matches/:matchId/score', requireAuth, async (req, res, next) => {
           override: true,
         })
       : serializeMatch(match.toObject());
+
+    if (shouldFinalize) {
+      await syncSchedulePlan({
+        tournamentId: match.tournamentId,
+        actorUserId: req.user.id,
+        io,
+        emitEvents: true,
+        emitPoolsUpdated:
+          (match.phase === 'phase1' || match.phase === 'phase2') && Boolean(match.poolId),
+      });
+    }
 
     const setWins = computeSetWins(setScores);
     const totalPoints = computeSetPointTotals(setScores);

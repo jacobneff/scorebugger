@@ -13,6 +13,7 @@ const {
   emitTournamentEvent,
 } = require('../services/tournamentRealtime');
 const { requireTournamentAdminContext } = require('../services/tournamentAccess');
+const { syncSchedulePlan } = require('../services/schedulePlan');
 
 const router = express.Router();
 
@@ -317,6 +318,13 @@ router.patch('/:poolId', requireAuth, async (req, res, next) => {
       }
     );
 
+    await syncSchedulePlan({
+      tournamentId: pool.tournamentId,
+      actorUserId: req.user.id,
+      io,
+      emitEvents: true,
+    });
+
     return res.json(serializePool(finalizedPool));
   } catch (error) {
     return next(error);
@@ -388,6 +396,13 @@ router.put('/:poolId/assign-court', requireAuth, async (req, res, next) => {
         poolIds: [toIdString(updatedPool?._id || pool._id)].filter(Boolean),
       }
     );
+
+    await syncSchedulePlan({
+      tournamentId: pool.tournamentId,
+      actorUserId: req.user.id,
+      io,
+      emitEvents: true,
+    });
 
     return res.json(serializePool(updatedPool));
   } catch (error) {

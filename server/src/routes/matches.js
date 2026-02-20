@@ -13,6 +13,7 @@ const {
   toIdString,
   unfinalizeMatchAndEmit,
 } = require('../services/matchLifecycle');
+const { syncSchedulePlan } = require('../services/schedulePlan');
 
 const router = express.Router();
 
@@ -157,6 +158,15 @@ router.post('/:matchId/finalize', requireAuth, async (req, res, next) => {
       override,
     });
 
+    await syncSchedulePlan({
+      tournamentId: match.tournamentId,
+      actorUserId: req.user.id,
+      io: req.app?.get('io'),
+      emitEvents: true,
+      emitPoolsUpdated:
+        (match.phase === 'phase1' || match.phase === 'phase2') && Boolean(match.poolId),
+    });
+
     return res.json(responseMatch);
   } catch (error) {
     return next(error);
@@ -188,6 +198,15 @@ router.post('/:matchId/unfinalize', requireAuth, async (req, res, next) => {
       match,
       io: req.app?.get('io'),
       tournamentCode: tournamentContext.publicCode,
+    });
+
+    await syncSchedulePlan({
+      tournamentId: match.tournamentId,
+      actorUserId: req.user.id,
+      io: req.app?.get('io'),
+      emitEvents: true,
+      emitPoolsUpdated:
+        (match.phase === 'phase1' || match.phase === 'phase2') && Boolean(match.poolId),
     });
 
     return res.json(responseMatch);

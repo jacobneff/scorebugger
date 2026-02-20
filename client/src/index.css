@@ -2889,6 +2889,10 @@ textarea:focus {
   gap: 0.55rem;
 }
 
+.team-public-timeline-list {
+  gap: 0.7rem;
+}
+
 .team-public-match-row {
   border: 1px solid rgba(148, 163, 184, 0.35);
   border-radius: 10px;
@@ -2917,6 +2921,85 @@ textarea:focus {
   font-size: 0.92rem;
   font-weight: 700;
   color: #0f172a;
+}
+
+.team-timeline-row {
+  border-left-width: 5px;
+}
+
+.team-timeline-reference {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.team-timeline-role-badge {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: rgba(148, 163, 184, 0.12);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.team-timeline-role-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.team-timeline-action {
+  width: fit-content;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.82rem;
+}
+
+.team-timeline-role--play {
+  border-left-color: #2563eb;
+}
+
+.team-timeline-role--play.team-timeline-role-badge {
+  border-color: rgba(37, 99, 235, 0.4);
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+}
+
+.team-timeline-role--ref {
+  border-left-color: #0f766e;
+}
+
+.team-timeline-role--ref.team-timeline-role-badge {
+  border-color: rgba(15, 118, 110, 0.4);
+  background: rgba(15, 118, 110, 0.12);
+  color: #115e59;
+}
+
+.team-timeline-role--bye {
+  border-left-color: #9a3412;
+}
+
+.team-timeline-role--bye.team-timeline-role-badge {
+  border-color: rgba(154, 52, 18, 0.4);
+  background: rgba(249, 115, 22, 0.12);
+  color: #9a3412;
+}
+
+.team-timeline-role--lunch {
+  border-left-color: #a16207;
+}
+
+.team-timeline-role--lunch.team-timeline-role-badge {
+  border-color: rgba(161, 98, 7, 0.4);
+  background: rgba(245, 158, 11, 0.14);
+  color: #92400e;
 }
 
 .phase1-success {
@@ -3731,6 +3814,46 @@ textarea:focus {
   color: #0f172a;
 }
 
+.court-schedule-stage {
+  margin: 0;
+  font-size: 0.92rem;
+  color: #0f172a;
+}
+
+.court-schedule-reference {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.court-schedule-team-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.court-schedule-team-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(248, 250, 252, 0.92);
+  color: #0f172a;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.court-schedule-team-logo {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+}
+
 .court-schedule-meta {
   display: flex;
   align-items: center;
@@ -3774,6 +3897,12 @@ textarea:focus {
   background: rgba(37, 99, 235, 0.14);
   border: 1px solid rgba(37, 99, 235, 0.32);
   color: #1d4ed8;
+}
+
+.court-schedule-status--tbd {
+  background: rgba(59, 130, 246, 0.14);
+  border: 1px dashed rgba(59, 130, 246, 0.46);
+  color: #1e40af;
 }
 
 .tournament-live-view {

@@ -219,6 +219,11 @@ const MatchSchema = new mongoose.Schema(
       ref: 'Scoreboard',
       default: null,
     },
+    plannedSlotId: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     status: {
       type: String,
       enum: ['scheduled', 'live', 'ended', 'final'],
@@ -252,6 +257,15 @@ const MatchSchema = new mongoose.Schema(
 );
 
 MatchSchema.index({ tournamentId: 1, stageKey: 1, phase: 1, roundBlock: 1, court: 1 });
+MatchSchema.index(
+  { tournamentId: 1, plannedSlotId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      plannedSlotId: { $type: 'string' },
+    },
+  }
+);
 
 const Match = mongoose.model('Match', MatchSchema);
 

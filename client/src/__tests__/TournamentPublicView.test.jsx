@@ -47,6 +47,8 @@ function mockPublicFetch({
   phase1Standings,
   phase2Standings,
   cumulativeStandings,
+  courts,
+  courtSchedules,
 }) {
   const defaultTournamentPayload = {
     ...baseTournamentPayload,
@@ -62,6 +64,9 @@ function mockPublicFetch({
   const resolvedPhase1StandingsPayload = phase1Standings || { pools: [], overall: [] };
   const resolvedPhase2StandingsPayload = phase2Standings || { pools: [], overall: [] };
   const resolvedCumulativeStandingsPayload = cumulativeStandings || { pools: [], overall: [] };
+  const resolvedCourts = Array.isArray(courts) ? courts : [];
+  const resolvedCourtSchedules =
+    courtSchedules && typeof courtSchedules === 'object' ? courtSchedules : {};
 
   globalThis.fetch = vi.fn(async (url) => {
     const requestUrl = String(url);
@@ -94,8 +99,28 @@ function mockPublicFetch({
       return jsonResponse(resolvedMatchPayload);
     }
 
+    const courtScheduleMatch = /\/api\/tournaments\/code\/ABC123\/courts\/([^/]+)\/schedule$/.exec(requestUrl);
+    if (courtScheduleMatch) {
+      const requestedCourt = decodeURIComponent(courtScheduleMatch[1] || '').toUpperCase();
+      const payload = resolvedCourtSchedules[requestedCourt] || null;
+      if (payload) {
+        return jsonResponse(payload);
+      }
+
+      return jsonResponse({
+        court: {
+          code: requestedCourt,
+          label: requestedCourt,
+          facility: null,
+          facilityLabel: '',
+        },
+        slots: [],
+        matches: [],
+      });
+    }
+
     if (requestUrl.endsWith('/api/tournaments/code/ABC123/courts')) {
-      return jsonResponse({ courts: [] });
+      return jsonResponse({ courts: resolvedCourts });
     }
 
     if (requestUrl.endsWith('/api/tournaments/code/ABC123/standings?phase=phase1')) {
@@ -291,5 +316,144 @@ describe('TournamentPublicView', () => {
     expect(screen.getByRole('button', { name: 'Pool Play' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Pool Play 2' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cumulative' })).toBeInTheDocument();
+  });
+
+  it('renders court placeholder slots with Scheduled / TBD status', async () => {
+    mockPublicFetch({
+      details: {
+        specialNotes: '',
+        foodInfo: { text: '', linkUrl: '' },
+        facilitiesInfo: '',
+        parkingInfo: '',
+        mapImageUrls: [],
+      },
+      liveMatches: [],
+      courts: [
+        {
+          code: 'SRC-1',
+          label: 'SRC Court 1',
+          facility: 'SRC',
+          facilityLabel: 'SRC',
+        },
+      ],
+      courtSchedules: {
+        'SRC-1': {
+          court: {
+            code: 'SRC-1',
+            label: 'SRC Court 1',
+            facility: 'SRC',
+            facilityLabel: 'SRC',
+          },
+          slots: [
+            {
+              slotId: 'crossover:C:D:1',
+              kind: 'match',
+              stageLabel: 'Crossover',
+              phase: 'phase1',
+              phaseLabel: 'Pool Play 1',
+              roundBlock: 4,
+              timeLabel: '12:00 PM',
+              status: 'scheduled_tbd',
+              matchupLabel: 'C (#1) vs D (#1)',
+              matchupReferenceLabel: 'C (#1) vs D (#1)',
+              refLabel: 'C (#2)',
+              refReferenceLabel: 'C (#2)',
+              poolName: null,
+              teamA: null,
+              teamB: null,
+            },
+          ],
+          matches: [],
+        },
+      },
+    });
+
+    const user = userEvent.setup();
+    render(<TournamentPublicView />);
+
+    await user.click(await screen.findByRole('button', { name: 'Courts' }));
+
+    expect(
+      await screen.findByText((_, element) => element?.textContent?.trim() === 'Crossover: C (#1) vs D (#1)')
+    ).toBeInTheDocument();
+    expect(screen.getByText('Scheduled / TBD')).toBeInTheDocument();
+    expect(screen.getByText('Ref: C (#2)')).toBeInTheDocument();
+  });
+
+  it('renders resolved court slots with team labels, logos, and reference subtitle', async () => {
+    mockPublicFetch({
+      details: {
+        specialNotes: '',
+        foodInfo: { text: '', linkUrl: '' },
+        facilitiesInfo: '',
+        parkingInfo: '',
+        mapImageUrls: [],
+      },
+      liveMatches: [],
+      courts: [
+        {
+          code: 'SRC-2',
+          label: 'SRC Court 2',
+          facility: 'SRC',
+          facilityLabel: 'SRC',
+        },
+      ],
+      courtSchedules: {
+        'SRC-2': {
+          court: {
+            code: 'SRC-2',
+            label: 'SRC Court 2',
+            facility: 'SRC',
+            facilityLabel: 'SRC',
+          },
+          slots: [
+            {
+              slotId: 'crossover:C:D:1',
+              kind: 'match',
+              stageLabel: 'Crossover',
+              phase: 'phase1',
+              phaseLabel: 'Pool Play 1',
+              roundBlock: 4,
+              timeLabel: '12:00 PM',
+              status: 'scheduled',
+              matchId: 'match-cross-1',
+              matchupLabel: 'ALP vs BRV',
+              matchupReferenceLabel: 'C (#1) vs D (#1)',
+              refLabel: 'CHR',
+              refReferenceLabel: 'C (#2)',
+              teamA: { teamId: 'team-a', shortName: 'ALP', logoUrl: 'https://example.com/alp.png' },
+              teamB: { teamId: 'team-b', shortName: 'BRV', logoUrl: 'https://example.com/brv.png' },
+              participants: [
+                {
+                  type: 'teamId',
+                  teamId: 'team-a',
+                  label: 'ALP',
+                },
+                {
+                  type: 'teamId',
+                  teamId: 'team-b',
+                  label: 'BRV',
+                },
+              ],
+            },
+          ],
+          matches: [],
+        },
+      },
+    });
+
+    const user = userEvent.setup();
+    render(<TournamentPublicView />);
+
+    await user.click(await screen.findByRole('button', { name: 'Courts' }));
+
+    expect(
+      await screen.findByText((_, element) => element?.textContent?.trim() === 'Crossover: ALP vs BRV')
+    ).toBeInTheDocument();
+    expect(screen.getByText('C (#1) vs D (#1)')).toBeInTheDocument();
+    expect(screen.getByText('Ref: CHR')).toBeInTheDocument();
+    expect(screen.getByText('C (#2)')).toBeInTheDocument();
+    expect(screen.getByAltText('ALP logo')).toBeInTheDocument();
+    expect(screen.getByAltText('BRV logo')).toBeInTheDocument();
   });
 });

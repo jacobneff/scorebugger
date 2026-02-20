@@ -154,6 +154,13 @@ const formatLiveSummary = (summary) => {
 const getCourtMatchStatusMeta = (status) => {
   const normalized = typeof status === 'string' ? status.trim().toLowerCase() : '';
 
+  if (normalized === 'scheduled_tbd') {
+    return {
+      label: 'Scheduled / TBD',
+      className: 'court-schedule-status court-schedule-status--tbd',
+    };
+  }
+
   if (normalized === 'live') {
     return {
       label: 'LIVE',
@@ -181,8 +188,59 @@ const getCourtMatchStatusMeta = (status) => {
   };
 };
 
-const formatCourtScoreSummary = (score) =>
-  formatSetSummaryWithScores(toSetSummaryFromScoreSummary(score), []);
+const normalizeCourtScheduleSlots = (payload) => {
+  if (Array.isArray(payload?.slots) && payload.slots.length > 0) {
+    return payload.slots;
+  }
+
+  if (!Array.isArray(payload?.matches)) {
+    return Array.isArray(payload?.slots) ? payload.slots : [];
+  }
+
+  return payload.matches.map((match, index) => ({
+    slotId: `${match?.matchId || 'match'}-${match?.roundBlock || index}`,
+    kind: 'match',
+    stageLabel: match?.phaseLabel || '',
+    phase: match?.phase || null,
+    phaseLabel: match?.phaseLabel || '',
+    roundBlock: match?.roundBlock ?? null,
+    timeLabel: '',
+    status: match?.status || 'scheduled',
+    matchId: match?.matchId || null,
+    poolName: match?.poolName || null,
+    matchupLabel: `${match?.teamA || 'TBD'} vs ${match?.teamB || 'TBD'}`,
+    matchupReferenceLabel: null,
+    refLabel:
+      Array.isArray(match?.refs) && match.refs.length > 0
+        ? match.refs.join(', ')
+        : 'TBD',
+    refReferenceLabel: null,
+    scoreSummary: match?.score || null,
+    setSummary: match?.score
+      ? {
+          setsA: Number(match.score?.setsA) || 0,
+          setsB: Number(match.score?.setsB) || 0,
+          setScores: [],
+        }
+      : null,
+    teamA: match?.teamA ? { shortName: match.teamA, logoUrl: null } : null,
+    teamB: match?.teamB ? { shortName: match.teamB, logoUrl: null } : null,
+  }));
+};
+const formatCourtSlotScoreSummary = (slot) => {
+  const scoreSummary = slot?.setSummary || slot?.scoreSummary;
+  if (!scoreSummary) {
+    return '';
+  }
+
+  const setScores = Array.isArray(slot?.setSummary?.setScores)
+    ? slot.setSummary.setScores
+    : Array.isArray(slot?.completedSetScores)
+      ? slot.completedSetScores
+      : [];
+
+  return formatSetSummaryWithScores(toSetSummaryFromScoreSummary(scoreSummary), setScores);
+};
 const normalizeText = (value) => (typeof value === 'string' ? value : '');
 const normalizeUrl = (value) => (typeof value === 'string' ? value.trim() : '');
 
@@ -371,7 +429,7 @@ function TournamentPublicView() {
   const [courts, setCourts] = useState([]);
   const [selectedCourtCode, setSelectedCourtCode] = useState('');
   const [selectedCourt, setSelectedCourt] = useState(null);
-  const [courtScheduleMatches, setCourtScheduleMatches] = useState([]);
+  const [courtScheduleSlots, setCourtScheduleSlots] = useState([]);
   const [standingsByPhase, setStandingsByPhase] = useState({
     phase1: { pools: [], overall: [] },
     phase2: { pools: [], overall: [] },
@@ -553,9 +611,9 @@ function TournamentPublicView() {
         }
 
         setSelectedCourt(payload?.court || null);
-        setCourtScheduleMatches(Array.isArray(payload?.matches) ? payload.matches : []);
+        setCourtScheduleSlots(normalizeCourtScheduleSlots(payload));
       } catch {
-        setCourtScheduleMatches([]);
+        setCourtScheduleSlots([]);
         if (!silent) {
           setSelectedCourt(null);
         }
@@ -598,7 +656,7 @@ function TournamentPublicView() {
   useEffect(() => {
     if (!selectedCourtCode) {
       setSelectedCourt(null);
-      setCourtScheduleMatches([]);
+      setCourtScheduleSlots([]);
       return;
     }
 
@@ -1216,36 +1274,88 @@ function TournamentPublicView() {
               <p className="subtle">Loading court schedule...</p>
             ) : (
               <div className="court-schedule-list">
-                {courtScheduleMatches.length === 0 ? (
+                {courtScheduleSlots.length === 0 ? (
                   <p className="subtle">No matches scheduled for this court yet.</p>
                 ) : (
-                  courtScheduleMatches.map((match) => {
-                    const liveSummary = liveSummariesByMatchId[match.matchId] || null;
-                    const statusMeta = getCourtMatchStatusMeta(match.status);
+                  courtScheduleSlots.map((slot, index) => {
+                    const liveSummary = slot?.matchId ? liveSummariesByMatchId[slot.matchId] || null : null;
+                    const statusMeta = getCourtMatchStatusMeta(slot?.status);
                     const liveScoreSummary = liveSummary
                       ? formatSetSummaryWithScores(
                           toSetSummaryFromLiveSummary(liveSummary),
                           liveSummary?.completedSetScores
                         )
                       : '';
-                    const scoreSummary = liveScoreSummary || formatCourtScoreSummary(match.score);
-                    const timeLabel = formatRoundBlockStartTime(match.roundBlock, tournament) || '-';
+                    const scoreSummary = liveScoreSummary || formatCourtSlotScoreSummary(slot);
+                    const timeLabel =
+                      slot?.timeLabel
+                      || formatRoundBlockStartTime(slot?.roundBlock, tournament)
+                      || '-';
+                    const stageLabel = slot?.stageLabel || slot?.phaseLabel || getPhaseLabel(slot?.phase);
+                    const hasReferenceSubtitle =
+                      typeof slot?.matchupReferenceLabel === 'string'
+                      && slot.matchupReferenceLabel
+                      && slot.matchupReferenceLabel !== slot?.matchupLabel;
+                    const hasRefReferenceSubtitle =
+                      typeof slot?.refReferenceLabel === 'string'
+                      && slot.refReferenceLabel
+                      && slot.refReferenceLabel !== slot?.refLabel;
+                    const renderTeamChip = (team, fallbackLabel, key) => {
+                      if (!team && !fallbackLabel) {
+                        return null;
+                      }
+
+                      return (
+                        <span key={key} className="court-schedule-team-chip">
+                          {team?.logoUrl ? (
+                            <img
+                              src={team.logoUrl}
+                              alt={`${team?.shortName || fallbackLabel || 'Team'} logo`}
+                              className="court-schedule-team-logo"
+                            />
+                          ) : null}
+                          <span>{team?.shortName || fallbackLabel || 'TBD'}</span>
+                        </span>
+                      );
+                    };
+                    const participantA = slot?.participants?.[0] || null;
+                    const participantB = slot?.participants?.[1] || null;
+                    const teamA = slot?.teamA || participantA?.team || null;
+                    const teamB = slot?.teamB || participantB?.team || null;
+                    const showResolvedTeams = Boolean(teamA || teamB);
 
                     return (
-                      <article key={`${match.matchId || 'match'}-${match.roundBlock || 'na'}`} className="court-schedule-row">
+                      <article
+                        key={`${slot?.slotId || slot?.matchId || 'slot'}-${slot?.roundBlock || index}`}
+                        className="court-schedule-row"
+                      >
                         <div className="court-schedule-time">{timeLabel}</div>
                         <div className="court-schedule-body">
-                          <p className="court-schedule-teams">
-                            {match.teamA || 'TBD'} vs {match.teamB || 'TBD'}
+                          <p className="court-schedule-stage">
+                            <strong>{stageLabel || 'Stage'}</strong>
+                            {`: ${slot?.matchupLabel || 'TBD vs TBD'}`}
                           </p>
+                          {hasReferenceSubtitle ? (
+                            <p className="court-schedule-reference">{slot.matchupReferenceLabel}</p>
+                          ) : null}
+                          {showResolvedTeams ? (
+                            <div className="court-schedule-team-row">
+                              {renderTeamChip(teamA, participantA?.label, 'team-a')}
+                              <span className="subtle">vs</span>
+                              {renderTeamChip(teamB, participantB?.label, 'team-b')}
+                            </div>
+                          ) : null}
                           <div className="court-schedule-meta">
                             <span className={statusMeta.className}>{statusMeta.label}</span>
-                            <span>{getPhaseLabel(match.phase)}</span>
-                            {match.poolName ? <span>Pool {match.poolName}</span> : null}
+                            <span>{slot?.phaseLabel || getPhaseLabel(slot?.phase)}</span>
+                            {slot?.poolName ? <span>Pool {slot.poolName}</span> : null}
                           </div>
                           <p className="subtle">
-                            Ref: {Array.isArray(match.refs) && match.refs.length > 0 ? match.refs.join(', ') : 'TBD'}
+                            Ref: {slot?.refLabel || 'TBD'}
                           </p>
+                          {hasRefReferenceSubtitle ? (
+                            <p className="court-schedule-reference">{slot.refReferenceLabel}</p>
+                          ) : null}
                           <p className="subtle">
                             Location: {selectedCourt?.label || mapCourtLabel(selectedCourtCode)}
                           </p>

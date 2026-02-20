@@ -66,6 +66,11 @@ const {
   emitTournamentEvent,
 } = require('../services/tournamentRealtime');
 const {
+  formatRankRefLabel: formatScheduleRankRefLabel,
+  resolveRoundBlockStartMinutes: resolveSchedulePlanRoundBlockStartMinutes,
+  syncSchedulePlan,
+} = require('../services/schedulePlan');
+const {
   getTournamentAccessContext,
   listTournamentAdminAccessEntries,
   listUserAccessibleTournamentIds,
@@ -956,6 +961,25 @@ function resolvePhaseLabel(phase, phaseLabels) {
   return phaseLabels?.[normalizedPhase] || PHASE_LABELS[normalizedPhase] || normalizedPhase;
 }
 
+function buildStageDefinitionLookup(formatDef) {
+  return new Map(
+    (Array.isArray(formatDef?.stages) ? formatDef.stages : [])
+      .filter((stage) => isNonEmptyString(stage?.key))
+      .map((stage) => [stage.key.trim(), stage])
+  );
+}
+
+function buildStageLabelLookup(formatDef) {
+  return new Map(
+    (Array.isArray(formatDef?.stages) ? formatDef.stages : [])
+      .filter((stage) => isNonEmptyString(stage?.key))
+      .map((stage) => [
+        stage.key.trim(),
+        isNonEmptyString(stage?.displayName) ? stage.displayName.trim() : toTitleCase(stage.key),
+      ])
+  );
+}
+
 function buildStageOrderLookup(formatDef) {
   return new Map(
     (Array.isArray(formatDef?.stages) ? formatDef.stages : []).map((stage, index) => [
@@ -1587,6 +1611,7 @@ function serializeMatch(match) {
     _id: toIdString(match?._id),
     phase: match?.phase ?? null,
     stageKey: match?.stageKey ?? null,
+    plannedSlotId: isNonEmptyString(match?.plannedSlotId) ? match.plannedSlotId.trim() : null,
     poolId: pool ? toIdString(pool._id) : toIdString(match?.poolId),
     poolName: pool?.name ?? null,
     bracket: match?.bracket ?? null,
@@ -2549,6 +2574,7 @@ function serializeMatchForTeamView(match, focusTeamId, tournament, phaseLabels =
   const resultScore = serializeCourtScheduleScore(match?.result);
   const scoreboard =
     match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null;
+  const pool = match?.poolId && typeof match.poolId === 'object' ? match.poolId : null;
   const venueCourt = resolveVenueCourtForMatch(match, tournament);
   const scoreboardScore = serializeScoreSummaryFromScoreboard(scoreboard);
   const completedSetScores = resolveCompletedSetScores(match?.result, scoreboard);
@@ -2560,6 +2586,9 @@ function serializeMatchForTeamView(match, focusTeamId, tournament, phaseLabels =
     matchId: toIdString(match?._id),
     phase: match?.phase ?? null,
     phaseLabel: resolvePhaseLabel(match?.phase, phaseLabels),
+    stageKey: match?.stageKey ?? null,
+    plannedSlotId: isNonEmptyString(match?.plannedSlotId) ? match.plannedSlotId.trim() : null,
+    poolName: pool?.name ?? null,
     bracket: match?.bracket ?? null,
     bracketLabel: BRACKET_LABELS[normalizeBracket(match?.bracket)] || null,
     roundLabel: match?.bracketRound ?? null,
@@ -2578,12 +2607,554 @@ function serializeMatchForTeamView(match, focusTeamId, tournament, phaseLabels =
     endedAt: match?.endedAt ?? null,
     scoreSummary: resultScore || scoreboardScore,
     completedSetScores,
+    setSummary: resultScore || scoreboardScore
+      ? {
+          setsA: Number(resultScore?.setsA ?? scoreboardScore?.setsA) || 0,
+          setsB: Number(resultScore?.setsB ?? scoreboardScore?.setsB) || 0,
+          setScores: completedSetScores,
+        }
+      : null,
+    scoreboardCode: scoreboard?.code ?? null,
     refBy: Array.isArray(match?.refTeamIds)
       ? match.refTeamIds
           .map((team) => (team && typeof team === 'object' ? { shortName: team.shortName || team.name || 'TBD' } : null))
           .filter(Boolean)
       : [],
   };
+}
+
+function normalizeSchedulePlanSlotKind(value) {
+  return String(value || '').trim().toLowerCase() === 'lunch' ? 'lunch' : 'match';
+}
+
+function normalizeSchedulePlanSlotTimeIndex(slot, tournament) {
+  const explicitTimeIndex = Number(slot?.timeIndex);
+  if (Number.isFinite(explicitTimeIndex)) {
+    return explicitTimeIndex;
+  }
+
+  const roundBlock = Number(slot?.roundBlock);
+  if (Number.isFinite(roundBlock) && roundBlock > 0) {
+    const minutesSinceMidnight = resolveSchedulePlanRoundBlockStartMinutes(
+      Math.floor(roundBlock),
+      tournament
+    );
+    return Number.isFinite(minutesSinceMidnight) ? minutesSinceMidnight : null;
+  }
+
+  return null;
+}
+
+function formatSchedulePlanTimeLabel(timeIndex, tournament) {
+  if (!Number.isFinite(Number(timeIndex))) {
+    return '';
+  }
+
+  const timezone = isNonEmptyString(tournament?.timezone)
+    ? tournament.timezone.trim()
+    : 'America/New_York';
+
+  try {
+    return formatMinutesInTimezone(Number(timeIndex), timezone);
+  } catch {
+    return formatMinutesAsClockTime(Number(timeIndex));
+  }
+}
+
+function normalizeCourtLookupKey(value) {
+  return isNonEmptyString(value) ? value.trim().toLowerCase() : '';
+}
+
+function formatPublicTeamSnippetFromRecord(team, fallbackTeamId = null) {
+  const teamId = toIdString(team?._id) || toIdString(fallbackTeamId);
+  const shortName = team?.shortName || team?.name || 'TBD';
+  const logoUrl = isNonEmptyString(team?.logoUrl) ? team.logoUrl : null;
+
+  if (!teamId && shortName === 'TBD' && !logoUrl) {
+    return null;
+  }
+
+  return {
+    teamId: teamId || null,
+    shortName,
+    logoUrl,
+  };
+}
+
+function serializeSchedulePlanEntry(entry, teamsById = new Map()) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  if (entry.type === 'rankRef') {
+    const label = formatScheduleRankRefLabel(entry);
+    if (!label) {
+      return null;
+    }
+
+    return {
+      type: 'rankRef',
+      teamId: null,
+      label,
+      referenceLabel: label,
+      team: null,
+    };
+  }
+
+  if (entry.type === 'teamId') {
+    const teamId = toIdString(entry.teamId);
+    if (!teamId) {
+      return null;
+    }
+
+    const team = teamsById.get(teamId) || null;
+    const teamSnippet = formatPublicTeamSnippetFromRecord(team, teamId);
+    const label = teamSnippet?.shortName || 'TBD';
+    const referenceLabel =
+      entry?.sourceRankRef && typeof entry.sourceRankRef === 'object'
+        ? formatScheduleRankRefLabel(entry.sourceRankRef)
+        : '';
+
+    return {
+      type: 'teamId',
+      teamId,
+      label,
+      referenceLabel,
+      team: teamSnippet,
+    };
+  }
+
+  return null;
+}
+
+function resolveSchedulePlanSlotStatus({ kind, participants, match }) {
+  if (kind === 'lunch') {
+    return 'scheduled';
+  }
+
+  const normalizedParticipants = Array.isArray(participants) ? participants : [];
+  const hasRankReferences = normalizedParticipants.some((entry) => entry?.type === 'rankRef');
+
+  if (hasRankReferences) {
+    return 'scheduled_tbd';
+  }
+
+  if (match) {
+    return normalizeMatchStatus(match.status);
+  }
+
+  return 'scheduled';
+}
+
+function resolveSchedulePlanSlotPhase({
+  match,
+  stageKey,
+  formatDef,
+  stageDefinitions,
+}) {
+  if (isNonEmptyString(match?.phase)) {
+    return match.phase.trim();
+  }
+
+  if (!isNonEmptyString(stageKey)) {
+    return null;
+  }
+
+  const stageDef = stageDefinitions.get(stageKey.trim());
+  if (!stageDef) {
+    return null;
+  }
+
+  return resolvePoolPhase(formatDef, stageDef.key, stageDef);
+}
+
+function serializeSchedulePlanSlotView({
+  slot,
+  tournament,
+  formatDef,
+  phaseLabels = PHASE_LABELS,
+  stageDefinitions = new Map(),
+  stageLabels = new Map(),
+  teamsById = new Map(),
+  matchById = new Map(),
+} = {}) {
+  const kind = normalizeSchedulePlanSlotKind(slot?.kind);
+  const slotId = isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : '';
+  const rawMatchId = toIdString(slot?.matchId);
+  const matchId = rawMatchId && matchById.has(rawMatchId) ? rawMatchId : rawMatchId || null;
+  const match = matchId ? matchById.get(matchId) || null : null;
+  const scoreboard =
+    match?.scoreboardId && typeof match.scoreboardId === 'object' ? match.scoreboardId : null;
+  const rawParticipants = Array.isArray(slot?.participants) ? slot.participants : [];
+  const participants = rawParticipants
+    .slice(0, 2)
+    .map((entry) => serializeSchedulePlanEntry(entry, teamsById))
+    .filter(Boolean);
+  const matchTeamAParticipant =
+    participants[0]
+    || serializeSchedulePlanEntry(
+      { type: 'teamId', teamId: match?.teamAId?._id || match?.teamAId },
+      teamsById
+    );
+  const matchTeamBParticipant =
+    participants[1]
+    || serializeSchedulePlanEntry(
+      { type: 'teamId', teamId: match?.teamBId?._id || match?.teamBId },
+      teamsById
+    );
+  const normalizedParticipants = [matchTeamAParticipant, matchTeamBParticipant].filter(Boolean);
+  const resolvedParticipants = normalizedParticipants.length >= 2
+    ? normalizedParticipants
+    : participants;
+  const refFromSlot = serializeSchedulePlanEntry(slot?.ref, teamsById);
+  const refFromMatch =
+    Array.isArray(match?.refTeamIds) &&
+    match.refTeamIds.length > 0
+      ? serializeSchedulePlanEntry({ type: 'teamId', teamId: match.refTeamIds[0] }, teamsById)
+      : null;
+  const shouldPreferMatchRef =
+    slot?.ref?.type !== 'rankRef'
+    && Array.isArray(match?.refTeamIds);
+  const ref = shouldPreferMatchRef
+    ? refFromMatch || refFromSlot || null
+    : refFromSlot || refFromMatch || null;
+  const byeEntries = (Array.isArray(slot?.byeRefs) ? slot.byeRefs : [])
+    .map((entry) => serializeSchedulePlanEntry(entry, teamsById))
+    .filter(Boolean);
+  if (byeEntries.length === 0 && match?.byeTeamId) {
+    const byeFromMatch = serializeSchedulePlanEntry(
+      { type: 'teamId', teamId: match.byeTeamId },
+      teamsById
+    );
+    if (byeFromMatch) {
+      byeEntries.push(byeFromMatch);
+    }
+  }
+
+  const roundBlock =
+    Number.isFinite(Number(slot?.roundBlock)) && Number(slot.roundBlock) > 0
+      ? Math.floor(Number(slot.roundBlock))
+      : Number.isFinite(Number(match?.roundBlock)) && Number(match.roundBlock) > 0
+        ? Math.floor(Number(match.roundBlock))
+        : null;
+  const timeIndex = normalizeSchedulePlanSlotTimeIndex(slot, tournament);
+  const timeLabel =
+    formatSchedulePlanTimeLabel(timeIndex, tournament)
+    || formatRoundBlockStartTime(roundBlock, tournament)
+    || '';
+  const stageKey = isNonEmptyString(slot?.stageKey)
+    ? slot.stageKey.trim()
+    : isNonEmptyString(match?.stageKey)
+      ? match.stageKey.trim()
+      : '';
+  const stageLabel = stageKey === 'lunch'
+    ? 'Lunch'
+    : stageLabels.get(stageKey)
+      || (isNonEmptyString(match?.phase) ? resolvePhaseLabel(match.phase, phaseLabels) : '')
+      || toTitleCase(stageKey)
+      || 'Stage';
+  const phase = resolveSchedulePlanSlotPhase({
+    match,
+    stageKey,
+    formatDef,
+    stageDefinitions,
+  });
+  const phaseLabel = phase ? resolvePhaseLabel(phase, phaseLabels) : stageLabel;
+  const poolName = match?.poolId && typeof match.poolId === 'object' ? match.poolId.name || null : null;
+  const requestedCourtKey = isNonEmptyString(slot?.courtId)
+    ? slot.courtId.trim()
+    : isNonEmptyString(match?.courtId)
+      ? match.courtId.trim()
+      : isNonEmptyString(match?.court)
+        ? match.court.trim()
+        : '';
+  const venueCourt = findCourtInVenue(tournament?.settings?.venue, requestedCourtKey);
+  const courtCode = toIdString(venueCourt?.courtId)
+    || (isNonEmptyString(slot?.courtId) ? slot.courtId.trim() : '')
+    || (isNonEmptyString(match?.courtId) ? match.courtId.trim() : '')
+    || (isNonEmptyString(match?.court) ? match.court.trim() : '')
+    || null;
+  const facility = toIdString(venueCourt?.facilityId)
+    || (isNonEmptyString(slot?.facilityId) ? slot.facilityId.trim() : '')
+    || (isNonEmptyString(match?.facilityId) ? match.facilityId.trim() : '')
+    || (isNonEmptyString(match?.facility) ? match.facility.trim() : '')
+    || null;
+  const courtLabel = venueCourt?.courtName
+    || mapCourtDisplayLabel(match?.court)
+    || mapCourtDisplayLabel(courtCode)
+    || courtCode
+    || '';
+  const facilityLabel = venueCourt?.facilityName
+    || FACILITY_LABELS[match?.facility]
+    || match?.facility
+    || FACILITY_LABELS[getFacilityFromCourt(courtCode)]
+    || getFacilityFromCourt(courtCode)
+    || '';
+  const matchupLabel = resolvedParticipants.length >= 2
+    ? `${resolvedParticipants[0]?.label || 'TBD'} vs ${resolvedParticipants[1]?.label || 'TBD'}`
+    : 'TBD vs TBD';
+  const matchupReferenceLabel = resolvedParticipants.length >= 2
+    ? `${resolvedParticipants[0]?.referenceLabel || resolvedParticipants[0]?.label || 'TBD'} vs ${resolvedParticipants[1]?.referenceLabel || resolvedParticipants[1]?.label || 'TBD'}`
+    : '';
+  const refLabel = ref?.label || 'TBD';
+  const refReferenceLabel = ref?.referenceLabel || ref?.label || '';
+  const byeLabel = byeEntries.map((entry) => entry?.label).filter(Boolean).join(', ');
+  const scoreSummary = serializeCourtScheduleScore(match?.result)
+    || serializeScoreSummaryFromScoreboard(scoreboard)
+    || null;
+  const completedSetScores = resolveCompletedSetScores(match?.result, scoreboard);
+  const status = resolveSchedulePlanSlotStatus({
+    kind,
+    participants: resolvedParticipants,
+    match,
+  });
+
+  return {
+    slotId,
+    kind,
+    stageKey: stageKey || null,
+    stageLabel,
+    phase: phase || null,
+    phaseLabel,
+    roundBlock,
+    timeIndex,
+    timeLabel,
+    status,
+    matchId,
+    plannedSlotId: isNonEmptyString(match?.plannedSlotId) ? match.plannedSlotId.trim() : null,
+    poolName,
+    bracket: match?.bracket ?? null,
+    roundLabel: match?.bracketRound ?? null,
+    startedAt: match?.startedAt ?? null,
+    endedAt: match?.endedAt ?? null,
+    courtCode,
+    courtLabel,
+    facility,
+    facilityLabel,
+    matchupLabel,
+    matchupReferenceLabel,
+    participants: resolvedParticipants,
+    ref,
+    refLabel,
+    refReferenceLabel,
+    byeParticipants: byeEntries,
+    byeLabel: byeLabel || null,
+    teamA: resolvedParticipants[0]?.team || null,
+    teamB: resolvedParticipants[1]?.team || null,
+    scoreSummary,
+    completedSetScores,
+    setSummary: scoreSummary
+      ? {
+          setsA: Number(scoreSummary?.setsA) || 0,
+          setsB: Number(scoreSummary?.setsB) || 0,
+          setScores: completedSetScores,
+        }
+      : null,
+    scoreboardCode: scoreboard?.code || null,
+  };
+}
+
+function sortSchedulePlanSlotsByTime(slots) {
+  return [...(Array.isArray(slots) ? slots : [])].sort((left, right) => {
+    const leftTime = Number.isFinite(Number(left?.timeIndex))
+      ? Number(left.timeIndex)
+      : Number.isFinite(Number(left?.roundBlock))
+        ? Number(left.roundBlock) * 100
+        : Number.MAX_SAFE_INTEGER;
+    const rightTime = Number.isFinite(Number(right?.timeIndex))
+      ? Number(right.timeIndex)
+      : Number.isFinite(Number(right?.roundBlock))
+        ? Number(right.roundBlock) * 100
+        : Number.MAX_SAFE_INTEGER;
+
+    if (leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+
+    const leftRound = Number.isFinite(Number(left?.roundBlock))
+      ? Number(left.roundBlock)
+      : Number.MAX_SAFE_INTEGER;
+    const rightRound = Number.isFinite(Number(right?.roundBlock))
+      ? Number(right.roundBlock)
+      : Number.MAX_SAFE_INTEGER;
+    if (leftRound !== rightRound) {
+      return leftRound - rightRound;
+    }
+
+    const byCourt = String(left?.courtCode || '').localeCompare(String(right?.courtCode || ''));
+    if (byCourt !== 0) {
+      return byCourt;
+    }
+
+    return String(left?.slotId || '').localeCompare(String(right?.slotId || ''));
+  });
+}
+
+function serializeLegacyCourtScheduleMatch(slotView) {
+  return {
+    matchId: slotView?.matchId || null,
+    phase: slotView?.phase || null,
+    phaseLabel: slotView?.phaseLabel || slotView?.stageLabel || '',
+    roundBlock: slotView?.roundBlock ?? null,
+    poolName: slotView?.poolName ?? null,
+    status: slotView?.status === 'scheduled_tbd' ? 'scheduled' : slotView?.status || 'scheduled',
+    teamA: slotView?.participants?.[0]?.label || 'TBD',
+    teamB: slotView?.participants?.[1]?.label || 'TBD',
+    refs: slotView?.refLabel && slotView.refLabel !== 'TBD' ? [slotView.refLabel] : [],
+    score: slotView?.scoreSummary || null,
+    stageKey: slotView?.stageKey || null,
+  };
+}
+
+const TEAM_TIMELINE_ROLE_META = Object.freeze({
+  PLAY: {
+    roleLabel: 'PLAY',
+    iconKey: 'play',
+  },
+  REF: {
+    roleLabel: 'REF',
+    iconKey: 'ref',
+  },
+  BYE: {
+    roleLabel: 'BYE',
+    iconKey: 'bye',
+  },
+  LUNCH: {
+    roleLabel: 'LUNCH',
+    iconKey: 'lunch',
+  },
+});
+
+const TEAM_TIMELINE_ROLE_PRIORITY = Object.freeze({
+  PLAY: 0,
+  REF: 1,
+  BYE: 2,
+  LUNCH: 3,
+});
+
+function createTeamTimelineEntry({ slotView, role, focusTeamId, index = 0 } = {}) {
+  const roleMeta = TEAM_TIMELINE_ROLE_META[role] || TEAM_TIMELINE_ROLE_META.PLAY;
+  const slotId = isNonEmptyString(slotView?.slotId) ? slotView.slotId.trim() : '';
+  const normalizedRole = String(role || '').trim().toUpperCase();
+  const participants = Array.isArray(slotView?.participants) ? slotView.participants : [];
+  const teamA = slotView?.teamA || participants?.[0]?.team || null;
+  const teamB = slotView?.teamB || participants?.[1]?.team || null;
+  const teamAId = toIdString(teamA?.teamId || participants?.[0]?.teamId);
+  const teamBId = toIdString(teamB?.teamId || participants?.[1]?.teamId);
+  const normalizedFocusTeamId = toIdString(focusTeamId);
+  const opponent =
+    normalizedRole === 'PLAY'
+      ? teamAId === normalizedFocusTeamId
+        ? teamB
+        : teamA
+      : null;
+  const scoreSummary = slotView?.scoreSummary || null;
+  const completedSetScores = Array.isArray(slotView?.completedSetScores)
+    ? slotView.completedSetScores
+    : [];
+  const setsA = Number(slotView?.setSummary?.setsA ?? scoreSummary?.setsA);
+  const setsB = Number(slotView?.setSummary?.setsB ?? scoreSummary?.setsB);
+  const setSummary =
+    Number.isFinite(setsA) && Number.isFinite(setsB)
+      ? {
+          setsA: safeNonNegativeNumber(setsA),
+          setsB: safeNonNegativeNumber(setsB),
+          setScores: completedSetScores,
+        }
+      : null;
+
+  let summaryLabel = slotView?.matchupLabel || '';
+  if (normalizedRole === 'PLAY') {
+    summaryLabel = `vs ${opponent?.shortName || 'TBD'}`;
+  } else if (normalizedRole === 'REF') {
+    summaryLabel = slotView?.matchupLabel || 'TBD vs TBD';
+  } else if (normalizedRole === 'BYE') {
+    summaryLabel = slotView?.poolName ? `BYE (Pool ${slotView.poolName})` : 'BYE';
+  } else if (normalizedRole === 'LUNCH') {
+    summaryLabel = 'Lunch Break';
+  }
+
+  return {
+    timelineId: `${normalizedRole || 'ROW'}:${slotId || toIdString(slotView?.matchId) || index}`,
+    role: normalizedRole || 'PLAY',
+    roleLabel: roleMeta.roleLabel,
+    iconKey: roleMeta.iconKey,
+    summaryLabel,
+    stageKey: slotView?.stageKey || null,
+    stageLabel: slotView?.stageLabel || null,
+    phase: slotView?.phase || null,
+    phaseLabel: slotView?.phaseLabel || slotView?.stageLabel || null,
+    roundBlock: slotView?.roundBlock ?? null,
+    timeIndex: Number.isFinite(Number(slotView?.timeIndex)) ? Number(slotView.timeIndex) : null,
+    timeLabel: slotView?.timeLabel || '',
+    status: normalizedRole === 'LUNCH' ? 'scheduled' : slotView?.status || 'scheduled',
+    slotId: slotId || null,
+    matchId: toIdString(slotView?.matchId) || null,
+    plannedSlotId: isNonEmptyString(slotView?.plannedSlotId)
+      ? slotView.plannedSlotId.trim()
+      : slotId || null,
+    scoreboardCode: slotView?.scoreboardCode || null,
+    startedAt: slotView?.startedAt ?? null,
+    endedAt: slotView?.endedAt ?? null,
+    poolName: slotView?.poolName || null,
+    bracket: slotView?.bracket ?? null,
+    roundLabel: slotView?.roundLabel ?? null,
+    courtCode: slotView?.courtCode || null,
+    courtLabel: slotView?.courtLabel || null,
+    facility: slotView?.facility || null,
+    facilityLabel: slotView?.facilityLabel || null,
+    matchupLabel: slotView?.matchupLabel || null,
+    matchupReferenceLabel: slotView?.matchupReferenceLabel || null,
+    participants,
+    teamA,
+    teamB,
+    opponent: opponent || null,
+    ref: slotView?.ref || null,
+    refLabel: slotView?.refLabel || null,
+    refReferenceLabel: slotView?.refReferenceLabel || null,
+    byeParticipants: Array.isArray(slotView?.byeParticipants) ? slotView.byeParticipants : [],
+    byeLabel: slotView?.byeLabel || null,
+    scoreSummary,
+    completedSetScores,
+    setSummary,
+    isResolved: slotView?.status !== 'scheduled_tbd',
+  };
+}
+
+function sortTeamTimelineEntries(entries) {
+  return [...(Array.isArray(entries) ? entries : [])].sort((left, right) => {
+    const leftTime = Number.isFinite(Number(left?.timeIndex))
+      ? Number(left.timeIndex)
+      : Number.isFinite(Number(left?.roundBlock))
+        ? Number(left.roundBlock) * 100
+        : Number.MAX_SAFE_INTEGER;
+    const rightTime = Number.isFinite(Number(right?.timeIndex))
+      ? Number(right.timeIndex)
+      : Number.isFinite(Number(right?.roundBlock))
+        ? Number(right.roundBlock) * 100
+        : Number.MAX_SAFE_INTEGER;
+    if (leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+
+    const leftRound = Number.isFinite(Number(left?.roundBlock))
+      ? Number(left.roundBlock)
+      : Number.MAX_SAFE_INTEGER;
+    const rightRound = Number.isFinite(Number(right?.roundBlock))
+      ? Number(right.roundBlock)
+      : Number.MAX_SAFE_INTEGER;
+    if (leftRound !== rightRound) {
+      return leftRound - rightRound;
+    }
+
+    const leftRoleRank = TEAM_TIMELINE_ROLE_PRIORITY[left?.role] ?? Number.MAX_SAFE_INTEGER;
+    const rightRoleRank = TEAM_TIMELINE_ROLE_PRIORITY[right?.role] ?? Number.MAX_SAFE_INTEGER;
+    if (leftRoleRank !== rightRoleRank) {
+      return leftRoleRank - rightRoleRank;
+    }
+
+    return String(left?.timelineId || '').localeCompare(String(right?.timelineId || ''));
+  });
 }
 
 function sanitizePlayoffMatchForPublic(match) {
@@ -2915,6 +3486,126 @@ async function generatePoolPlayStageMatches({
   await ensureTournamentStatusAtLeast(tournamentId, phase === 'phase2' ? 'phase2' : 'phase1');
 
   return loadMatchesForResponse({ _id: { $in: createdMatchIds } });
+}
+
+function getRoundRobinMatchCountForPoolSize(poolSize) {
+  const parsed = Number(poolSize);
+  if (!Number.isFinite(parsed) || parsed <= 1) {
+    return 0;
+  }
+
+  return Math.floor((parsed * (parsed - 1)) / 2);
+}
+
+function isCrossoverPrerequisiteMatchFinalized(match) {
+  const status = String(match?.status || '').trim().toLowerCase();
+  return status === 'final' && Boolean(match?.result);
+}
+
+async function evaluateCrossoverGenerationReadiness({
+  tournamentId,
+  formatDef,
+  stageDef,
+}) {
+  const sourcePoolNames = Array.isArray(stageDef?.fromPools)
+    ? stageDef.fromPools.map((poolName) => String(poolName || '').trim()).filter(Boolean)
+    : [];
+  if (sourcePoolNames.length !== 2) {
+    return {
+      ready: false,
+      message: 'Crossover stage requires exactly two source pools',
+    };
+  }
+
+  const stageOrder = Array.isArray(formatDef?.stages) ? formatDef.stages : [];
+  const stageIndex = stageOrder.findIndex((stage) => stage?.key === stageDef?.key);
+  const previousPoolStage =
+    stageIndex > 0
+      ? [...stageOrder.slice(0, stageIndex)].reverse().find((stage) => stage?.type === 'poolPlay')
+      : null;
+  if (!previousPoolStage) {
+    return {
+      ready: false,
+      message: 'Crossover stage requires a prior pool-play stage',
+    };
+  }
+
+  const previousPhase = resolvePoolPhase(formatDef, previousPoolStage.key, previousPoolStage);
+  const sourcePools = await Pool.find({
+    tournamentId,
+    phase: previousPhase,
+    name: { $in: sourcePoolNames },
+    $or: [
+      { stageKey: previousPoolStage.key },
+      { stageKey: null },
+      { stageKey: { $exists: false } },
+    ],
+  })
+    .select('_id name')
+    .lean();
+  const sourcePoolByName = new Map(
+    sourcePools
+      .map((pool) => [String(pool?.name || '').trim(), pool])
+      .filter(([poolName]) => Boolean(poolName))
+  );
+  const missingPools = sourcePoolNames.filter((poolName) => !sourcePoolByName.has(poolName));
+  if (missingPools.length > 0) {
+    return {
+      ready: false,
+      message: `Source pools are missing for crossover generation: ${missingPools.join(', ')}`,
+    };
+  }
+
+  const sourcePoolIds = sourcePoolNames
+    .map((poolName) => toIdString(sourcePoolByName.get(poolName)?._id))
+    .filter(Boolean);
+  const sourceMatches = await Match.find({
+    tournamentId,
+    poolId: { $in: sourcePoolIds },
+  })
+    .select('poolId status result')
+    .lean();
+  const sourceMatchesByPoolId = sourceMatches.reduce((lookup, match) => {
+    const poolId = toIdString(match?.poolId);
+    if (!poolId) {
+      return lookup;
+    }
+
+    if (!lookup.has(poolId)) {
+      lookup.set(poolId, []);
+    }
+    lookup.get(poolId).push(match);
+    return lookup;
+  }, new Map());
+  const poolSizesByName = new Map(
+    (Array.isArray(previousPoolStage?.pools) ? previousPoolStage.pools : [])
+      .map((poolDef) => [String(poolDef?.name || '').trim(), Number(poolDef?.size || 0)])
+      .filter(([poolName]) => Boolean(poolName))
+  );
+
+  for (const poolName of sourcePoolNames) {
+    const pool = sourcePoolByName.get(poolName);
+    const poolId = toIdString(pool?._id);
+    const requiredPoolSize = Number(poolSizesByName.get(poolName) || 0);
+    const requiredMatchCount = getRoundRobinMatchCountForPoolSize(requiredPoolSize);
+    const poolMatches = sourceMatchesByPoolId.get(poolId) || [];
+
+    if (requiredMatchCount <= 0 || poolMatches.length < requiredMatchCount) {
+      return {
+        ready: false,
+        message: `Complete all source pool matches before generating crossover (${poolName}).`,
+      };
+    }
+
+    if (!poolMatches.every((match) => isCrossoverPrerequisiteMatchFinalized(match))) {
+      return {
+        ready: false,
+        message: `Finalize all source pool matches before generating crossover (${poolName}).`,
+      };
+    }
+  }
+
+  return { ready: true, message: '' };
 }
 
 async function generateCrossoverStageMatches({
@@ -3413,7 +4104,9 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id name date timezone publicCode facilities settings.schedule settings.format settings.venue')
+      .select(
+        '_id name date timezone publicCode facilities settings.schedule settings.schedulePlan settings.format settings.venue'
+      )
       .lean();
 
     if (!tournament) {
@@ -3423,6 +4116,8 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
     const teamCount = await TournamentTeam.countDocuments({ tournamentId: tournament._id });
     const formatContext = getTournamentFormatContext(tournament, teamCount);
     const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
+    const stageDefinitions = buildStageDefinitionLookup(formatContext.formatDef);
+    const stageLabels = buildStageLabelLookup(formatContext.formatDef);
 
     const team = await TournamentTeam.findOne({
       tournamentId: tournament._id,
@@ -3434,6 +4129,137 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
     if (!team) {
       return res.status(404).json({ message: 'Not found' });
     }
+
+    const teamId = toIdString(team._id);
+    const tournamentForTimeLabels = {
+      timezone: tournament.timezone,
+      settings: {
+        schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
+        venue: formatContext.venue,
+      },
+    };
+
+    let schedulePlanSlots = Array.isArray(tournament?.settings?.schedulePlan?.slots)
+      ? tournament.settings.schedulePlan.slots
+      : [];
+    if (schedulePlanSlots.length === 0) {
+      const synced = await syncSchedulePlan({
+        tournamentId: tournament._id,
+        actorUserId: null,
+        io: req.app?.get('io'),
+        emitEvents: false,
+      });
+      schedulePlanSlots = Array.isArray(synced?.slots) ? synced.slots : [];
+    }
+
+    const scheduleSlotIds = uniqueValues(
+      schedulePlanSlots
+        .map((slot) => (isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : ''))
+        .filter(Boolean)
+    );
+    const scheduleSlotMatchIds = uniqueValues(
+      schedulePlanSlots.map((slot) => toIdString(slot?.matchId)).filter(Boolean)
+    );
+    const scheduleMatchFilters = [];
+    if (scheduleSlotMatchIds.length > 0) {
+      scheduleMatchFilters.push({ _id: { $in: scheduleSlotMatchIds } });
+    }
+    if (scheduleSlotIds.length > 0) {
+      scheduleMatchFilters.push({ plannedSlotId: { $in: scheduleSlotIds } });
+    }
+
+    const scheduleMatches = scheduleMatchFilters.length > 0
+      ? await Match.find({
+          tournamentId: tournament._id,
+          $or: scheduleMatchFilters,
+        })
+          .select(
+            'phase stageKey plannedSlotId poolId bracket bracketRound roundBlock facility court facilityId courtId teamAId teamBId refTeamIds byeTeamId status startedAt endedAt result scoreboardId createdAt'
+          )
+          .populate('teamAId', 'name shortName logoUrl')
+          .populate('teamBId', 'name shortName logoUrl')
+          .populate('refTeamIds', 'name shortName logoUrl')
+          .populate('byeTeamId', 'name shortName logoUrl')
+          .populate('poolId', 'name')
+          .populate('scoreboardId', 'code teams.score sets')
+          .lean()
+      : [];
+    const scheduleMatchByPlannedSlotId = new Map(
+      scheduleMatches
+        .map((match) => [
+          isNonEmptyString(match?.plannedSlotId) ? match.plannedSlotId.trim() : '',
+          match,
+        ])
+        .filter(([plannedSlotId]) => Boolean(plannedSlotId))
+    );
+    const scheduleMatchById = new Map(
+      scheduleMatches
+        .map((match) => [toIdString(match?._id), match])
+        .filter(([matchId]) => Boolean(matchId))
+    );
+    const hydratedSchedulePlanSlots = schedulePlanSlots.map((slot) => {
+      if (toIdString(slot?.matchId)) {
+        return slot;
+      }
+
+      const slotId = isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : '';
+      if (!slotId || !scheduleMatchByPlannedSlotId.has(slotId)) {
+        return slot;
+      }
+
+      return {
+        ...slot,
+        matchId: scheduleMatchByPlannedSlotId.get(slotId)?._id || null,
+      };
+    });
+
+    const scheduleTeamIds = uniqueValues(
+      [
+        ...hydratedSchedulePlanSlots.flatMap((slot) => {
+          const participantIds = (Array.isArray(slot?.participants) ? slot.participants : [])
+            .map((entry) => (entry?.type === 'teamId' ? toIdString(entry.teamId) : ''))
+            .filter(Boolean);
+          const refId = slot?.ref?.type === 'teamId' ? toIdString(slot.ref.teamId) : '';
+          const byeIds = (Array.isArray(slot?.byeRefs) ? slot.byeRefs : [])
+            .map((entry) => (entry?.type === 'teamId' ? toIdString(entry.teamId) : ''))
+            .filter(Boolean);
+          return [...participantIds, refId, ...byeIds].filter(Boolean);
+        }),
+        ...scheduleMatches.flatMap((match) => [
+          toIdString(match?.teamAId?._id || match?.teamAId),
+          toIdString(match?.teamBId?._id || match?.teamBId),
+          ...(Array.isArray(match?.refTeamIds)
+            ? match.refTeamIds.map((refTeam) => toIdString(refTeam?._id || refTeam))
+            : []),
+          toIdString(match?.byeTeamId?._id || match?.byeTeamId),
+        ]),
+      ].filter(Boolean)
+    );
+    const scheduleTeams = scheduleTeamIds.length > 0
+      ? await TournamentTeam.find({
+          _id: { $in: scheduleTeamIds },
+          tournamentId: tournament._id,
+        })
+          .select('name shortName logoUrl')
+          .lean()
+      : [];
+    const scheduleTeamsById = new Map(
+      scheduleTeams.map((scheduleTeam) => [toIdString(scheduleTeam?._id), scheduleTeam])
+    );
+    const scheduleSlotViews = sortSchedulePlanSlotsByTime(
+      hydratedSchedulePlanSlots.map((slot) =>
+        serializeSchedulePlanSlotView({
+          slot,
+          tournament: tournamentForTimeLabels,
+          formatDef: formatContext.formatDef,
+          phaseLabels,
+          stageDefinitions,
+          stageLabels,
+          teamsById: scheduleTeamsById,
+          matchById: scheduleMatchById,
+        })
+      )
+    );
 
     const relevantMatches = await Match.find({
       tournamentId: tournament._id,
@@ -3454,15 +4280,6 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
       .populate('poolId', 'name')
       .populate('scoreboardId', 'teams.score sets')
       .lean();
-
-    const teamId = toIdString(team._id);
-    const tournamentForTimeLabels = {
-      timezone: tournament.timezone,
-      settings: {
-        schedule: normalizeTournamentSchedule(tournament?.settings?.schedule),
-        venue: formatContext.venue,
-      },
-    };
 
     const participantMatches = sortMatchesForCourtSchedule(
       relevantMatches.filter((match) => {
@@ -3501,6 +4318,212 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
         || mapCourtDisplayLabel(match?.court),
       poolName: match?.poolId && typeof match.poolId === 'object' ? (match.poolId.name || null) : null,
     }));
+    const timelineEntries = [];
+
+    scheduleSlotViews.forEach((slotView, index) => {
+      if (slotView?.kind === 'lunch') {
+        timelineEntries.push(
+          createTeamTimelineEntry({
+            slotView,
+            role: 'LUNCH',
+            focusTeamId: teamId,
+            index,
+          })
+        );
+        return;
+      }
+
+      const participantIds = (Array.isArray(slotView?.participants) ? slotView.participants : [])
+        .map((entry) => toIdString(entry?.teamId))
+        .filter(Boolean);
+      const refTeamId = toIdString(slotView?.ref?.teamId);
+      const byeTeamIds = (Array.isArray(slotView?.byeParticipants) ? slotView.byeParticipants : [])
+        .map((entry) => toIdString(entry?.teamId))
+        .filter(Boolean);
+
+      if (participantIds.includes(teamId)) {
+        timelineEntries.push(
+          createTeamTimelineEntry({
+            slotView,
+            role: 'PLAY',
+            focusTeamId: teamId,
+            index,
+          })
+        );
+        return;
+      }
+
+      if (refTeamId && refTeamId === teamId) {
+        timelineEntries.push(
+          createTeamTimelineEntry({
+            slotView,
+            role: 'REF',
+            focusTeamId: teamId,
+            index,
+          })
+        );
+        return;
+      }
+
+      if (byeTeamIds.includes(teamId)) {
+        timelineEntries.push(
+          createTeamTimelineEntry({
+            slotView,
+            role: 'BYE',
+            focusTeamId: teamId,
+            index,
+          })
+        );
+      }
+    });
+
+    const timelineRoleMatchKeys = new Set(
+      timelineEntries
+        .map((entry) => `${entry?.role || ''}:${entry?.matchId || entry?.slotId || entry?.timelineId || ''}`)
+        .filter((key) => key !== ':')
+    );
+    const toFallbackTimeIndex = (roundBlock) => {
+      const parsedRoundBlock = Number(roundBlock);
+      if (!Number.isFinite(parsedRoundBlock) || parsedRoundBlock <= 0) {
+        return null;
+      }
+      const resolvedMinutes = resolveSchedulePlanRoundBlockStartMinutes(
+        Math.floor(parsedRoundBlock),
+        tournamentForTimeLabels
+      );
+      return Number.isFinite(Number(resolvedMinutes)) ? Number(resolvedMinutes) : null;
+    };
+    const upsertFallbackTimelineEntry = (role, sourceEntry, index) => {
+      const normalizedRole = String(role || '').trim().toUpperCase();
+      const fallbackMatchId = toIdString(sourceEntry?.matchId);
+      const fallbackSlotId = isNonEmptyString(sourceEntry?.plannedSlotId)
+        ? sourceEntry.plannedSlotId.trim()
+        : '';
+      const fallbackKey = `${normalizedRole}:${fallbackMatchId || fallbackSlotId || index}`;
+      if (timelineRoleMatchKeys.has(fallbackKey)) {
+        return;
+      }
+      timelineRoleMatchKeys.add(fallbackKey);
+
+      const scoreSummary = sourceEntry?.scoreSummary || null;
+      const completedSetScores = Array.isArray(sourceEntry?.completedSetScores)
+        ? sourceEntry.completedSetScores
+        : [];
+      timelineEntries.push({
+        timelineId: `legacy:${fallbackKey}`,
+        role: normalizedRole,
+        roleLabel: normalizedRole || 'PLAY',
+        iconKey:
+          normalizedRole === 'REF'
+            ? 'ref'
+            : normalizedRole === 'BYE'
+              ? 'bye'
+              : normalizedRole === 'LUNCH'
+                ? 'lunch'
+                : 'play',
+        summaryLabel:
+          normalizedRole === 'REF'
+            ? `${sourceEntry?.teamA?.shortName || 'TBD'} vs ${sourceEntry?.teamB?.shortName || 'TBD'}`
+            : normalizedRole === 'BYE'
+              ? sourceEntry?.poolName
+                ? `BYE (Pool ${sourceEntry.poolName})`
+                : 'BYE'
+              : `vs ${sourceEntry?.opponent?.shortName || 'TBD'}`,
+        stageKey: sourceEntry?.stageKey || null,
+        stageLabel: sourceEntry?.phaseLabel || sourceEntry?.phase || null,
+        phase: sourceEntry?.phase || null,
+        phaseLabel: sourceEntry?.phaseLabel || sourceEntry?.phase || null,
+        roundBlock: sourceEntry?.roundBlock ?? null,
+        timeIndex: toFallbackTimeIndex(sourceEntry?.roundBlock),
+        timeLabel: sourceEntry?.timeLabel || '',
+        status: sourceEntry?.status || 'scheduled',
+        slotId: fallbackSlotId || null,
+        matchId: fallbackMatchId || null,
+        plannedSlotId: fallbackSlotId || null,
+        scoreboardCode: sourceEntry?.scoreboardCode || null,
+        startedAt: sourceEntry?.startedAt ?? null,
+        endedAt: sourceEntry?.endedAt ?? null,
+        poolName: sourceEntry?.poolName || null,
+        bracket: sourceEntry?.bracket ?? null,
+        roundLabel: sourceEntry?.roundLabel ?? null,
+        courtCode: sourceEntry?.courtCode || null,
+        courtLabel: sourceEntry?.courtLabel || null,
+        facility: sourceEntry?.facility || null,
+        facilityLabel: sourceEntry?.facilityLabel || null,
+        matchupLabel:
+          normalizedRole === 'REF'
+            ? `${sourceEntry?.teamA?.shortName || 'TBD'} vs ${sourceEntry?.teamB?.shortName || 'TBD'}`
+            : null,
+        matchupReferenceLabel: null,
+        participants: [],
+        teamA: sourceEntry?.teamA || null,
+        teamB: sourceEntry?.teamB || null,
+        opponent: sourceEntry?.opponent || null,
+        ref: null,
+        refLabel: null,
+        refReferenceLabel: null,
+        byeParticipants: [],
+        byeLabel: normalizedRole === 'BYE' ? 'BYE' : null,
+        scoreSummary,
+        completedSetScores,
+        setSummary:
+          sourceEntry?.setSummary
+          || (scoreSummary
+            ? {
+                setsA: Number(scoreSummary?.setsA) || 0,
+                setsB: Number(scoreSummary?.setsB) || 0,
+                setScores: completedSetScores,
+              }
+            : null),
+        isResolved: true,
+      });
+    };
+    participantMatches.forEach((matchEntry, index) => {
+      upsertFallbackTimelineEntry('PLAY', matchEntry, index);
+    });
+    refAssignments.forEach((matchEntry, index) => {
+      upsertFallbackTimelineEntry('REF', matchEntry, index);
+    });
+    byeAssignments.forEach((byeEntry, index) => {
+      upsertFallbackTimelineEntry('BYE', byeEntry, index);
+    });
+
+    const normalizedSchedule = normalizeTournamentSchedule(tournament?.settings?.schedule);
+    const lunchTimeMinutes = isNonEmptyString(normalizedSchedule?.lunchStartTime)
+      ? parseClockTimeToMinutes(normalizedSchedule.lunchStartTime)
+      : null;
+    const lunchDurationMinutes = Number(normalizedSchedule?.lunchDurationMinutes);
+    const hasLunchTimelineEntry = timelineEntries.some((entry) => entry?.role === 'LUNCH');
+    if (
+      !hasLunchTimelineEntry
+      && Number.isFinite(lunchTimeMinutes)
+      && Number.isFinite(lunchDurationMinutes)
+      && lunchDurationMinutes > 0
+    ) {
+      timelineEntries.push(
+        createTeamTimelineEntry({
+          slotView: {
+            slotId: 'lunch:main',
+            kind: 'lunch',
+            stageKey: 'lunch',
+            stageLabel: 'Lunch',
+            phase: null,
+            phaseLabel: 'Lunch',
+            roundBlock: null,
+            timeIndex: lunchTimeMinutes,
+            timeLabel: formatSchedulePlanTimeLabel(lunchTimeMinutes, tournamentForTimeLabels),
+            status: 'scheduled',
+            matchupLabel: 'Lunch Break',
+            participants: [],
+            byeParticipants: [],
+          },
+          role: 'LUNCH',
+          focusTeamId: teamId,
+          index: timelineEntries.length,
+        })
+      );
+    }
+    const timeline = sortTeamTimelineEntries(timelineEntries);
 
     const nextUp = participantMatches.find(
       (match) => !['ended', 'final'].includes(match.status)
@@ -3510,6 +4533,7 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
 
     return res.json({
       tournament: {
+        id: toIdString(tournament._id),
         name: tournament.name,
         date: tournament.date,
         timezone: tournament.timezone,
@@ -3548,6 +4572,7 @@ router.get('/code/:publicCode/team/:teamCode', async (req, res, next) => {
         logoUrl: team.logoUrl || null,
       },
       nextUp,
+      timeline,
       matches: participantMatches,
       refs: refAssignments,
       byes: byeAssignments,
@@ -3616,7 +4641,9 @@ router.get('/code/:publicCode/courts/:courtCode/schedule', async (req, res, next
     }
 
     const tournament = await Tournament.findOne({ publicCode })
-      .select('_id settings.format settings.venue facilities')
+      .select(
+        '_id timezone settings.schedule settings.schedulePlan settings.format settings.venue facilities'
+      )
       .lean();
 
     if (!tournament) {
@@ -3626,31 +4653,290 @@ router.get('/code/:publicCode/courts/:courtCode/schedule', async (req, res, next
     const teamCount = await TournamentTeam.countDocuments({ tournamentId: tournament._id });
     const formatContext = getTournamentFormatContext(tournament, teamCount);
     const phaseLabels = buildPhaseLabelLookup(formatContext.formatDef);
+    const stageDefinitions = buildStageDefinitionLookup(formatContext.formatDef);
+    const stageLabels = buildStageLabelLookup(formatContext.formatDef);
     const venueCourt = findCourtInVenue(formatContext.venue, requestedCourtKey);
     const legacyCourtCode = normalizeCourtCode(requestedCourtKey);
-
-    const matches = await Match.find({
-      tournamentId: tournament._id,
-      $or: venueCourt
-        ? [
-            { courtId: venueCourt.courtId },
-            { court: venueCourt.courtName },
-            { court: requestedCourtKey },
-          ]
-        : [{ court: legacyCourtCode || requestedCourtKey }, { courtId: requestedCourtKey }],
-    })
-      .select(
-        'phase roundBlock poolId teamAId teamBId refTeamIds status result createdAt court courtId'
-      )
-      .populate('poolId', 'name')
-      .populate('teamAId', 'name shortName')
-      .populate('teamBId', 'name shortName')
-      .populate('refTeamIds', 'name shortName')
-      .lean();
-
-    const orderedMatches = sortMatchesForCourtSchedule(matches).map((match) =>
-      serializeMatchForCourtSchedule(match, phaseLabels)
+    const requestedCourtLookupKeys = new Set(
+      [
+        normalizeCourtLookupKey(requestedCourtKey),
+        normalizeCourtLookupKey(legacyCourtCode),
+        normalizeCourtLookupKey(venueCourt?.courtId),
+        normalizeCourtLookupKey(venueCourt?.courtName),
+      ].filter(Boolean)
     );
+
+    let schedulePlanSlots = Array.isArray(tournament?.settings?.schedulePlan?.slots)
+      ? tournament.settings.schedulePlan.slots
+      : [];
+    if (schedulePlanSlots.length === 0) {
+      const synced = await syncSchedulePlan({
+        tournamentId: tournament._id,
+        io: req.app?.get('io'),
+        emitEvents: false,
+      });
+      schedulePlanSlots = Array.isArray(synced?.slots) ? synced.slots : [];
+    }
+
+    const courtSlots = (Array.isArray(schedulePlanSlots) ? schedulePlanSlots : []).filter((slot) => {
+      if (!isNonEmptyString(slot?.courtId)) {
+        return false;
+      }
+
+      const slotCourtId = slot.courtId.trim();
+      const slotVenueCourt = findCourtInVenue(formatContext.venue, slotCourtId);
+      const slotLookupKeys = new Set(
+        [
+          normalizeCourtLookupKey(slotCourtId),
+          normalizeCourtLookupKey(slotVenueCourt?.courtId),
+          normalizeCourtLookupKey(slotVenueCourt?.courtName),
+        ].filter(Boolean)
+      );
+
+      return Array.from(slotLookupKeys).some((lookupKey) => requestedCourtLookupKeys.has(lookupKey));
+    });
+    const slotIds = uniqueValues(
+      courtSlots
+        .map((slot) => (isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : ''))
+        .filter(Boolean)
+    );
+    const slotMatchIds = uniqueValues(
+      courtSlots.map((slot) => toIdString(slot?.matchId)).filter(Boolean)
+    );
+    const matchFilterClauses = [];
+    if (slotMatchIds.length > 0) {
+      matchFilterClauses.push({ _id: { $in: slotMatchIds } });
+    }
+    if (slotIds.length > 0) {
+      matchFilterClauses.push({ plannedSlotId: { $in: slotIds } });
+    }
+    const scheduleMatches = matchFilterClauses.length > 0
+      ? await Match.find({
+          tournamentId: tournament._id,
+          $or: matchFilterClauses,
+        })
+          .select(
+            'phase stageKey plannedSlotId poolId bracket bracketRound roundBlock facility court facilityId courtId teamAId teamBId refTeamIds byeTeamId status startedAt endedAt result scoreboardId'
+          )
+          .populate('poolId', 'name')
+          .populate('teamAId', 'name shortName logoUrl')
+          .populate('teamBId', 'name shortName logoUrl')
+          .populate('refTeamIds', 'name shortName logoUrl')
+          .populate('byeTeamId', 'name shortName logoUrl')
+          .populate('scoreboardId', 'code teams.score sets')
+          .lean()
+      : [];
+    const matchById = new Map(
+      scheduleMatches.map((match) => [toIdString(match?._id), match]).filter(([matchId]) => Boolean(matchId))
+    );
+    const matchByPlannedSlotId = new Map(
+      scheduleMatches
+        .map((match) => [
+          isNonEmptyString(match?.plannedSlotId) ? match.plannedSlotId.trim() : '',
+          match,
+        ])
+        .filter(([plannedSlotId]) => Boolean(plannedSlotId))
+    );
+    const hydratedCourtSlots = courtSlots.map((slot) => {
+      if (toIdString(slot?.matchId)) {
+        return slot;
+      }
+
+      const slotId = isNonEmptyString(slot?.slotId) ? slot.slotId.trim() : '';
+      if (!slotId || !matchByPlannedSlotId.has(slotId)) {
+        return slot;
+      }
+
+      return {
+        ...slot,
+        matchId: matchByPlannedSlotId.get(slotId)?._id || null,
+      };
+    });
+    const teamIds = uniqueValues(
+      [
+        ...hydratedCourtSlots.flatMap((slot) => {
+          const participantIds = (Array.isArray(slot?.participants) ? slot.participants : [])
+            .map((entry) => (entry?.type === 'teamId' ? toIdString(entry.teamId) : ''))
+            .filter(Boolean);
+          const refId = slot?.ref?.type === 'teamId' ? toIdString(slot.ref.teamId) : '';
+          const byeIds = (Array.isArray(slot?.byeRefs) ? slot.byeRefs : [])
+            .map((entry) => (entry?.type === 'teamId' ? toIdString(entry.teamId) : ''))
+            .filter(Boolean);
+          return [...participantIds, refId, ...byeIds].filter(Boolean);
+        }),
+        ...scheduleMatches.flatMap((match) => [
+          toIdString(match?.teamAId?._id || match?.teamAId),
+          toIdString(match?.teamBId?._id || match?.teamBId),
+          ...(Array.isArray(match?.refTeamIds)
+            ? match.refTeamIds.map((refTeam) => toIdString(refTeam?._id || refTeam))
+            : []),
+          toIdString(match?.byeTeamId?._id || match?.byeTeamId),
+        ]),
+      ].filter(Boolean)
+    );
+    const teams = teamIds.length > 0
+      ? await TournamentTeam.find({
+          _id: { $in: teamIds },
+          tournamentId: tournament._id,
+        })
+          .select('name shortName logoUrl')
+          .lean()
+      : [];
+    const teamsById = new Map(teams.map((team) => [toIdString(team?._id), team]));
+    const slots = sortSchedulePlanSlotsByTime(
+      hydratedCourtSlots.map((slot) =>
+        serializeSchedulePlanSlotView({
+          slot,
+          tournament,
+          formatDef: formatContext.formatDef,
+          phaseLabels,
+          stageDefinitions,
+          stageLabels,
+          teamsById,
+          matchById,
+        })
+      )
+    );
+    const legacyMatches = slots
+      .filter((slot) => slot.kind === 'match')
+      .map((slot) => serializeLegacyCourtScheduleMatch(slot));
+    let responseSlots = slots;
+    let responseLegacyMatches = legacyMatches;
+
+    if (responseSlots.length === 0) {
+      const legacyCourtQueryValues = uniqueValues(
+        [
+          requestedCourtKey,
+          legacyCourtCode,
+          venueCourt?.courtId,
+          venueCourt?.courtName,
+        ]
+          .map((value) => (isNonEmptyString(value) ? value.trim() : ''))
+          .filter(Boolean)
+      );
+      const legacyCourtMatches = legacyCourtQueryValues.length > 0
+        ? await Match.find({
+            tournamentId: tournament._id,
+            $or: [
+              { courtId: { $in: legacyCourtQueryValues } },
+              { court: { $in: legacyCourtQueryValues } },
+            ],
+          })
+            .select(
+              'phase stageKey plannedSlotId poolId bracket bracketRound roundBlock facility court facilityId courtId teamAId teamBId refTeamIds byeTeamId status startedAt endedAt result scoreboardId createdAt'
+            )
+            .populate('poolId', 'name')
+            .populate('teamAId', 'name shortName logoUrl')
+            .populate('teamBId', 'name shortName logoUrl')
+            .populate('refTeamIds', 'name shortName logoUrl')
+            .populate('byeTeamId', 'name shortName logoUrl')
+            .populate('scoreboardId', 'code teams.score sets')
+            .lean()
+        : [];
+      const filteredLegacyCourtMatches = sortMatchesForCourtSchedule(
+        legacyCourtMatches.filter((match) => {
+          const legacyMatchVenueCourt = findCourtInVenue(
+            formatContext.venue,
+            match?.courtId || match?.court
+          );
+          const legacyMatchLookupKeys = new Set(
+            [
+              normalizeCourtLookupKey(match?.courtId),
+              normalizeCourtLookupKey(match?.court),
+              normalizeCourtLookupKey(legacyMatchVenueCourt?.courtId),
+              normalizeCourtLookupKey(legacyMatchVenueCourt?.courtName),
+            ].filter(Boolean)
+          );
+          return Array.from(legacyMatchLookupKeys).some((lookupKey) =>
+            requestedCourtLookupKeys.has(lookupKey)
+          );
+        })
+      );
+
+      if (filteredLegacyCourtMatches.length > 0) {
+        const fallbackMatchById = new Map(
+          filteredLegacyCourtMatches
+            .map((match) => [toIdString(match?._id), match])
+            .filter(([matchId]) => Boolean(matchId))
+        );
+        const fallbackTeamsById = new Map();
+        filteredLegacyCourtMatches.forEach((match) => {
+          const teamAId = toIdString(match?.teamAId?._id || match?.teamAId);
+          const teamBId = toIdString(match?.teamBId?._id || match?.teamBId);
+          if (teamAId && match?.teamAId && typeof match.teamAId === 'object') {
+            fallbackTeamsById.set(teamAId, match.teamAId);
+          }
+          if (teamBId && match?.teamBId && typeof match.teamBId === 'object') {
+            fallbackTeamsById.set(teamBId, match.teamBId);
+          }
+
+          (Array.isArray(match?.refTeamIds) ? match.refTeamIds : []).forEach((refTeam) => {
+            const refTeamId = toIdString(refTeam?._id || refTeam);
+            if (refTeamId && refTeam && typeof refTeam === 'object') {
+              fallbackTeamsById.set(refTeamId, refTeam);
+            }
+          });
+
+          const byeTeamId = toIdString(match?.byeTeamId?._id || match?.byeTeamId);
+          if (byeTeamId && match?.byeTeamId && typeof match.byeTeamId === 'object') {
+            fallbackTeamsById.set(byeTeamId, match.byeTeamId);
+          }
+        });
+
+        responseSlots = sortSchedulePlanSlotsByTime(
+          filteredLegacyCourtMatches.map((match, index) => {
+            const roundBlock = Number(match?.roundBlock);
+            const normalizedRoundBlock =
+              Number.isFinite(roundBlock) && roundBlock > 0
+                ? Math.floor(roundBlock)
+                : null;
+            const normalizedStageKey = isNonEmptyString(match?.stageKey)
+              ? match.stageKey.trim()
+              : isNonEmptyString(match?.phase)
+                ? match.phase.trim()
+                : 'match';
+            const fallbackSlotId = isNonEmptyString(match?.plannedSlotId)
+              ? match.plannedSlotId.trim()
+              : `legacy:${toIdString(match?._id) || index}`;
+
+            return serializeSchedulePlanSlotView({
+              slot: {
+                slotId: fallbackSlotId,
+                stageKey: normalizedStageKey,
+                roundBlock: normalizedRoundBlock,
+                timeIndex:
+                  normalizedRoundBlock !== null
+                    ? resolveSchedulePlanRoundBlockStartMinutes(normalizedRoundBlock, tournament)
+                    : null,
+                courtId:
+                  (isNonEmptyString(match?.courtId) ? match.courtId.trim() : '')
+                  || (isNonEmptyString(match?.court) ? match.court.trim() : '')
+                  || requestedCourtKey,
+                facilityId:
+                  (isNonEmptyString(match?.facilityId) ? match.facilityId.trim() : '')
+                  || (isNonEmptyString(match?.facility) ? match.facility.trim() : '')
+                  || null,
+                kind: 'match',
+                participants: [],
+                ref: null,
+                byeRefs: [],
+                matchId: match?._id || null,
+              },
+              tournament,
+              formatDef: formatContext.formatDef,
+              phaseLabels,
+              stageDefinitions,
+              stageLabels,
+              teamsById: fallbackTeamsById,
+              matchById: fallbackMatchById,
+            });
+          })
+        );
+        responseLegacyMatches = filteredLegacyCourtMatches.map((match) =>
+          serializeMatchForCourtSchedule(match, phaseLabels)
+        );
+      }
+    }
 
     return res.json({
       court: {
@@ -3664,7 +4950,8 @@ router.get('/code/:publicCode/courts/:courtCode/schedule', async (req, res, next
           || FACILITY_LABELS[getFacilityFromCourt(legacyCourtCode || requestedCourtKey)]
           || getFacilityFromCourt(legacyCourtCode || requestedCourtKey),
       },
-      matches: orderedMatches,
+      slots: responseSlots,
+      matches: responseLegacyMatches,
     });
   } catch (error) {
     return next(error);
@@ -4067,6 +5354,13 @@ router.post('/:id/reset', requireAuth, async (req, res, next) => {
       }
     );
 
+    await syncSchedulePlan({
+      tournamentId: id,
+      actorUserId: req.user.id,
+      io: req.app?.get('io'),
+      emitEvents: false,
+    });
+
     const deleted = {
       pools: Number(poolsDeletion?.deletedCount || 0),
       matches: Array.isArray(matchDeletion?.deletedMatchIds)
@@ -4320,6 +5614,13 @@ router.post('/:id/apply-format', requireAuth, async (req, res, next) => {
         }
       );
     }
+
+    await syncSchedulePlan({
+      tournamentId: id,
+      actorUserId: req.user.id,
+      io: req.app?.get('io'),
+      emitEvents: true,
+    });
 
     const persistedTournament = await Tournament.findById(id)
       .select('name date timezone status facilities settings.schedule settings.format settings.venue publicCode')
@@ -4885,6 +6186,22 @@ router.post('/:id/stages/:stageKey/matches/generate', requireAuth, async (req, r
       });
     }
 
+    if (stageDef.type === 'crossover') {
+      const readiness = await evaluateCrossoverGenerationReadiness({
+        tournamentId: id,
+        formatDef: formatContext.formatDef,
+        stageDef,
+      });
+
+      if (!readiness.ready) {
+        return res.status(400).json({
+          message:
+            readiness.message
+            || 'Crossover matches cannot be generated until source pool matches are finalized.',
+        });
+      }
+    }
+
     if (forceRegenerate) {
       await deleteMatchesAndLinkedScoreboards(stageMatchQuery);
     }
@@ -4935,6 +6252,13 @@ router.post('/:id/stages/:stageKey/matches/generate', requireAuth, async (req, r
         matchIds: generatedMatches.map((match) => toIdString(match._id)).filter(Boolean),
       }
     );
+
+    await syncSchedulePlan({
+      tournamentId: id,
+      actorUserId: req.user.id,
+      io: req.app?.get('io'),
+      emitEvents: true,
+    });
 
     return res.status(201).json(generatedMatches);
   } catch (error) {

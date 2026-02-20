@@ -65,6 +65,137 @@ const StandingsPhaseOverridesSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const SchedulePlanRankRefSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ['rankRef'],
+      required: true,
+      default: 'rankRef',
+    },
+    poolName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    rank: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 64,
+    },
+  },
+  { _id: false }
+);
+
+const SchedulePlanTeamRefSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ['teamId'],
+      required: true,
+      default: 'teamId',
+    },
+    teamId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TournamentTeam',
+      required: true,
+    },
+    sourceRankRef: {
+      type: SchedulePlanRankRefSchema,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const SchedulePlanParticipantSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ['rankRef', 'teamId'],
+      required: true,
+    },
+    poolName: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    rank: {
+      type: Number,
+      default: null,
+      min: 1,
+      max: 64,
+    },
+    teamId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'TournamentTeam',
+      default: null,
+    },
+    sourceRankRef: {
+      type: SchedulePlanRankRefSchema,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const SchedulePlanSlotSchema = new mongoose.Schema(
+  {
+    slotId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    stageKey: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    roundBlock: {
+      type: Number,
+      default: null,
+    },
+    timeIndex: {
+      type: Number,
+      default: null,
+    },
+    courtId: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    facilityId: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    kind: {
+      type: String,
+      enum: ['match', 'lunch'],
+      default: 'match',
+    },
+    participants: {
+      type: [SchedulePlanParticipantSchema],
+      default: [],
+    },
+    ref: {
+      type: SchedulePlanParticipantSchema,
+      default: null,
+    },
+    byeRefs: {
+      type: [SchedulePlanParticipantSchema],
+      default: undefined,
+    },
+    matchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Match',
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
 const VenueCourtSchema = new mongoose.Schema(
   {
     courtId: {
@@ -229,6 +360,12 @@ const TournamentSchema = new mongoose.Schema(
       venue: {
         facilities: {
           type: [VenueFacilitySchema],
+          default: [],
+        },
+      },
+      schedulePlan: {
+        slots: {
+          type: [SchedulePlanSlotSchema],
           default: [],
         },
       },
